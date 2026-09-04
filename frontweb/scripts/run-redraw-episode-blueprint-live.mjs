@@ -167,7 +167,21 @@ function defaultExecutionPlan(pkg, providerName) {
   return plan
 }
 
-function validateExecutionPlan(value, pkg, providerName) {
+function unitPathKey(unitId) {
+  return String(unitId).replace(/[^a-zA-Z0-9._-]/g, '_')
+}
+
+function assertExecutionPathsUnique(units, planned) {
+  const relativePaths = units.flatMap((unit) => {
+    const key = unitPathKey(unit.unit_id)
+    return planned
+      ? [`outputs/raw/${key}.mp4`, `outputs/units/${key}.mp4`, `${key}-public-evidence.json`]
+      : [`outputs/shots/${key}.mp4`, `${key}-public-evidence.json`]
+  })
+  if (new Set(relativePaths).size !== relativePaths.length) fail('REDRAW_EPISODE_EXECUTION_PATH_COLLISION')
+}
+
+function validateExecutionPlan(value, pkg, providerName, planned = false) {
   const plan = clone(value)
   if (!plan || typeof plan !== 'object' || Array.isArray(plan)
     || plan.schema_version !== 'redraw-provider-execution-plan-v1'
@@ -192,6 +206,10 @@ function validateExecutionPlan(value, pkg, providerName) {
     const pack = packs.get(parentShotId)
     if (typeof unit.schema_version !== 'string' || !unit.schema_version.trim()
       || !unitId || seen.has(unitId)) fail('REDRAW_EPISODE_EXECUTION_UNIT_ID_INVALID', unitId)
+    if (planned && (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(unitId)
+      || unitId.endsWith('.') || unitId.includes('..'))) {
+      fail('REDRAW_EPISODE_EXECUTION_UNIT_ID_INVALID', unitId)
+    }
     seen.add(unitId)
     if (!pack || String(unit.parent_production_pack_hash || '').toLowerCase() !== pack.production_pack_hash) {
       fail('REDRAW_EPISODE_EXECUTION_UNIT_PARENT_INVALID', unitId)
@@ -226,6 +244,7 @@ function validateExecutionPlan(value, pkg, providerName) {
     }
     return { ...unit, unit_hash: computedUnitHash }
   })
+  assertExecutionPathsUnique(executionUnits, planned)
   return { plan, executionUnits, executionPlanHash: expectedPlanHash }
 }
 
@@ -330,7 +349,7 @@ function outputPathForShot(stateDir, shotId) {
 }
 
 function outputPathForUnit(stateDir, unitId, kind) {
-  const safeId = String(unitId).replace(/[^a-zA-Z0-9._-]/g, '_')
+  const safeId = unitPathKey(unitId)
   return path.join(stateDir, 'outputs', kind === 'raw' ? 'raw' : 'units', `${safeId}.mp4`)
 }
 
@@ -439,7 +458,7 @@ function assertExecutionBinding(manifest, pkg) {
   if (!manifest.execution_plan || !Array.isArray(manifest.execution_units)) {
     fail('REDRAW_EPISODE_EXECUTION_PLAN_MISSING')
   }
-  const validated = validateExecutionPlan(manifest.execution_plan, pkg, manifest.provider)
+  const validated = validateExecutionPlan(manifest.execution_plan, pkg, manifest.provider, manifest.execution_mode === 'provider-units')
   const expectedMode = validated.plan.units.every((unit) => unit.schema_version === 'redraw-default-execution-unit-v1')
     ? 'legacy-shot'
     : 'provider-units'
@@ -458,7 +477,7 @@ async function prepareExecution(provider, pkg, stateDir) {
   const plan = planned
     ? await provider.prepareEpisode({ package: clone(pkg), state_dir: stateDir, mode: 'materialize' })
     : defaultExecutionPlan(pkg, provider?.name)
-  return { ...validateExecutionPlan(plan, pkg, provider?.name), mode: planned ? 'provider-units' : 'legacy-shot' }
+  return { ...validateExecutionPlan(plan, pkg, provider?.name, planned), mode: planned ? 'provider-units' : 'legacy-shot' }
 }
 
 async function runPreflight(options, adapters) {
@@ -601,6 +620,7 @@ async function runShot(options, adapters) {
     const inspection = await adapters.provider.inspectArtifact({ output_path: rawPath, pack: providerPack, unit: clone(unit), parent_pack: clone(pack) })
     if (sha256File(rawPath) !== task.raw_artifact.sha256) fail('REDRAW_EPISODE_ARTIFACT_HASH_MISMATCH')
     task.raw_verification = publicPathless(inspection)
+    let finalInspection = inspection
     if (typeof adapters.provider.finalizeArtifact === 'function') {
       task.status = 'artifact_finalization_started'
       task.finalization_started_at = now()
@@ -615,17 +635,22 @@ async function runShot(options, adapters) {
         raw_verification: clone(task.raw_verification),
       })
       task.artifact = artifactMetadata(options.stateDir, finalized, finalPath)
+      task.status = 'final_artifact_inspection_started'
       task.finalized_at = now()
       writeManifest(options.stateDir, manifest)
+      finalInspection = await adapters.provider.inspectArtifact({
+        output_path: finalPath,
+        pack: providerPack,
+        unit: clone(unit),
+        parent_pack: clone(pack),
+      })
+      if (sha256File(finalPath) !== task.artifact.sha256) fail('REDRAW_EPISODE_ARTIFACT_HASH_MISMATCH')
     }
     task.status = 'completed_verified'
     task.completed_at = now()
-    task.verification = publicPathless(inspection)
+    task.verification = publicPathless(finalInspection)
     manifest.updated_at = task.completed_at
     writeManifest(options.stateDir, manifest)
-    const evidenceId = legacy ? pack.shot_id : unit.unit_id
-    atomicJson(path.join(options.stateDir, `${String(evidenceId).replace(/[^a-zA-Z0-9._-]/g, '_')}-public-evidence.json`), publicPathless(task))
-    return publicPathless(task)
   } catch (error) {
     task.status = classifyProviderError(error)
     task.error_code = error?.code || 'REDRAW_EPISODE_PROVIDER_FAILED'
@@ -634,6 +659,21 @@ async function runShot(options, adapters) {
     writeManifest(options.stateDir, manifest)
     throw error
   }
+  const evidenceId = legacy ? pack.shot_id : unit.unit_id
+  try {
+    atomicJson(path.join(options.stateDir, `${unitPathKey(evidenceId)}-public-evidence.json`), publicPathless(task))
+  } catch (error) {
+    const at = now()
+    task.public_evidence_error = {
+      code: String(error?.code || 'REDRAW_EPISODE_PUBLIC_EVIDENCE_WRITE_FAILED'),
+      message: String(error?.message || error),
+      at,
+    }
+    manifest.updated_at = at
+    writeManifest(options.stateDir, manifest)
+    throw codedError('REDRAW_EPISODE_PUBLIC_EVIDENCE_WRITE_FAILED', task.public_evidence_error.message)
+  }
+  return publicPathless(task)
 }
 
 async function runSequence(options, adapters) {
