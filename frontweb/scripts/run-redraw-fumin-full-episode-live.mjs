@@ -1,4 +1,10 @@
 import { pathToFileURL } from 'node:url'
+import { buildFuminEpisodeExecutionPlan } from './fuminEpisodeExecutionPlan.mjs'
+import { materializeFuminExecutionMotion } from './fuminExecutionMotion.mjs'
+import {
+  assembleNormalizedEpisode,
+  normalizeUnitArtifact,
+} from './fuminEpisodeMediaPipeline.mjs'
 import { createFuminEpisodeProviderAdapter } from './fuminEpisodeProviderAdapter.mjs'
 
 export {
@@ -9,10 +15,17 @@ export {
 
 export async function main(argv = process.argv.slice(2), adapters = {}) {
   const runner = await import('./run-redraw-episode-blueprint-live.mjs')
-  return runner.main(argv, {
-    providerName: 'fumin',
-    provider: adapters.provider || createFuminEpisodeProviderAdapter(adapters),
+  const provider = adapters.provider || createFuminEpisodeProviderAdapter({
+    buildExecutionPlan: buildFuminEpisodeExecutionPlan,
+    materializeMotion: materializeFuminExecutionMotion,
+    normalizeUnitArtifact,
+    assembleNormalizedEpisode,
     ...adapters,
+  })
+  return runner.main(argv, {
+    ...adapters,
+    provider,
+    providerName: 'fumin',
   })
 }
 
