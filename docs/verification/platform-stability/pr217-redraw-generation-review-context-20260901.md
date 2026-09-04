@@ -93,3 +93,14 @@
 - 本地对比发现整集适配器遗漏了同仓库既有 Fumin 客户端已经支持的 `content.video_url`、`data.content.video_url` 及对应 `content.video.url` 完成结果路径。由于 r17 未保存原始供应商响应，不能反向断言本次响应的精确字段，只能确认这是一个可复现的解析合同缺口，不能把 r17 报告为真实成片失败或验收通过。
 - TDD 红灯使用 `data.content.video_url` 稳定复现相同未知结果；最小修复只补齐既有已验证结果路径，不修改模型、请求参数、定价或轮询次数。单文件 27/27、Fumin 六文件 104 tests / 102 pass / 0 fail / 2 Windows symlink skip、功能锁与发布范围 66/66 均通过。
 - r17 保持不可复用；本次没有生产数据库写入、合并、部署或第二次供应商提交。修复后的真实成片、音轨、英文对白、角色一致性和完整 5 秒仍未验证，后续若再次真实提交必须使用新的隔离状态和新的明确授权。
+
+### 2026-09-04 r18 真实样片与末镜英文钩子修订
+
+- 在 `HEAD=43a64fef17ab07691b2e9ee5679742105d2ad390` 上使用全新隔离状态 `pr217-fumin-single-shot-20260904-r18-parser-fixed` 执行一次真实 Fumin `seedance-2.0-mini`、480p、9:16、5 秒、有声单镜生成；共上传 1 张 Ethan Cole 身份图和 1 段无原音轨动作参考，只创建 1 个供应商任务，未重试。
+- 结果文件 `shot-24.part-01.mp4` 可读取，SHA-256 为 `6f2df9dcf4334b80d97475e990bc80edd90a1d2e45047267486f86ab9f74c58f`；媒体为 H.264、496x864、24 fps、5.088 秒，并含 AAC 双声道音轨。音频非静音，均方音量约 -25.4 dB、峰值约 -3.2 dB；人工画面审核确认角色为非亚洲面孔并与 Ethan Cole 身份方向一致。
+- 该样片没有通过精确对白门禁。批准文本为 `The World Cup starts my fortune.`，两套离线 ASR 均识别为归一化后的 `The World Cups, my fortune.`；因此任务终态保持 `FUMIN_EPISODE_EXACT_DIALOGUE_FAILED`。媒体可读、时长、音轨与角色方向通过不能覆盖精确对白失败。
+- 根因收敛到末镜英文钩子本身的相邻词界不稳定：`Cup starts` 在生成语音中容易连读为 `Cups`。最小修订为 `The World Cup is where my fortune begins.`，保留“世界杯是财富起点”的原意，同时消除该相邻辅音歧义；未修改模型、供应商配置、价格、角色或镜头结构。
+- TDD 红灯先证明现有真实整集 fixture 仍使用旧末镜表达，结果为 27 项中 26 通过、1 失败；更新 fixture 后同组 27/27 通过，并新增断言禁止重新引入 `World Cup starts`。
+- 基于不可变 r8 包重新编译的本地 r9 包位于 `.codex-staging/episode-blueprint-fumin-readiness-20260904-r9-dialogue-revision`：蓝图哈希保持 `f62842d9fbdb006d84b8b7b63ff05c09e7e74850a5d0a86ab5fa01bc607aae8d`，本地化哈希更新为 `3d1787c323f374787ae82a8656b0d992eb15b25c6f8aad1440de6559d45a01f0`，整包 SHA-256 为 `4c3bec472d2586b936f48b0a4c5de55c20f284d30cb6ce02494757b48bad10d8`。
+- r9 零付费 preflight 通过：8 张身份参考、24 段动作参考、24 个生产包、28 个执行单元，目标 `en-US`、美国角色名、480p、9:16、有声合同均完整；末镜提示词和对白快照只包含新句。供应商 GET/POST、上传、生成和计费次数均为 0。
+- r18 仍是失败证据，r9 只证明修订后的产品数据与本地生成合同就绪，不代表真实成片已经通过。新的真实样片必须绑定后续新 HEAD、使用全新隔离状态并取得单独明确授权；不得复用 r18。

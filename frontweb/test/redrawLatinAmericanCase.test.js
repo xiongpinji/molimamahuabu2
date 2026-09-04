@@ -91,6 +91,16 @@ test('整集合同为每个源对白提供同时间窗的英文映射', () => {
   assert.equal(new Set(sourceTexts).size, sourceTexts.length, '源对白不得因切片边界重复生成')
 })
 
+test('末镜英文钩子使用清晰词界且保留原意', () => {
+  const finalShot = redrawLatinAmericanCase.localization.dialogue
+    .find((row) => row.shot_id === 'shot-9')
+
+  assert.deepEqual(finalShot?.turns.map((turn) => turn.localized_text), [
+    'The World Cup is where my fortune begins.',
+  ])
+  assert.doesNotMatch(finalShot.turns[0].localized_text, /\bWorld Cup starts\b/i)
+})
+
 test('真实整集本地化对白逐镜显式声明口播与静默语义', () => {
   const shots = redrawLatinAmericanCase.sourceFacts.shots
   const dialogueRows = redrawLatinAmericanCase.localization.dialogue
