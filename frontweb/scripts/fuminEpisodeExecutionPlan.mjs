@@ -149,7 +149,11 @@ function normalizeCharacters(characters, shotId) {
       .map((asset) => asset.sha256)
     const identityHashes = [...new Set([...declaredHashes, ...assetHashes]
       .map((hash) => requireHash(hash, 'FUMIN_EXECUTION_IDENTITY_ASSET_HASH_INVALID')))]
-    return { id, identity_hashes: identityHashes }
+    return {
+      id,
+      identity_hashes: identityHashes,
+      identity_hash_contract_declared: identityHashes.length > 0,
+    }
   })
 }
 
@@ -229,6 +233,18 @@ function identityIdsForPack(identityReferences, pack) {
   const ids = []
   for (const character of pack.characters) {
     const matches = identityReferences.filter((reference) => reference.character_id === character.id)
+    if (!character.identity_hash_contract_declared) {
+      if (matches.length === 0) fail('FUMIN_EXECUTION_IDENTITY_REFERENCE_MISSING', character.id)
+      const seenHashes = new Set()
+      for (const reference of matches) {
+        if (seenHashes.has(reference.sha256)) {
+          fail('FUMIN_EXECUTION_IDENTITY_REFERENCE_AMBIGUOUS', character.id)
+        }
+        seenHashes.add(reference.sha256)
+        ids.push(reference.id)
+      }
+      continue
+    }
     const requiredHashes = new Set(character.identity_hashes)
     for (const hash of character.identity_hashes) {
       const hashMatches = matches.filter((reference) => reference.sha256 === hash)

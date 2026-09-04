@@ -173,6 +173,67 @@ test('binds identity references by parent characters and one exact motion refere
   assert.equal(plan.units[0].motion_reference_id, 'motion-shot-01')
 })
 
+test('binds package identity references when a real-schema character declares no identity hash contract', () => {
+  const identityHash = '1'.repeat(64)
+  const pack = makePack({
+    characters: [{ id: 'lead', name: 'Lead', kind: 'character', assets: [] }],
+  })
+  const explicit = buildFuminEpisodeExecutionPlan(makePackage([pack], {
+    identity_references: [{
+      id: 'identity-character-lead',
+      character_id: 'lead',
+      path: 'C:/private/lead.png',
+      sha256: identityHash,
+    }],
+  }))
+  const explicitEmptyContract = buildFuminEpisodeExecutionPlan(makePackage([
+    makePack({
+      characters: [{
+        id: 'lead', name: 'Lead', kind: 'character', assets: [], identity_hashes: [],
+      }],
+    }),
+  ], {
+    identity_references: [{
+      id: 'identity-character-lead', character_id: 'lead', sha256: identityHash,
+    }],
+  }))
+  const idLessPackage = (path) => makePackage([pack], {
+    identity_references: [{ character_id: 'lead', path, sha256: identityHash }],
+  })
+  const firstIdLess = buildFuminEpisodeExecutionPlan(idLessPackage('C:/private/lead.png'))
+  const secondIdLess = buildFuminEpisodeExecutionPlan(idLessPackage('D:/other/lead.png'))
+
+  assert.deepEqual(explicit.units[0].identity_reference_ids, ['identity-character-lead'])
+  assert.deepEqual(explicitEmptyContract.units[0].identity_reference_ids, ['identity-character-lead'])
+  assert.match(firstIdLess.units[0].identity_reference_ids[0], /^identity-ref-[a-f0-9]{64}$/)
+  assert.deepEqual(secondIdLess.units[0].identity_reference_ids, firstIdLess.units[0].identity_reference_ids)
+  assert.equal(secondIdLess.execution_plan_hash, firstIdLess.execution_plan_hash)
+  assert.doesNotMatch(JSON.stringify(explicit), /C:\/private/)
+})
+
+test('fails closed for ambiguous, missing, or cross-character undeclared identity references', () => {
+  const identityHash = '1'.repeat(64)
+  const pack = makePack({
+    characters: [{ id: 'lead', name: 'Lead', kind: 'character', assets: [] }],
+  })
+
+  assert.throws(
+    () => buildFuminEpisodeExecutionPlan(makePackage([pack], {
+      identity_references: [
+        { id: 'identity-a', character_id: 'lead', sha256: identityHash },
+        { id: 'identity-b', character_id: 'lead', sha256: identityHash },
+      ],
+    })),
+    (error) => error.code === 'FUMIN_EXECUTION_IDENTITY_REFERENCE_AMBIGUOUS',
+  )
+  assert.throws(
+    () => buildFuminEpisodeExecutionPlan(makePackage([pack], {
+      identity_references: [{ id: 'identity-other', character_id: 'other', sha256: identityHash }],
+    })),
+    (error) => error.code === 'FUMIN_EXECUTION_IDENTITY_REFERENCE_MISSING',
+  )
+})
+
 test('fails closed for missing, duplicate, or stale identity hashes on a bound character', () => {
   const requiredHash = '1'.repeat(64)
   const staleHash = '2'.repeat(64)
