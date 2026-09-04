@@ -195,10 +195,10 @@ test('ToAPIs 引用素材拒绝本地主机、私网和链路本地地址', () =
 });
 
 test('ToAPIs POST 使用注入 fetch，规范化 base URL，并把不确定创建结果标为不可重试', async () => {
-  assert.equal(normalizeToapisBaseUrl('https://toapis.xyz/v1/'), 'https://toapis.xyz');
+  assert.equal(normalizeToapisBaseUrl('https://toapis.cn/v1/'), 'https://toapis.cn');
   assert.throws(
-    () => normalizeToapisBaseUrl('https://toapis.com/v1/'),
-    /ToAPIs 官方入口必须是 https:\/\/toapis\.xyz/,
+    () => normalizeToapisBaseUrl('https://toapis.xyz/v1/'),
+    /ToAPIs 官方入口必须是 https:\/\/toapis\.cn/,
   );
   const calls = [];
   const fetchImpl = async (url, init) => {
@@ -211,7 +211,7 @@ test('ToAPIs POST 使用注入 fetch，规范化 base URL，并把不确定创�
   };
 
   const result = await callToapisVideoApi(
-    { base_url: 'https://toapis.xyz/v1/', api_key: 'secret-key' },
+    { base_url: 'https://toapis.cn/v1/', api_key: 'secret-key' },
     { info() {} },
     {
       model: 'seedance-2-fast',
@@ -227,7 +227,7 @@ test('ToAPIs POST 使用注入 fetch，规范化 base URL，并把不确定创�
     status: 'queued',
     route_meta: { httpStatus: 200, providerTaskId: 'tsk_1' },
   });
-  assert.equal(calls[0].url, 'https://toapis.xyz/v1/videos/generations');
+  assert.equal(calls[0].url, 'https://toapis.cn/v1/videos/generations');
   assert.equal(calls[0].init.headers.Authorization, 'Bearer secret-key');
 
   const broken = await callToapisVideoApi(
@@ -264,21 +264,22 @@ test('ToAPIs POST 使用注入 fetch，规范化 base URL，并把不确定创�
 });
 
 test('ToAPIs 请求前强制官方 base URL，非法入口不会触发 fetch 且不泄露 Key', async () => {
-  assert.equal(normalizeToapisBaseUrl(), 'https://toapis.xyz');
+  assert.equal(normalizeToapisBaseUrl(), 'https://toapis.cn');
   for (const badBaseUrl of [
-    'http://toapis.xyz',
-    'https://user:pass@toapis.xyz',
+    'http://toapis.cn',
+    'https://user:pass@toapis.cn',
+    'https://toapis.xyz',
     'https://toapis.com',
     'https://toapis.com/v1/',
-    'https://toapis.xyz:443',
-    'https://toapis.xyz:444',
-    'https://toapis.xyz/v1/extra',
-    'https://toapis.xyz/v1?group=default',
-    'https://toapis.xyz/v1#fragment',
+    'https://toapis.cn:443',
+    'https://toapis.cn:444',
+    'https://toapis.cn/v1/extra',
+    'https://toapis.cn/v1?group=default',
+    'https://toapis.cn/v1#fragment',
     'https://localhost',
     'https://127.0.0.1',
     'https://10.0.0.1',
-    'https://api.toapis.xyz',
+    'https://api.toapis.cn',
     'https://evil.example',
   ]) {
     let calls = 0;
@@ -358,7 +359,7 @@ test('ToAPIs 付费验证显式 Key 不受全局环境 Key 覆盖', async () => 
   process.env.TOAPIS_API_KEY = 'wrong-global-key';
   try {
     const created = await callToapisVideoApi(
-      { base_url: 'https://toapis.xyz', api_key: 'database-fast-key' },
+      { base_url: 'https://toapis.cn', api_key: 'database-fast-key' },
       null,
       { model: 'seedance-2-fast', prompt: 'x', resolution: '480p', duration: 4 },
       {
@@ -376,7 +377,7 @@ test('ToAPIs 付费验证显式 Key 不受全局环境 Key 覆盖', async () => 
     assert.equal(created.task_id, 'task-fast');
 
     const queried = await fetchToapisTask(
-      { base_url: 'https://toapis.xyz', api_key: 'database-mini-key' },
+      { base_url: 'https://toapis.cn', api_key: 'database-mini-key' },
       'task-mini',
       {
         apiKey: 'database-mini-key',
@@ -471,7 +472,7 @@ test('ToAPIs GET 查询解析 processing/completed/failed，完成无 URL 视为
 
   const calls = [];
   const done = await fetchToapisTask(
-    { base_url: 'https://toapis.xyz/v1', api_key: 'secret-key' },
+    { base_url: 'https://toapis.cn/v1', api_key: 'secret-key' },
     'tsk_2',
     {
       fetchImpl: async (url, init) => {
@@ -487,7 +488,7 @@ test('ToAPIs GET 查询解析 processing/completed/failed，完成无 URL 视为
     },
   );
 
-  assert.equal(calls[0].url, 'https://toapis.xyz/v1/videos/generations/tsk_2');
+  assert.equal(calls[0].url, 'https://toapis.cn/v1/videos/generations/tsk_2');
   assert.equal(calls[0].init.headers.Authorization, 'Bearer secret-key');
   assert.equal(done.state, 'completed');
 

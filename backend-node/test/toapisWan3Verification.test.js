@@ -188,7 +188,7 @@ test('import mode promotes one completed unlimited smoke without provider I/O', 
       id: '99',
       provider: 'toapis_wan3',
       model: 'wan3.0-video',
-      base_url: 'https://toapis.xyz',
+      base_url: 'https://toapis.cn',
       api_key: 'sk-runtime-secret-never-persist',
     })).digest('hex'));
     assert.equal(

@@ -92,7 +92,7 @@ function addToapisRoute(db) {
     provider: 'toapis',
     api_protocol: 'toapis_video',
     name: 'ToAPIs',
-    base_url: 'https://toapis.xyz',
+    base_url: 'https://toapis.cn',
     api_key: 'local-test-key',
     model: ['seedance-2-mini'],
     default_model: 'seedance-2-mini',

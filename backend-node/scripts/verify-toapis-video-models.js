@@ -15,7 +15,7 @@ const { loadConfig } = require('../src/config');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const aiConfigService = require('../src/services/aiConfigService');
 
-const BASE_URL = 'https://toapis.xyz';
+const BASE_URL = 'https://toapis.cn';
 const STATE_VERSION = 'toapis-video-verification-state-v1';
 const EVIDENCE_VERSION = 'toapis-video-real-verification-v1';
 const LOG = { info() {}, warn() {}, error() {} };
@@ -923,7 +923,7 @@ function bindAndValidateVerificationState(state, configSnapshots = []) {
     state.provider_origin = BASE_URL;
     state.config_fingerprints = { ...fingerprints };
   }
-  if (state.provider_origin !== BASE_URL) throw new Error('验证状态未绑定 ToAPIs 官方入口 https://toapis.xyz');
+  if (state.provider_origin !== BASE_URL) throw new Error('验证状态未绑定 ToAPIs 官方入口 https://toapis.cn');
   for (const model of ['seedance-2-fast', 'seedance-2-mini']) {
     if (state.config_fingerprints?.[model] !== fingerprints[model]) {
       throw new Error(`${model} 验证状态配置指纹不匹配，禁止零 POST 重放`);

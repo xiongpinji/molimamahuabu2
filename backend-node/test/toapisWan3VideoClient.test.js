@@ -113,7 +113,7 @@ test('Wan 3.0 配置 Key 不会被旧全局 ToAPIs Key 覆盖', async () => {
   let authorization;
   try {
     const created = await callToapisWan3VideoApi(
-      { base_url: 'https://toapis.xyz', api_key: 'wan-config-key' },
+      { base_url: 'https://toapis.cn', api_key: 'wan-config-key' },
       null,
       {
         model: 'wan3.0-video', prompt: '安全路由', duration: 2, resolution: '480p',
@@ -137,7 +137,7 @@ test('Wan 3.0 配置 Key 不会被旧全局 ToAPIs Key 覆盖', async () => {
 test('Wan 3.0 创建任务显式 Key 优先且未知结果禁止自动重试', async () => {
   let captured;
   const created = await callToapisWan3VideoApi(
-    { base_url: 'https://toapis.xyz', api_key: 'config-key' },
+    { base_url: 'https://toapis.cn', api_key: 'config-key' },
     null,
     { model: 'wan3.0-video', prompt: '海边日落', duration: 2, resolution: '480p', video_gen_id: 17 },
     {
@@ -149,14 +149,14 @@ test('Wan 3.0 创建任务显式 Key 优先且未知结果禁止自动重试', a
     },
   );
   assert.equal(created.task_id, 'wan-task-1');
-  assert.equal(captured.url, 'https://toapis.xyz/v1/videos/generations');
+  assert.equal(captured.url, 'https://toapis.cn/v1/videos/generations');
   assert.equal(captured.init.headers.Authorization, 'Bearer request-key');
   assert.equal(JSON.parse(captured.init.body).model, 'wan3.0-video');
   assert.equal(JSON.parse(captured.init.body).client_business_id, 'video-17');
 
   let blockedFetches = 0;
   const blocked = await callToapisWan3VideoApi(
-    { base_url: 'https://toapis.xyz', api_key: 'config-key' },
+    { base_url: 'https://toapis.cn', api_key: 'config-key' },
     null,
     { model: 'wan3.0-video', prompt: '海边日落', duration: 2, resolution: '480p' },
     { fetchImpl: async () => { blockedFetches += 1; throw new Error('must not run'); } },
@@ -166,7 +166,7 @@ test('Wan 3.0 创建任务显式 Key 优先且未知结果禁止自动重试', a
   assert.match(blocked.error, /缺少稳定业务 ID/);
 
   const unknown = await callToapisWan3VideoApi(
-    { base_url: 'https://toapis.xyz', api_key: 'config-key' },
+    { base_url: 'https://toapis.cn', api_key: 'config-key' },
     null,
     {
       model: 'wan3.0-video', prompt: '海边日落', duration: 2, resolution: '480p',
@@ -186,7 +186,7 @@ test('Wan 3.0 查询任务返回可读取结果地址', async () => {
   let authorization;
   try {
     const result = await fetchToapisWan3Task(
-      { base_url: 'https://toapis.xyz', api_key: 'config-key' },
+      { base_url: 'https://toapis.cn', api_key: 'config-key' },
       'wan-task-1',
       {
         fetchImpl: async (_url, init) => {
@@ -212,7 +212,7 @@ test('Wan 3.0 查询任务返回可读取结果地址', async () => {
 });
 
 test('Wan 3.0 查询任务区分终态失败、查询失败和结果不可读', async () => {
-  const config = { base_url: 'https://toapis.xyz', api_key: 'config-key' };
+  const config = { base_url: 'https://toapis.cn', api_key: 'config-key' };
   const terminal = await fetchToapisWan3Task(config, 'wan-terminal', {
     fetchImpl: async () => ({
       ok: true,
@@ -246,7 +246,7 @@ test('Wan 3.0 查询任务区分终态失败、查询失败和结果不可读', 
 
 test('Wan 3.0 明确拒绝会脱敏供应商返回的 Key 与 URL', async () => {
   const result = await callToapisWan3VideoApi(
-    { base_url: 'https://toapis.xyz', api_key: 'config-key' },
+    { base_url: 'https://toapis.cn', api_key: 'config-key' },
     null,
     {
       model: 'wan3.0-video', prompt: '海边日落', duration: 2, resolution: '480p',

@@ -1238,7 +1238,8 @@
         "docs/superpowers/plans/2026-08-22-provider-task-receipt-reconciliation.md",
         "docs/verification/platform-stability/provider-task-receipt-reconciliation-20260822.md",
         "docs/superpowers/plans/2026-08-23-provider-readiness-tts-canary.md",
-        "docs/verification/platform-stability/provider-readiness-repair-manifest-20260823.md"
+        "docs/verification/platform-stability/provider-readiness-repair-manifest-20260823.md",
+        "docs/superpowers/plans/2026-09-05-toapis-cn-domain-migration.md"
       ],
       "fixCommit": "f960703ce43e67900b6a294e61d36cf40f2a1d1e",
       "unlockHistory": [
@@ -1526,24 +1527,40 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-09-03 母本蓝图优先一键转绘任务 1-9 获批",
+          "approvedBy": "product-owner 2026-09-03 episode-blueprint-first-redraw",
+          "impactTests": [
+            "backend-node/test/redrawEpisodeBlueprint.test.js",
+            "backend-node/test/redrawSourceAudioEvidence.test.js",
+            "backend-node/test/redrawEvidenceFusion.test.js",
+            "backend-node/test/redrawBlueprintWorkflow.test.js",
+            "backend-node/test/redrawLocalization.test.js",
+            "backend-node/test/redrawShotProductionPack.test.js",
+            "backend-node/test/redrawGeneration.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "frontweb/e2e/redraw-workspace.spec.js",
+            "frontweb/e2e/redraw-backend-integration.spec.js",
+            "frontweb/scripts/run-redraw-episode-blueprint-live.test.mjs",
+            "workers/redraw-locale-verifier/tests/test_source_evidence.py",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-03 母本蓝图优先一键转绘任务 1-9 获批",
-        "approvedBy": "product-owner 2026-09-03 episode-blueprint-first-redraw",
+        "reason": "2026-09-05 ToAPIs 官方域名迁移至 .cn 获批",
+        "approvedBy": "product-owner 2026-09-05 toapis-cn-domain-migration",
         "impactTests": [
-          "backend-node/test/redrawEpisodeBlueprint.test.js",
-          "backend-node/test/redrawSourceAudioEvidence.test.js",
-          "backend-node/test/redrawEvidenceFusion.test.js",
-          "backend-node/test/redrawBlueprintWorkflow.test.js",
-          "backend-node/test/redrawLocalization.test.js",
-          "backend-node/test/redrawShotProductionPack.test.js",
-          "backend-node/test/redrawGeneration.test.js",
-          "backend-node/test/redrawRoutes.test.js",
-          "frontweb/e2e/redraw-workspace.spec.js",
-          "frontweb/e2e/redraw-backend-integration.spec.js",
-          "frontweb/scripts/run-redraw-episode-blueprint-live.test.mjs",
-          "workers/redraw-locale-verifier/tests/test_source_evidence.py",
+          "backend-node/test/aiConfigService.test.js",
+          "backend-node/test/externalModelEvidenceBinding.test.js",
+          "backend-node/test/sharedExternalModelReleaseGuard.test.js",
+          "backend-node/test/toapisVideoClient.test.js",
+          "backend-node/test/toapisVideoVerification.test.js",
+          "backend-node/test/toapisWan3Verification.test.js",
+          "frontweb/test/aiConfigProviderPresets.test.js",
+          "frontweb/test/toapisVideoProviderConfig.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]

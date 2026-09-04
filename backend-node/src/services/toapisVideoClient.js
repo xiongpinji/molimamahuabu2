@@ -30,30 +30,30 @@ const TOAPIS_VIDEO_MODELS = Object.freeze({
 const TOAPIS_VIDEO_CAPABILITIES = TOAPIS_VIDEO_MODELS['seedance-2-mini'];
 
 function normalizeToapisBaseUrl(value) {
-  const raw = String(value || 'https://toapis.xyz').trim();
-  if (!/^https:\/\/toapis\.xyz(?:\/v1)?\/?$/.test(raw)) {
-    throw new Error('ToAPIs 官方入口必须是 https://toapis.xyz');
+  const raw = String(value || 'https://toapis.cn').trim();
+  if (!/^https:\/\/toapis\.cn(?:\/v1)?\/?$/.test(raw)) {
+    throw new Error('ToAPIs 官方入口必须是 https://toapis.cn');
   }
   let parsed;
   try {
     parsed = new URL(raw);
   } catch (_) {
-    throw new Error('ToAPIs 官方入口必须是 https://toapis.xyz');
+    throw new Error('ToAPIs 官方入口必须是 https://toapis.cn');
   }
   const pathname = parsed.pathname.replace(/\/+$/, '') || '';
   if (
     parsed.protocol !== 'https:'
     || parsed.username
     || parsed.password
-    || parsed.hostname !== 'toapis.xyz'
+    || parsed.hostname !== 'toapis.cn'
     || parsed.port
     || parsed.search
     || parsed.hash
     || !['', '/v1'].includes(pathname)
   ) {
-    throw new Error('ToAPIs 官方入口必须是 https://toapis.xyz');
+    throw new Error('ToAPIs 官方入口必须是 https://toapis.cn');
   }
-  return 'https://toapis.xyz';
+  return 'https://toapis.cn';
 }
 
 function resolveToapisApiKey(config = {}, env = process.env) {

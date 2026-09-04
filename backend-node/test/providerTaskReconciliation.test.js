@@ -1162,7 +1162,7 @@ test('reconcileRequest uses the dedicated Wan3 query and holds every non-termina
   const failedState = setupReconciliationFixture(t, {
     provider: 'toapis',
     configProtocol: 'toapis_wan3_video',
-    baseUrl: 'https://toapis.xyz',
+    baseUrl: 'https://toapis.cn',
     upstreamModel: 'wan3.0-video',
   });
   const originalFetch = wan3Client.fetchToapisWan3Task;
@@ -1189,7 +1189,7 @@ test('reconcileRequest uses the dedicated Wan3 query and holds every non-termina
     const state = setupReconciliationFixture(t, {
       provider: 'toapis',
       configProtocol: 'toapis_wan3_video',
-      baseUrl: 'https://toapis.xyz',
+      baseUrl: 'https://toapis.cn',
       upstreamModel: 'wan3.0-video',
     });
     wan3Client.fetchToapisWan3Task = async () => {
@@ -1210,7 +1210,7 @@ test('Wan3 terminal reconciliation propagates settlement errors and rolls back s
   const state = setupReconciliationFixture(t, {
     provider: 'toapis',
     configProtocol: 'toapis_wan3_video',
-    baseUrl: 'https://toapis.xyz',
+    baseUrl: 'https://toapis.cn',
     upstreamModel: 'wan3.0-video',
   });
   const originalFetch = wan3Client.fetchToapisWan3Task;
@@ -1247,7 +1247,7 @@ test('supported parser protocols hold credits without an artifact and refund exp
       name: 'ToAPIs',
       provider: 'toapis',
       configProtocol: 'toapis_video',
-      baseUrl: 'https://toapis.xyz',
+      baseUrl: 'https://toapis.cn',
       completedCases: ['success', 'succeeded', 'completed', 'done'].map((status) => ({
         name: status,
         payload: { status, result: { data: [] } },

@@ -1005,6 +1005,24 @@ const NEWAPI_READONLY_PREFLIGHT_UNLOCK = {
     'backend-node/test/incrementalReleaseScope.test.js',
   ],
 };
+const TOAPIS_CN_DOMAIN_MIGRATION_UNLOCK = {
+  reason: '2026-09-05 ToAPIs 官方域名迁移至 .cn 获批',
+  approvedBy: 'product-owner 2026-09-05 toapis-cn-domain-migration',
+  impactTests: [
+    'backend-node/test/aiConfigService.test.js',
+    'backend-node/test/externalModelEvidenceBinding.test.js',
+    'backend-node/test/sharedExternalModelReleaseGuard.test.js',
+    'backend-node/test/toapisVideoClient.test.js',
+    'backend-node/test/toapisVideoVerification.test.js',
+    'backend-node/test/toapisWan3Verification.test.js',
+    'frontweb/test/aiConfigProviderPresets.test.js',
+    'frontweb/test/toapisVideoProviderConfig.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
+const TOAPIS_CN_DOMAIN_MIGRATION_EVIDENCE =
+  'docs/superpowers/plans/2026-09-05-toapis-cn-domain-migration.md';
 const NEWAPI_CONFIG_SCOPED_CAPABILITY_FEATURE_IDS = new Set([
   SAFE_PROVIDER_FAILOVER_FEATURE_ID,
   UNKNOWN_STATE_RECONCILIATION_FEATURE_ID,
@@ -1023,7 +1041,7 @@ const MERGED_CURRENT_UNLOCK_BY_FEATURE = {
   [PROVIDER_ROUTE_CONTRACT_FEATURE_ID]: REDRAW_EPISODE_BLUEPRINT_FIRST_UNLOCK,
   [SAFE_PROVIDER_FAILOVER_FEATURE_ID]: REDRAW_COMPLETE_LOCAL_MAIN_MERGE_UNLOCK,
   [UNKNOWN_STATE_RECONCILIATION_FEATURE_ID]: REDRAW_COMPLETE_LOCAL_MAIN_MERGE_UNLOCK,
-  [ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID]: REDRAW_EPISODE_BLUEPRINT_FIRST_UNLOCK,
+  [ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID]: TOAPIS_CN_DOMAIN_MIGRATION_UNLOCK,
   [PROACTIVE_CANARY_FEATURE_ID]: REDRAW_EPISODE_BLUEPRINT_FIRST_UNLOCK,
 };
 const MERGED_UNLOCK_HISTORY_TAIL_BY_FEATURE = {
@@ -1054,6 +1072,7 @@ const MERGED_UNLOCK_HISTORY_TAIL_BY_FEATURE = {
     NEWAPI_SIX_MODEL_REMEDIATION_UNLOCK,
     NEWAPI_SIX_MODEL_PRODUCTION_COPY_UNLOCK,
     NEWAPI_CONFIG_SCOPED_CAPABILITY_UNLOCK,
+    REDRAW_EPISODE_BLUEPRINT_FIRST_UNLOCK,
   ],
   [PROACTIVE_CANARY_FEATURE_ID]: [
     FAILED_GENERATION_RESUBMIT_UNLOCK,
@@ -1748,10 +1767,17 @@ test('母本蓝图任务为实际触及的五个既有功能锁登记新鲜批�
   for (const featureId of REDRAW_EPISODE_BLUEPRINT_FIRST_TOUCHED_FEATURE_IDS) {
     const feature = manifest.features.find((entry) => entry.featureId === featureId);
     assert.ok(feature, `缺少功能锁 ${featureId}`);
-    assert.deepEqual(feature.unlock, REDRAW_EPISODE_BLUEPRINT_FIRST_UNLOCK);
+    assert.deepEqual(
+      feature.unlock,
+      featureId === ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID
+        ? TOAPIS_CN_DOMAIN_MIGRATION_UNLOCK
+        : REDRAW_EPISODE_BLUEPRINT_FIRST_UNLOCK,
+    );
     assert.deepEqual(
       feature.unlockHistory.at(-1),
-      PRE_MERGED_BLUEPRINT_UNLOCK_BY_FEATURE[featureId],
+      featureId === ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID
+        ? REDRAW_EPISODE_BLUEPRINT_FIRST_UNLOCK
+        : PRE_MERGED_BLUEPRINT_UNLOCK_BY_FEATURE[featureId],
     );
   }
 });
@@ -1910,8 +1936,8 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
         feature.evidence.slice(
           featureId === PROACTIVE_CANARY_FEATURE_ID
             ? -(PROVIDER_READINESS_TTS_EVIDENCE.length + 7)
-            : -PROVIDER_READINESS_TTS_EVIDENCE.length,
-          featureId === PROACTIVE_CANARY_FEATURE_ID ? -7 : undefined,
+            : -(PROVIDER_READINESS_TTS_EVIDENCE.length + 1),
+          featureId === PROACTIVE_CANARY_FEATURE_ID ? -7 : -1,
         ),
         PROVIDER_READINESS_TTS_EVIDENCE,
       );
@@ -1923,6 +1949,8 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
         assert.equal(feature.evidence.at(-5), PR195_STATIC_ASSET_COMPAT_EVIDENCE);
         assert.equal(feature.evidence.at(-6), PR193_IMAGE_UNKNOWN_CLOSURE_EVIDENCE);
         assert.equal(feature.evidence.at(-7), CANVAS_TEXT_CAPABILITY_HOTFIX_EVIDENCE);
+      } else {
+        assert.equal(feature.evidence.at(-1), TOAPIS_CN_DOMAIN_MIGRATION_EVIDENCE);
       }
     } else if (liveCompatTouched) {
       if (REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_FEATURE_IDS.has(featureId)) {
@@ -1971,24 +1999,27 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
   }
 });
 
-test('母本蓝图任务刷新管理员预设锁并保留 PR #217、Wan3 与 NewAPI 历史', () => {
+test('ToAPIs .cn 域名迁移刷新管理员预设锁并保留 PR #217、Wan3 与 NewAPI 历史', () => {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   const feature = manifest.features.find(
     ({ featureId }) => featureId === ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID,
   );
   assert.ok(feature, `缺少功能锁 ${ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID}`);
-  assert.deepEqual(feature.unlock, REDRAW_EPISODE_BLUEPRINT_FIRST_UNLOCK);
+  assert.deepEqual(feature.unlock, TOAPIS_CN_DOMAIN_MIGRATION_UNLOCK);
   assert.deepEqual(
     feature.unlockHistory.slice(-MERGED_UNLOCK_HISTORY_TAIL_BY_FEATURE[ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID].length),
     MERGED_UNLOCK_HISTORY_TAIL_BY_FEATURE[ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID],
   );
+  assert.equal(feature.evidence.at(-1), TOAPIS_CN_DOMAIN_MIGRATION_EVIDENCE);
 });
 
 test('未触及锁保留当前批准记录且所有锁保留历史证据', () => {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   assert.equal(manifest.features.length >= 5, true);
   for (const feature of manifest.features) {
-    if (REDRAW_EPISODE_BLUEPRINT_FIRST_TOUCHED_FEATURE_IDS.has(feature.featureId)) {
+    if (feature.featureId === ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID) {
+      assert.deepEqual(feature.unlock, TOAPIS_CN_DOMAIN_MIGRATION_UNLOCK);
+    } else if (REDRAW_EPISODE_BLUEPRINT_FIRST_TOUCHED_FEATURE_IDS.has(feature.featureId)) {
       assert.deepEqual(feature.unlock, REDRAW_EPISODE_BLUEPRINT_FIRST_UNLOCK);
     } else if (feature.featureId === REDRAW_COVERAGE_REGISTRATION_FEATURE_ID) {
       assert.deepEqual(feature.unlock, REDRAW_COVERAGE_REGISTRATION_TASK_B_UNLOCK);

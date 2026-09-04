@@ -23,7 +23,7 @@ function configFingerprint(config) {
     id: String(config.id),
     provider: 'toapis_wan3',
     model: MODEL,
-    base_url: 'https://toapis.xyz',
+    base_url: 'https://toapis.cn',
     api_key: config.api_key,
   })).digest('hex');
 }
@@ -66,7 +66,7 @@ function setup(t) {
     provider: 'toapis_wan3',
     api_protocol: 'toapis_wan3_video',
     name: 'ToAPIs Wan 3.0',
-    base_url: 'https://toapis.xyz',
+    base_url: 'https://toapis.cn',
     api_key: 'wan3-test-key',
     model: [MODEL],
     default_model: MODEL,
