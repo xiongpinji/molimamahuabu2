@@ -309,6 +309,60 @@ test('Fumin 2xx indeterminate reference uploads are conservative unknowns', asyn
   }
 })
 
+test('Fumin reference upload rejects unsupported mime before provider POST', async () => {
+  const { createFuminEpisodeProviderAdapter } = await import('./fuminEpisodeProviderAdapter.mjs')
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fumin-upload-mime-'))
+  try {
+    const referencePath = path.join(root, 'identity.bin')
+    fs.writeFileSync(referencePath, 'identity')
+    let postCalls = 0
+    const adapter = createFuminEpisodeProviderAdapter({
+      apiKey: 'test-key',
+      fetchImpl: async () => {
+        postCalls += 1
+        throw new Error('provider upload must not run')
+      },
+    })
+    await assert.rejects(
+      () => adapter.uploadReference({
+        id: 'lead-main',
+        path: referencePath,
+        sha256: sha256(fs.readFileSync(referencePath)),
+        bytes: fs.readFileSync(referencePath),
+      }),
+      { code: 'FUMIN_EPISODE_REFERENCE_MIME_UNSUPPORTED' },
+    )
+    assert.equal(postCalls, 0)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('Fumin generation rejects unsupported uploaded reference mime before provider POST', async () => {
+  const { createFuminEpisodeProviderAdapter } = await import('./fuminEpisodeProviderAdapter.mjs')
+  let postCalls = 0
+  const adapter = createFuminEpisodeProviderAdapter({
+    apiKey: 'test-key',
+    fetchImpl: async () => {
+      postCalls += 1
+      throw new Error('provider generation must not run')
+    },
+  })
+  await assert.rejects(
+    () => adapter.submitGeneration({
+      unit: plannedUnit(),
+      pack: plannedUnit(),
+      uploaded_references: [{
+        reference_id: 'unsupported',
+        url: 'https://fumin.test/unsupported.bin',
+        mime_type: 'application/octet-stream',
+      }],
+    }),
+    { code: 'FUMIN_EPISODE_REFERENCE_MIME_UNSUPPORTED' },
+  )
+  assert.equal(postCalls, 0)
+})
+
 test('non-five-second planned unit is rejected before provider HTTP', async () => {
   const { createFuminEpisodeProviderAdapter } = await import('./fuminEpisodeProviderAdapter.mjs')
   let fetchCalls = 0

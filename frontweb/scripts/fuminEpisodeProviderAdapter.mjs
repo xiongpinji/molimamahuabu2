@@ -18,6 +18,14 @@ import {
 
 const FUMIN_BASE_URL = 'https://fumin.ai'
 const FUMIN_MODEL = 'fumin-seedance-2.0-mini'
+const SUPPORTED_REFERENCE_MIME_TYPES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+  'video/mp4',
+  'audio/mpeg',
+  'audio/wav',
+])
 export const ASR_MODEL_IDS = ['Systran/faster-whisper-base', 'Systran/faster-whisper-small']
 const require = createRequire(import.meta.url)
 const backendRoot = fileURLToPath(new URL('../../backend-node/', import.meta.url))
@@ -44,6 +52,14 @@ function inferReferenceMimeType(reference) {
   if (extension === '.mp3') return 'audio/mpeg'
   if (extension === '.wav') return 'audio/wav'
   return 'application/octet-stream'
+}
+
+function requireSupportedReferenceMimeType(mimeType) {
+  const normalized = String(mimeType || '').trim().toLowerCase()
+  if (!SUPPORTED_REFERENCE_MIME_TYPES.has(normalized)) {
+    fail('FUMIN_EPISODE_REFERENCE_MIME_UNSUPPORTED', normalized || 'missing')
+  }
+  return normalized
 }
 
 function sha256Buffer(value) {
@@ -670,7 +686,7 @@ function safeReference(reference) {
     id: String(reference.id || ''),
     kind: String(reference.kind || ''),
     path: reference.path,
-    mime_type: inferReferenceMimeType(reference),
+    mime_type: requireSupportedReferenceMimeType(inferReferenceMimeType(reference)),
     bytes,
     sha256: actual,
   }
@@ -724,7 +740,7 @@ export function createFuminEpisodeProviderAdapter(options = {}) {
       for (const reference of uploaded_references) {
         const url = String(reference?.url || '').trim()
         if (!/^https:\/\//i.test(url)) fail('FUMIN_EPISODE_SUBMISSION_UNKNOWN')
-        const mimeType = String(reference?.mime_type || '').toLowerCase()
+        const mimeType = requireSupportedReferenceMimeType(reference?.mime_type)
         if (mimeType.startsWith('image/')) referenceUrls.push(url)
         else if (mimeType === 'video/mp4') referenceVideoUrls.push(url)
         else if (mimeType.startsWith('audio/')) referenceAudioUrls.push(url)
