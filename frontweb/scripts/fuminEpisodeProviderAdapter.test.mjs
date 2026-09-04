@@ -232,6 +232,17 @@ test('unit transcript consensus requires both ASRs to confirm English en-US and 
   )
 })
 
+test('unit transcript consensus treats ASCII, curly, and omitted apostrophes as equivalent without allowing extra dialogue', async () => {
+  const { verifyTranscriptConsensusForUnit } = await import('./fuminEpisodeProviderAdapter.mjs')
+  const unit = plannedUnit({ locale: 'en-US', dialogue: [{ text: "Don't stop." }] })
+  assert.equal(verifyTranscriptConsensusForUnit(unit, transcriptPair('Dont stop.')).consensus_passed, true)
+  assert.equal(verifyTranscriptConsensusForUnit(unit, transcriptPair('Don’t stop.')).consensus_passed, true)
+  assert.throws(
+    () => verifyTranscriptConsensusForUnit(unit, transcriptPair('Dont stop. Extra words.')),
+    { code: 'FUMIN_EPISODE_UNAPPROVED_DIALOGUE' },
+  )
+})
+
 function rawMotionProbe() {
   return {
     streams: [{
@@ -399,6 +410,58 @@ test('prepareEpisode rejects a linked provider directory before materialize or v
     }
   }
   if (!linkSupported) t.skip('directory symlink/junction creation is not permitted on this host')
+})
+
+test('prepareEpisode stages motion before rejecting a final-directory junction swapped in during materialization', async (t) => {
+  const item = prepareFixture()
+  const outside = path.join(item.root, 'outside')
+  const finalMotionDir = path.join(item.stateDir, 'provider', 'fumin', 'motion')
+  const receipt = path.join(item.stateDir, 'provider', 'fumin', 'execution-plan.json')
+  const linkType = process.platform === 'win32' ? 'junction' : 'dir'
+  let materializerCalls = 0
+  let httpCalls = 0
+  try {
+    fs.mkdirSync(outside)
+    const linkProbe = path.join(item.root, 'link-probe')
+    try {
+      fs.symlinkSync(outside, linkProbe, linkType)
+      fs.rmSync(linkProbe)
+    } catch (error) {
+      if (['EPERM', 'EACCES', 'ENOSYS'].includes(error?.code)) {
+        t.skip('directory symlink/junction creation is not permitted on this host')
+        return
+      }
+      throw error
+    }
+    const { createFuminEpisodeProviderAdapter } = await import('./fuminEpisodeProviderAdapter.mjs')
+    const adapter = createFuminEpisodeProviderAdapter({
+      apiKey: 'test-key',
+      fetchImpl: async () => { httpCalls += 1; throw new Error('provider HTTP forbidden') },
+      ffmpegPath: 'ffmpeg-test',
+      ffprobePath: 'ffprobe-test',
+      runProcess: (_command, args, code) => {
+        if (code === 'FUMIN_EXECUTION_MOTION_FFMPEG_FAILED') {
+          materializerCalls += 1
+          fs.rmSync(finalMotionDir, { recursive: true, force: true })
+          fs.symlinkSync(outside, finalMotionDir, linkType)
+          fs.writeFileSync(args.at(-1), 'materialized-motion')
+          return ''
+        }
+        return JSON.stringify(rawMotionProbe())
+      },
+    })
+
+    await assert.rejects(
+      () => adapter.prepareEpisode({ package: item.pkg, state_dir: item.stateDir, mode: 'materialize' }),
+      { code: 'FUMIN_EPISODE_STATE_PATH_UNSAFE' },
+    )
+    assert.equal(materializerCalls, 1)
+    assert.equal(httpCalls, 0)
+    assert.deepEqual(fs.readdirSync(outside), [])
+    assert.equal(fs.existsSync(receipt), false)
+  } finally {
+    fs.rmSync(item.root, { recursive: true, force: true })
+  }
 })
 
 test('inspectArtifact accepts runner planned raw_path parameters and validates the unit contract', async () => {

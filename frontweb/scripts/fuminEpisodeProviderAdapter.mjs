@@ -51,7 +51,8 @@ function canonicalHash(value, omittedKey) {
 function normalizedWords(value) {
   return String(value || '')
     .toLowerCase()
-    .replace(/[^a-z0-9'\s]+/g, ' ')
+    .replace(/['\u2018\u2019]/gu, '')
+    .replace(/[^a-z0-9\s]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
 }
@@ -352,6 +353,64 @@ function ensureStateParentSafe(stateRoot, parentPath) {
   assertStateTargetSafe(stateRoot, parentPath)
 }
 
+function createStagingDirectory(stateRoot, label) {
+  const stagingRoot = path.join(stateRoot, 'provider', 'fumin', '.staging')
+  ensureStateParentSafe(stateRoot, stagingRoot)
+  const stagingDirectory = path.join(
+    stagingRoot,
+    `${label}-${process.pid}-${crypto.randomUUID()}`,
+  )
+  assertStateTargetSafe(stateRoot, stagingDirectory)
+  if (lstatIfPresent(stagingDirectory)) fail('FUMIN_EPISODE_STATE_PATH_UNSAFE', stagingDirectory)
+  fs.mkdirSync(stagingDirectory)
+  assertStateTargetSafe(stateRoot, stagingDirectory)
+  if (!fs.lstatSync(stagingDirectory).isDirectory()) {
+    fail('FUMIN_EPISODE_STATE_PATH_UNSAFE', stagingDirectory)
+  }
+  return stagingDirectory
+}
+
+function removeSafeStaging(stateRoot, stagingDirectory, stagingFile) {
+  try {
+    assertStateTargetSafe(stateRoot, stagingFile)
+    const fileStat = lstatIfPresent(stagingFile)
+    if (fileStat?.isFile() && !fileStat.isSymbolicLink()) fs.rmSync(stagingFile)
+    assertStateTargetSafe(stateRoot, stagingDirectory)
+    const directoryStat = lstatIfPresent(stagingDirectory)
+    if (directoryStat?.isDirectory() && !directoryStat.isSymbolicLink()
+      && fs.readdirSync(stagingDirectory).length === 0) {
+      fs.rmdirSync(stagingDirectory)
+    }
+  } catch {
+    // Never follow or remove a staging path that no longer passes the state boundary checks.
+  }
+}
+
+function publishStagedFile(stateRoot, stagingFile, finalPath, expectedHash, existsCode) {
+  assertStateTargetSafe(stateRoot, stagingFile)
+  const stagedStat = lstatIfPresent(stagingFile)
+  if (!stagedStat?.isFile() || stagedStat.isSymbolicLink()
+    || sha256File(stagingFile) !== expectedHash) {
+    fail('FUMIN_EPISODE_STAGING_ARTIFACT_INVALID', stagingFile)
+  }
+  assertStateTargetSafe(stateRoot, path.dirname(finalPath))
+  assertStateTargetSafe(stateRoot, finalPath)
+  if (lstatIfPresent(finalPath)) fail(existsCode, finalPath)
+  try {
+    fs.linkSync(stagingFile, finalPath)
+  } catch (error) {
+    if (error?.code === 'EEXIST') fail(existsCode, finalPath)
+    fail('FUMIN_EPISODE_ARTIFACT_PUBLISH_FAILED', error?.message)
+  }
+  assertStateTargetSafe(stateRoot, path.dirname(finalPath))
+  assertStateTargetSafe(stateRoot, finalPath)
+  const finalStat = lstatIfPresent(finalPath)
+  if (!finalStat?.isFile() || finalStat.isSymbolicLink()
+    || sha256File(finalPath) !== expectedHash) {
+    fail('FUMIN_EPISODE_ARTIFACT_PUBLISH_FAILED', finalPath)
+  }
+}
+
 function safeStateRoot(stateDir, pkg) {
   if (typeof stateDir !== 'string' || !path.isAbsolute(stateDir)) {
     fail('FUMIN_EPISODE_STATE_PATH_INVALID')
@@ -464,25 +523,52 @@ function prepareFuminEpisode(pkg, stateDir, mode, adapters) {
       ensureStateParentSafe(stateRoot, path.dirname(item.outputPath))
       assertStateTargetSafe(stateRoot, item.outputPath)
       if (lstatIfPresent(item.outputPath)) fail('FUMIN_EPISODE_PREPARE_OUTPUT_EXISTS', item.artifactId)
-      const created = materializeFuminExecutionMotion({
-        sourcePath: item.sourcePath,
-        outputPath: item.outputPath,
-        offsetMs: item.unit.source_start_ms - item.pack.start_ms,
-        keepDurationMs: item.unit.keep_duration_ms,
-        providerDurationSeconds: item.unit.provider_duration_seconds,
-      }, adapters)
-      evidenceByUnit.set(item.unit.unit_id, {
-        artifact_id: item.artifactId,
-        sha256: created.sha256,
-        duration_seconds: created.duration_seconds,
-        probe: created.probe,
-      })
+      const stagingDirectory = createStagingDirectory(stateRoot, 'motion')
+      const stagingFile = path.join(stagingDirectory, 'motion.mp4')
+      try {
+        const created = materializeFuminExecutionMotion({
+          sourcePath: item.sourcePath,
+          outputPath: stagingFile,
+          offsetMs: item.unit.source_start_ms - item.pack.start_ms,
+          keepDurationMs: item.unit.keep_duration_ms,
+          providerDurationSeconds: item.unit.provider_duration_seconds,
+        }, adapters)
+        publishStagedFile(
+          stateRoot,
+          stagingFile,
+          item.outputPath,
+          created.sha256,
+          'FUMIN_EPISODE_PREPARE_OUTPUT_EXISTS',
+        )
+        evidenceByUnit.set(item.unit.unit_id, {
+          artifact_id: item.artifactId,
+          sha256: created.sha256,
+          duration_seconds: created.duration_seconds,
+          probe: created.probe,
+        })
+      } finally {
+        removeSafeStaging(stateRoot, stagingDirectory, stagingFile)
+      }
     }
     const plan = withMaterializedEvidence(basePlan, evidenceByUnit)
     ensureStateParentSafe(stateRoot, path.dirname(planReceipt))
     assertStateTargetSafe(stateRoot, planReceipt)
     if (lstatIfPresent(planReceipt)) fail('FUMIN_EPISODE_PREPARE_OUTPUT_EXISTS', planReceipt)
-    fs.writeFileSync(planReceipt, `${JSON.stringify(plan, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' })
+    const receiptStagingDirectory = createStagingDirectory(stateRoot, 'receipt')
+    const receiptStagingFile = path.join(receiptStagingDirectory, 'execution-plan.json')
+    try {
+      const receiptBytes = Buffer.from(`${JSON.stringify(plan, null, 2)}\n`, 'utf8')
+      fs.writeFileSync(receiptStagingFile, receiptBytes, { flag: 'wx' })
+      publishStagedFile(
+        stateRoot,
+        receiptStagingFile,
+        planReceipt,
+        sha256Buffer(receiptBytes),
+        'FUMIN_EPISODE_PREPARE_OUTPUT_EXISTS',
+      )
+    } finally {
+      removeSafeStaging(stateRoot, receiptStagingDirectory, receiptStagingFile)
+    }
     return plan
   }
 
