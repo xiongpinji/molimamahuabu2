@@ -552,7 +552,10 @@ const REDRAW_EPISODE_BLUEPRINT_FIRST_PROTECTED_PATHS = [
   'backend-node/src/services/redrawShotProductionPackService.js',
   'backend-node/src/services/redrawSourceAudioEvidenceService.js',
   'frontweb/package.json',
+  'frontweb/scripts/fuminEpisodeExecutionPlan.mjs',
+  'frontweb/scripts/fuminEpisodeMediaPipeline.mjs',
   'frontweb/scripts/fuminEpisodeProviderAdapter.mjs',
+  'frontweb/scripts/fuminExecutionMotion.mjs',
   'frontweb/scripts/fuminFullEpisodeDerivedState.mjs',
   'frontweb/scripts/run-redraw-episode-blueprint-live.mjs',
   'frontweb/scripts/run-redraw-fumin-full-episode-live.mjs',
@@ -586,7 +589,10 @@ const REDRAW_EPISODE_BLUEPRINT_FIRST_REQUIRED_TESTS = [
   'backend-node/test/redrawSourceAudioEvidence.test.js',
   'frontweb/e2e/redraw-backend-integration.spec.js',
   'frontweb/e2e/redraw-workspace.spec.js',
+  'frontweb/scripts/fuminEpisodeExecutionPlan.test.mjs',
+  'frontweb/scripts/fuminEpisodeMediaPipeline.test.mjs',
   'frontweb/scripts/fuminEpisodeProviderAdapter.test.mjs',
+  'frontweb/scripts/fuminExecutionMotion.test.mjs',
   'frontweb/scripts/fuminFullEpisodeDerivedState.test.mjs',
   'frontweb/scripts/run-redraw-episode-blueprint-live.test.mjs',
   'frontweb/scripts/run-redraw-fumin-full-episode-live.test.mjs',
@@ -598,6 +604,9 @@ const REDRAW_EPISODE_BLUEPRINT_FIRST_REQUIRED_TESTS = [
 const REDRAW_EPISODE_BLUEPRINT_FIRST_EVIDENCE = [
   'docs/superpowers/specs/2026-09-03-episode-blueprint-first-redraw-design.md',
   'docs/superpowers/plans/2026-09-03-episode-blueprint-first-redraw.md',
+  'docs/superpowers/specs/2026-09-04-fumin-fixed-five-second-full-episode-generation-design.md',
+  'docs/superpowers/plans/2026-09-04-fumin-fixed-five-second-full-episode-generation.md',
+  'docs/verification/redraw/fumin-fixed-five-second-full-episode-verification.md',
 ];
 const REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_TASK_E_UNLOCK = {
   reason: '2026-08-28 一键转绘真实产品 HTTP 媒体同链回归 Task E 获批',
@@ -845,6 +854,20 @@ const REDRAW_EPISODE_CULTURAL_ADAPTATION_UNLOCK = {
     'backend-node/test/redrawShotProductionPack.test.js',
     'backend-node/test/redrawLocalization.test.js',
     'backend-node/test/featureLockManifest.test.js',
+  ],
+};
+const FUMIN_FIXED_FIVE_SECOND_FULL_EPISODE_UNLOCK = {
+  reason: '2026-09-04 Fumin 固定五秒整集执行方案 A 书面规格获批',
+  approvedBy: 'product-owner 2026-09-04 fumin-fixed-five-second-full-episode-option-a',
+  impactTests: [
+    'frontweb/scripts/fuminEpisodeExecutionPlan.test.mjs',
+    'frontweb/scripts/fuminExecutionMotion.test.mjs',
+    'frontweb/scripts/fuminEpisodeMediaPipeline.test.mjs',
+    'frontweb/scripts/run-redraw-episode-blueprint-live.test.mjs',
+    'frontweb/scripts/fuminEpisodeProviderAdapter.test.mjs',
+    'frontweb/scripts/run-redraw-fumin-full-episode-live.test.mjs',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
   ],
 };
 const REDRAW_EPISODE_BLUEPRINT_FIRST_TOUCHED_FEATURE_IDS = new Set([
@@ -1484,7 +1507,7 @@ test('真实产品 HTTP 媒体同链保留生成审核上下文并使用母本�
   assert.notDeepEqual(feature.unlock, PR177_PLATFORM_ACCEPTANCE_UNLOCK);
 });
 
-test('母本蓝图优先一键转绘以单一功能锁覆盖任务并登记交付硬化批准', () => {
+test('母本蓝图优先一键转绘锁定固定五秒整集范围并完整保留批准历史', () => {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   const feature = manifest.features.find(
     ({ featureId }) => featureId === REDRAW_EPISODE_BLUEPRINT_FIRST_FEATURE_ID,
@@ -1496,8 +1519,11 @@ test('母本蓝图优先一键转绘以单一功能锁覆盖任务并登记交�
   assert.deepEqual(feature.requiredTests, REDRAW_EPISODE_BLUEPRINT_FIRST_REQUIRED_TESTS);
   assert.deepEqual(feature.evidence, REDRAW_EPISODE_BLUEPRINT_FIRST_EVIDENCE);
   assert.equal(feature.fixCommit, null);
-  assert.deepEqual(feature.unlock, REDRAW_EPISODE_CULTURAL_ADAPTATION_UNLOCK);
-  assert.deepEqual(feature.unlockHistory, [REDRAW_EPISODE_BLUEPRINT_HARDENING_UNLOCK]);
+  assert.deepEqual(feature.unlock, FUMIN_FIXED_FIVE_SECOND_FULL_EPISODE_UNLOCK);
+  assert.deepEqual(feature.unlockHistory, [
+    REDRAW_EPISODE_BLUEPRINT_HARDENING_UNLOCK,
+    REDRAW_EPISODE_CULTURAL_ADAPTATION_UNLOCK,
+  ]);
 });
 
 test('母本蓝图任务为实际触及的五个既有功能锁登记新鲜批准', () => {
@@ -1799,7 +1825,7 @@ test('未触及锁保留当前批准记录且所有锁保留历史证据', () =>
     } else if (feature.featureId === REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_FEATURE_ID) {
       assert.deepEqual(feature.unlock, PR217_REDRAW_GENERATION_REVIEW_CONTEXT_UNLOCK);
     } else if (feature.featureId === REDRAW_EPISODE_BLUEPRINT_FIRST_FEATURE_ID) {
-      assert.deepEqual(feature.unlock, REDRAW_EPISODE_CULTURAL_ADAPTATION_UNLOCK);
+      assert.deepEqual(feature.unlock, FUMIN_FIXED_FIVE_SECOND_FULL_EPISODE_UNLOCK);
     } else if (!Object.hasOwn(PROVIDER_TASK_LOCK_REQUIREMENTS, feature.featureId)) {
       assert.deepEqual(feature.unlock, PR177_PLATFORM_ACCEPTANCE_UNLOCK);
     }

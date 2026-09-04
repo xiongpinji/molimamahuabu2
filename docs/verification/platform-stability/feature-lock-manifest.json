@@ -2217,7 +2217,10 @@
         "backend-node/src/services/redrawShotProductionPackService.js",
         "backend-node/src/services/redrawSourceAudioEvidenceService.js",
         "frontweb/package.json",
+        "frontweb/scripts/fuminEpisodeExecutionPlan.mjs",
+        "frontweb/scripts/fuminEpisodeMediaPipeline.mjs",
         "frontweb/scripts/fuminEpisodeProviderAdapter.mjs",
+        "frontweb/scripts/fuminExecutionMotion.mjs",
         "frontweb/scripts/fuminFullEpisodeDerivedState.mjs",
         "frontweb/scripts/run-redraw-episode-blueprint-live.mjs",
         "frontweb/scripts/run-redraw-fumin-full-episode-live.mjs",
@@ -2251,7 +2254,10 @@
         "backend-node/test/redrawSourceAudioEvidence.test.js",
         "frontweb/e2e/redraw-backend-integration.spec.js",
         "frontweb/e2e/redraw-workspace.spec.js",
+        "frontweb/scripts/fuminEpisodeExecutionPlan.test.mjs",
+        "frontweb/scripts/fuminEpisodeMediaPipeline.test.mjs",
         "frontweb/scripts/fuminEpisodeProviderAdapter.test.mjs",
+        "frontweb/scripts/fuminExecutionMotion.test.mjs",
         "frontweb/scripts/fuminFullEpisodeDerivedState.test.mjs",
         "frontweb/scripts/run-redraw-episode-blueprint-live.test.mjs",
         "frontweb/scripts/run-redraw-fumin-full-episode-live.test.mjs",
@@ -2262,7 +2268,10 @@
       ],
       "evidence": [
         "docs/superpowers/specs/2026-09-03-episode-blueprint-first-redraw-design.md",
-        "docs/superpowers/plans/2026-09-03-episode-blueprint-first-redraw.md"
+        "docs/superpowers/plans/2026-09-03-episode-blueprint-first-redraw.md",
+        "docs/superpowers/specs/2026-09-04-fumin-fixed-five-second-full-episode-generation-design.md",
+        "docs/superpowers/plans/2026-09-04-fumin-fixed-five-second-full-episode-generation.md",
+        "docs/verification/redraw/fumin-fixed-five-second-full-episode-verification.md"
       ],
       "fixCommit": null,
       "unlockHistory": [
@@ -2274,15 +2283,29 @@
             "frontweb/scripts/run-redraw-episode-blueprint-live.test.mjs",
             "backend-node/test/featureLockManifest.test.js"
           ]
+        },
+        {
+          "reason": "2026-09-04 整集零提交预检文化适配修复获批",
+          "approvedBy": "product-owner 2026-09-04 full-episode-zero-submit-cultural-adaptation",
+          "impactTests": [
+            "backend-node/test/redrawShotProductionPack.test.js",
+            "backend-node/test/redrawLocalization.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-04 整集零提交预检文化适配修复获批",
-        "approvedBy": "product-owner 2026-09-04 full-episode-zero-submit-cultural-adaptation",
+        "reason": "2026-09-04 Fumin 固定五秒整集执行方案 A 书面规格获批",
+        "approvedBy": "product-owner 2026-09-04 fumin-fixed-five-second-full-episode-option-a",
         "impactTests": [
-          "backend-node/test/redrawShotProductionPack.test.js",
-          "backend-node/test/redrawLocalization.test.js",
-          "backend-node/test/featureLockManifest.test.js"
+          "frontweb/scripts/fuminEpisodeExecutionPlan.test.mjs",
+          "frontweb/scripts/fuminExecutionMotion.test.mjs",
+          "frontweb/scripts/fuminEpisodeMediaPipeline.test.mjs",
+          "frontweb/scripts/run-redraw-episode-blueprint-live.test.mjs",
+          "frontweb/scripts/fuminEpisodeProviderAdapter.test.mjs",
+          "frontweb/scripts/run-redraw-fumin-full-episode-live.test.mjs",
+          "backend-node/test/featureLockManifest.test.js",
+          "backend-node/test/incrementalReleaseScope.test.js"
         ]
       }
     },
