@@ -870,6 +870,16 @@ const FUMIN_FIXED_FIVE_SECOND_FULL_EPISODE_UNLOCK = {
     'backend-node/test/incrementalReleaseScope.test.js',
   ],
 };
+const FUMIN_R5_TOP_LEVEL_IDENTITY_REFERENCE_UNLOCK = {
+  reason: '2026-09-04 R5 零提交预检顶层身份引用兼容修复',
+  approvedBy: 'product-owner 2026-09-04 fumin-fixed-five-second-full-episode-option-a',
+  impactTests: [
+    'frontweb/scripts/fuminEpisodeExecutionPlan.test.mjs',
+    'frontweb/scripts/run-redraw-fumin-full-episode-live.test.mjs',
+    'backend-node/test/redrawShotProductionPack.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+  ],
+};
 const REDRAW_EPISODE_BLUEPRINT_FIRST_TOUCHED_FEATURE_IDS = new Set([
   PROVIDER_ROUTE_CONTRACT_FEATURE_ID,
   ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID,
@@ -1519,10 +1529,11 @@ test('母本蓝图优先一键转绘锁定固定五秒整集范围并完整保�
   assert.deepEqual(feature.requiredTests, REDRAW_EPISODE_BLUEPRINT_FIRST_REQUIRED_TESTS);
   assert.deepEqual(feature.evidence, REDRAW_EPISODE_BLUEPRINT_FIRST_EVIDENCE);
   assert.equal(feature.fixCommit, null);
-  assert.deepEqual(feature.unlock, FUMIN_FIXED_FIVE_SECOND_FULL_EPISODE_UNLOCK);
+  assert.deepEqual(feature.unlock, FUMIN_R5_TOP_LEVEL_IDENTITY_REFERENCE_UNLOCK);
   assert.deepEqual(feature.unlockHistory, [
     REDRAW_EPISODE_BLUEPRINT_HARDENING_UNLOCK,
     REDRAW_EPISODE_CULTURAL_ADAPTATION_UNLOCK,
+    FUMIN_FIXED_FIVE_SECOND_FULL_EPISODE_UNLOCK,
   ]);
 });
 
@@ -1825,7 +1836,7 @@ test('未触及锁保留当前批准记录且所有锁保留历史证据', () =>
     } else if (feature.featureId === REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_FEATURE_ID) {
       assert.deepEqual(feature.unlock, PR217_REDRAW_GENERATION_REVIEW_CONTEXT_UNLOCK);
     } else if (feature.featureId === REDRAW_EPISODE_BLUEPRINT_FIRST_FEATURE_ID) {
-      assert.deepEqual(feature.unlock, FUMIN_FIXED_FIVE_SECOND_FULL_EPISODE_UNLOCK);
+      assert.deepEqual(feature.unlock, FUMIN_R5_TOP_LEVEL_IDENTITY_REFERENCE_UNLOCK);
     } else if (!Object.hasOwn(PROVIDER_TASK_LOCK_REQUIREMENTS, feature.featureId)) {
       assert.deepEqual(feature.unlock, PR177_PLATFORM_ACCEPTANCE_UNLOCK);
     }
