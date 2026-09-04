@@ -4,6 +4,10 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { createRequire } from 'node:module'
+
+const require = createRequire(import.meta.url)
+const { buildFuminVideoBody } = require('../../backend-node/src/services/fuminVideoClient')
 
 function sha256(value) {
   return crypto.createHash('sha256').update(value).digest('hex')
@@ -157,12 +161,152 @@ test('planned submissions always request five-second 480p vertical audio regardl
   for (const body of bodies) {
     assert.equal(body.duration, 5)
     assert.equal(body.resolution, '480p')
-    assert.equal(body.aspect_ratio, '9:16')
+    assert.equal(body.ratio, '9:16')
     assert.equal(body.generate_audio, true)
-    assert.doesNotMatch(body.prompt, /Forbidden parent line/)
+    assert.doesNotMatch(body.content[0].text, /Forbidden parent line/)
   }
-  assert.match(bodies[0].prompt, /Unit line/)
-  assert.match(bodies[2].prompt, /Ambient sound only/)
+  assert.match(bodies[0].content[0].text, /Unit line/)
+  assert.match(bodies[2].content[0].text, /Ambient sound only/)
+})
+
+test('planned submissions reuse the verified backend Fumin body contract with private HTTPS upload urls', async () => {
+  const { createFuminEpisodeProviderAdapter } = await import('./fuminEpisodeProviderAdapter.mjs')
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fumin-contract-'))
+  try {
+    const imagePath = path.join(root, 'identity.png')
+    const motionPath = path.join(root, 'motion.mp4')
+    fs.writeFileSync(imagePath, 'identity')
+    fs.writeFileSync(motionPath, 'motion')
+    const bodies = []
+    let uploads = 0
+    const adapter = createFuminEpisodeProviderAdapter({
+      apiKey: 'test-key',
+      fetchImpl: async (url, options = {}) => {
+        if (String(url).includes('/files/uploads')) {
+          uploads += 1
+          const uploadIndex = uploads === 1 ? 'identity' : 'motion'
+          return { ok: true, text: async () => JSON.stringify({ id: `asset-${uploadIndex}`, url: `https://fumin.test/${uploadIndex}` }) }
+        }
+        if (String(url).includes('/contents/generations/tasks') && options.method === 'POST') {
+          const body = JSON.parse(options.body)
+          bodies.push(body)
+          return { ok: true, text: async () => JSON.stringify({ id: 'task-verified' }) }
+        }
+        throw new Error(`unexpected url ${url}`)
+      },
+    })
+    const image = await adapter.uploadReference({
+      id: 'lead-main',
+      kind: 'identity',
+      path: imagePath,
+      sha256: sha256(fs.readFileSync(imagePath)),
+      bytes: fs.readFileSync(imagePath),
+      mime_type: 'image/png',
+    })
+    const motion = await adapter.uploadReference({
+      id: 'shot-1-motion',
+      kind: 'motion',
+      path: motionPath,
+      sha256: sha256(fs.readFileSync(motionPath)),
+      bytes: fs.readFileSync(motionPath),
+      mime_type: 'video/mp4',
+    })
+
+    assert.equal(image.url, 'https://fumin.test/identity')
+    assert.equal(motion.url, 'https://fumin.test/motion')
+    await adapter.submitGeneration({
+      unit: plannedUnit(),
+      pack: plannedUnit(),
+      uploaded_references: [image, motion],
+    })
+
+    assert.deepEqual(bodies, [buildFuminVideoBody({
+      model: 'fumin-seedance-2.0-mini',
+      prompt: [
+        plannedUnit().prompt,
+        'Create one vertical 9:16 cinematic live-action shot at 480p.',
+        'Use only the supplied identity and motion references.',
+        'Generate synchronized target-language audio exactly matching the approved dialogue when speech is required.',
+        'Do not add subtitles, captions, watermarks, logos, Chinese text, or unapproved dialogue.',
+      ].join('\n'),
+      duration: 5,
+      resolution: '480p',
+      aspect_ratio: '9:16',
+      generate_audio: true,
+      watermark: false,
+      reference_urls: ['https://fumin.test/identity'],
+      reference_video_urls: ['https://fumin.test/motion'],
+    })])
+    const bodyText = JSON.stringify(bodies[0])
+    assert.equal(bodies[0].model, 'seedance-2.0-mini')
+    assert.equal(bodies[0].ratio, '9:16')
+    assert.equal(bodies[0].duration, 5)
+    assert.equal(bodies[0].resolution, '480p')
+    assert.equal(bodies[0].generate_audio, true)
+    assert.equal(bodies[0].watermark, false)
+    assert.deepEqual(bodies[0].content.map((item) => item.type), ['text', 'image_url', 'video_url'])
+    assert.doesNotMatch(bodyText, /"prompt"|"aspect_ratio"|"references"|"asset_id"/)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('Fumin 2xx indeterminate submission or completed status without video url are conservative unknowns', async () => {
+  const { createFuminEpisodeProviderAdapter } = await import('./fuminEpisodeProviderAdapter.mjs')
+  for (const scenario of ['submission-non-json', 'submission-missing-id', 'completed-missing-url']) {
+    const adapter = createFuminEpisodeProviderAdapter({
+      apiKey: 'test-key',
+      fetchImpl: async (url, options = {}) => {
+        if (String(url).includes('/contents/generations/tasks') && options.method === 'POST') {
+          if (scenario === 'submission-non-json') return { ok: true, status: 200, text: async () => '<html>ok</html>' }
+          return { ok: true, status: 200, text: async () => JSON.stringify({ status: 'queued' }) }
+        }
+        if (String(url).includes('/contents/generations/tasks/task-1')) {
+          return { ok: true, status: 200, text: async () => JSON.stringify({ status: 'completed' }) }
+        }
+        throw new Error(`unexpected url ${url}`)
+      },
+      sleep: async () => {},
+    })
+    if (scenario === 'completed-missing-url') {
+      await assert.rejects(
+        () => adapter.pollGeneration({ task_id: 'task-1' }),
+        { code: 'FUMIN_EPISODE_RESULT_UNKNOWN' },
+      )
+    } else {
+      await assert.rejects(
+        () => adapter.submitGeneration({ unit: plannedUnit(), pack: plannedUnit(), uploaded_references: [] }),
+        { code: 'FUMIN_EPISODE_SUBMISSION_UNKNOWN' },
+      )
+    }
+  }
+})
+
+test('Fumin 2xx indeterminate reference uploads are conservative unknowns', async () => {
+  const { createFuminEpisodeProviderAdapter } = await import('./fuminEpisodeProviderAdapter.mjs')
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fumin-upload-unknown-'))
+  try {
+    const referencePath = path.join(root, 'identity.png')
+    fs.writeFileSync(referencePath, 'identity')
+    for (const body of ['<html>ok</html>', JSON.stringify({ url: 'https://fumin.test/ref.png' })]) {
+      const adapter = createFuminEpisodeProviderAdapter({
+        apiKey: 'test-key',
+        fetchImpl: async () => ({ ok: true, status: 200, text: async () => body }),
+      })
+      await assert.rejects(
+        () => adapter.uploadReference({
+          id: 'lead-main',
+          path: referencePath,
+          sha256: sha256(fs.readFileSync(referencePath)),
+          bytes: fs.readFileSync(referencePath),
+          mime_type: 'image/png',
+        }),
+        { code: 'FUMIN_EPISODE_REFERENCE_UPLOAD_UNKNOWN' },
+      )
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
 })
 
 test('non-five-second planned unit is rejected before provider HTTP', async () => {

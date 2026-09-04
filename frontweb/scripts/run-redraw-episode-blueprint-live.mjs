@@ -601,7 +601,7 @@ async function runShot(options, adapters) {
       parent_pack: clone(pack),
       uploaded_references: task.uploaded_references.map(clone),
     })
-    if (!submitted?.task_id) fail('REDRAW_EPISODE_SUBMISSION_ID_MISSING')
+    if (!submitted?.task_id) fail('REDRAW_EPISODE_SUBMISSION_UNKNOWN')
     task.status = 'provider_processing'
     task.task_id = String(submitted.task_id)
     task.submitted_at = now()

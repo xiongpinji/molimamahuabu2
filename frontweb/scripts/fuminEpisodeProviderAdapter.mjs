@@ -21,6 +21,7 @@ const FUMIN_MODEL = 'fumin-seedance-2.0-mini'
 export const ASR_MODEL_IDS = ['Systran/faster-whisper-base', 'Systran/faster-whisper-small']
 const require = createRequire(import.meta.url)
 const backendRoot = fileURLToPath(new URL('../../backend-node/', import.meta.url))
+const { buildFuminVideoBody } = require(path.join(backendRoot, 'src', 'services', 'fuminVideoClient'))
 
 function codedError(code, message = code) {
   const error = new Error(`${code}: ${message}`)
@@ -30,6 +31,19 @@ function codedError(code, message = code) {
 
 function fail(code, message) {
   throw codedError(code, message)
+}
+
+function inferReferenceMimeType(reference) {
+  const declared = String(reference?.mime_type || '').trim().toLowerCase()
+  if (declared) return declared
+  const extension = path.extname(String(reference?.path || '')).toLowerCase()
+  if (extension === '.png') return 'image/png'
+  if (extension === '.jpg' || extension === '.jpeg') return 'image/jpeg'
+  if (extension === '.webp') return 'image/webp'
+  if (extension === '.mp4') return 'video/mp4'
+  if (extension === '.mp3') return 'audio/mpeg'
+  if (extension === '.wav') return 'audio/wav'
+  return 'application/octet-stream'
 }
 
 function sha256Buffer(value) {
@@ -85,7 +99,7 @@ function pick(value, paths) {
 
 function parseSubmission(payload) {
   const taskId = pick(payload, [['id'], ['task_id'], ['data', 'id'], ['data', 'task_id']])
-  if (!taskId) fail('FUMIN_EPISODE_SUBMISSION_ID_MISSING')
+  if (!taskId) fail('FUMIN_EPISODE_SUBMISSION_UNKNOWN')
   return { task_id: String(taskId) }
 }
 
@@ -100,7 +114,7 @@ function parseStatus(payload) {
     ['data', 'output', 'video_url'],
   ])
   if (/success|succeed|completed|finished/.test(raw)) {
-    if (!/^https:\/\//i.test(String(videoUrl || ''))) fail('FUMIN_EPISODE_RESULT_URL_MISSING')
+    if (!/^https:\/\//i.test(String(videoUrl || ''))) fail('FUMIN_EPISODE_RESULT_UNKNOWN')
     return { state: 'completed', video_url: String(videoUrl) }
   }
   if (/fail|error|reject|cancel/.test(raw)) {
@@ -656,7 +670,7 @@ function safeReference(reference) {
     id: String(reference.id || ''),
     kind: String(reference.kind || ''),
     path: reference.path,
-    mime_type: reference.mime_type || 'application/octet-stream',
+    mime_type: inferReferenceMimeType(reference),
     bytes,
     sha256: actual,
   }
@@ -694,9 +708,9 @@ export function createFuminEpisodeProviderAdapter(options = {}) {
       if (!response.ok) fail('FUMIN_EPISODE_REFERENCE_UPLOAD_REJECTED', `HTTP ${response.status}`)
       const assetId = pick(payload, [['id'], ['file_id'], ['data', 'id'], ['data', 'file_id']])
       const url = pick(payload, [['url'], ['data', 'url'], ['file', 'url'], ['data', 'file', 'url']])
-      if (!assetId) fail('FUMIN_EPISODE_REFERENCE_UPLOAD_ID_MISSING')
-      if (!/^https:\/\//i.test(String(url || ''))) fail('FUMIN_EPISODE_REFERENCE_URL_INVALID')
-      return { asset_id: String(assetId), sha256: safe.sha256, bytes: safe.bytes.length, mime_type: safe.mime_type, reference_id: safe.id }
+      if (!payload || !assetId) fail('FUMIN_EPISODE_REFERENCE_UPLOAD_UNKNOWN')
+      if (!/^https:\/\//i.test(String(url || ''))) fail('FUMIN_EPISODE_REFERENCE_UPLOAD_UNKNOWN')
+      return { asset_id: String(assetId), url: String(url), sha256: safe.sha256, bytes: safe.bytes.length, mime_type: safe.mime_type, reference_id: safe.id }
     },
     async submitGeneration({ pack, unit, uploaded_references = [] }) {
       if (!apiKey) fail('FUMIN_EPISODE_API_KEY_MISSING')
@@ -704,18 +718,33 @@ export function createFuminEpisodeProviderAdapter(options = {}) {
       if (Number(planned?.provider_duration_seconds) !== 5) {
         fail('FUMIN_EPISODE_PROVIDER_DURATION_INVALID')
       }
-      const body = {
-        model: FUMIN_MODEL,
-        prompt: buildPrompt(planned),
-        duration: 5,
-        resolution: '480p',
-        aspect_ratio: '9:16',
-        generate_audio: true,
-        references: uploaded_references.map((item) => ({
-          asset_id: item.asset_id,
-          mime_type: item.mime_type,
-          reference_id: item.reference_id,
-        })),
+      const referenceUrls = []
+      const referenceVideoUrls = []
+      const referenceAudioUrls = []
+      for (const reference of uploaded_references) {
+        const url = String(reference?.url || '').trim()
+        if (!/^https:\/\//i.test(url)) fail('FUMIN_EPISODE_SUBMISSION_UNKNOWN')
+        const mimeType = String(reference?.mime_type || '').toLowerCase()
+        if (mimeType.startsWith('image/')) referenceUrls.push(url)
+        else if (mimeType === 'video/mp4') referenceVideoUrls.push(url)
+        else if (mimeType.startsWith('audio/')) referenceAudioUrls.push(url)
+      }
+      let body
+      try {
+        body = buildFuminVideoBody({
+          model: FUMIN_MODEL,
+          prompt: buildPrompt(planned),
+          duration: 5,
+          resolution: '480p',
+          aspect_ratio: '9:16',
+          generate_audio: true,
+          watermark: false,
+          reference_urls: referenceUrls,
+          reference_video_urls: referenceVideoUrls,
+          reference_audio_urls: referenceAudioUrls,
+        })
+      } catch (error) {
+        fail('FUMIN_EPISODE_SUBMISSION_REJECTED', error.message)
       }
       let response
       try {
@@ -730,6 +759,7 @@ export function createFuminEpisodeProviderAdapter(options = {}) {
       }
       const payload = await responseJson(response)
       if (!response.ok) fail('FUMIN_EPISODE_SUBMISSION_REJECTED', `HTTP ${response.status}`)
+      if (!payload) fail('FUMIN_EPISODE_SUBMISSION_UNKNOWN')
       return parseSubmission(payload)
     },
     async pollGeneration({ task_id }) {

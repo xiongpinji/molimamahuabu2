@@ -828,7 +828,7 @@ test('shot stage runs the real provider lifecycle and persists every boundary', 
   }
 })
 
-test('shot stage keeps private uploaded asset IDs for generation POST while public evidence is redacted', async () => {
+test('shot stage keeps private uploaded references for generation POST while public evidence is redacted', async () => {
   const { parseArgs, runStage } = await import('./run-redraw-episode-blueprint-live.mjs')
   const { createFuminEpisodeProviderAdapter } = await import('./fuminEpisodeProviderAdapter.mjs')
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-episode-fumin-assets-'))
@@ -903,8 +903,14 @@ test('shot stage keeps private uploaded asset IDs for generation POST while publ
     assert.equal(probedPaths.length, 2)
     assert.ok(probedPaths.includes(rawArtifactPath))
     assert.ok(probedPaths.includes(finalArtifactPath))
-    assert.deepEqual(postedBodies[0].references.map((item) => item.asset_id), ['asset-1', 'asset-2'])
+    assert.deepEqual(postedBodies[0].content.map((item) => item.type), ['text', 'image_url', 'video_url'])
+    assert.deepEqual(postedBodies[0].content.slice(1).map((item) => item[item.type].url), [
+      'https://fumin.test/ref.png?token=secret',
+      'https://fumin.test/ref.png?token=secret',
+    ])
+    assert.doesNotMatch(JSON.stringify(postedBodies[0]), /asset-1|asset-2|"references"|"asset_id"|"prompt"|"aspect_ratio"/)
     assert.equal(privateManifest.tasks[0].uploaded_references[0].asset_id, 'asset-1')
+    assert.equal(privateManifest.tasks[0].uploaded_references[0].url, 'https://fumin.test/ref.png?token=secret')
     assert.equal(privateManifest.tasks[0].uploaded_references[0].size, Buffer.byteLength('identity-marcus'))
     assert.doesNotMatch(JSON.stringify(privateManifest), /"bytes"\s*:/)
     assert.doesNotMatch(JSON.stringify(result), /asset-1|fumin\.test|token|test-key/)
@@ -945,6 +951,49 @@ test('shot stage marks unknown provider results as needs_attention without retry
     const manifest = JSON.parse(fs.readFileSync(path.join(stateDir, 'private-manifest.json'), 'utf8'))
     assert.equal(submitCalls, 1)
     assert.equal(manifest.tasks[0].status, 'needs_attention')
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('shot stage treats a submitted provider response without task_id as unknown and blocks rerun', async () => {
+  const { parseArgs, runStage } = await import('./run-redraw-episode-blueprint-live.mjs')
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-episode-submission-unknown-'))
+  try {
+    const { packagePath } = makeEpisodePackage(root)
+    const stateDir = path.join(root, 'isolated-state')
+    await runStage(parseArgs(['--episode-package', packagePath, '--state-dir', stateDir, '--stage', 'preflight']), {
+      provider: { name: 'fake-provider' },
+    })
+    let submitCalls = 0
+    const provider = {
+      name: 'fake-provider',
+      uploadReference: async () => ({ asset_id: 'asset', url: 'https://fumin.test/private-ref.png' }),
+      submitGeneration: async () => {
+        submitCalls += 1
+        return { status: 'queued' }
+      },
+      pollGeneration: async () => { throw new Error('poll must not run') },
+      downloadResult: async () => { throw new Error('download must not run') },
+      inspectArtifact: async () => { throw new Error('inspect must not run') },
+    }
+    await assert.rejects(
+      () => runStage(parseArgs(['--episode-package', packagePath, '--state-dir', stateDir, '--stage', 'shot', '--shot-id', 'shot-1']), { provider }),
+      { code: 'REDRAW_EPISODE_SUBMISSION_UNKNOWN' },
+    )
+    await assert.rejects(
+      () => runStage(parseArgs(['--episode-package', packagePath, '--state-dir', stateDir, '--stage', 'shot', '--shot-id', 'shot-1']), { provider }),
+      /REDRAW_EPISODE_UNIT_ALREADY_SUBMITTED|REDRAW_EPISODE_SHOT_ALREADY_SUBMITTED/,
+    )
+    const manifest = JSON.parse(fs.readFileSync(path.join(stateDir, 'private-manifest.json'), 'utf8'))
+    const publicText = fs.existsSync(path.join(stateDir, 'shot-1.part-01-public-evidence.json'))
+      ? fs.readFileSync(path.join(stateDir, 'shot-1.part-01-public-evidence.json'), 'utf8')
+      : ''
+    assert.equal(submitCalls, 1)
+    assert.equal(manifest.tasks[0].status, 'needs_attention')
+    assert.equal(manifest.tasks[0].error_code, 'REDRAW_EPISODE_SUBMISSION_UNKNOWN')
+    assert.equal(manifest.tasks[0].uploaded_references[0].url, 'https://fumin.test/private-ref.png')
+    assert.doesNotMatch(publicText, /private-ref|asset|fumin\.test/)
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }
