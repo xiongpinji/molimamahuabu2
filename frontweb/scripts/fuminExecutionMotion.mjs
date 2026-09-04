@@ -115,9 +115,9 @@ export function validateFuminExecutionMotionProbe(probe) {
   if (videoCodec !== 'h264') fail('FUMIN_EXECUTION_MOTION_CODEC_INVALID')
   const pixelFormat = String(video?.pix_fmt ?? probe?.pix_fmt ?? '').toLowerCase()
   if (pixelFormat !== 'yuv420p') fail('FUMIN_EXECUTION_MOTION_PIXEL_FORMAT_INVALID')
-  const frameRate = parseRate(
-    video?.avg_frame_rate ?? video?.r_frame_rate ?? probe?.frame_rate,
-  )
+  const frameRate = [video?.avg_frame_rate, video?.r_frame_rate, probe?.frame_rate]
+    .map(parseRate)
+    .find((rate) => Number.isFinite(rate) && rate > 0)
   if (!Number.isFinite(frameRate) || Math.abs(frameRate - 24) > 0.01) {
     fail('FUMIN_EXECUTION_MOTION_FRAME_RATE_INVALID')
   }

@@ -122,6 +122,18 @@ test('accepts common raw ffprobe JSON for five-second silent H.264 yuv420p 24fps
   })
 })
 
+test('falls back from an invalid average frame rate but not from a valid conflicting rate', () => {
+  const video = rawProbe().streams[0]
+  const fallback = validateFuminExecutionMotionProbe(rawProbe({
+    streams: [{ ...video, avg_frame_rate: '0/0', r_frame_rate: '24/1' }],
+  }))
+  assert.equal(fallback.frame_rate, 24)
+
+  assert.throws(() => validateFuminExecutionMotionProbe(rawProbe({
+    streams: [{ ...video, avg_frame_rate: '30/1', r_frame_rate: '24/1' }],
+  })), { code: 'FUMIN_EXECUTION_MOTION_FRAME_RATE_INVALID' })
+})
+
 test('rejects invalid duration and any audio stream with stable error codes', () => {
   assert.throws(
     () => validateFuminExecutionMotionProbe(rawProbe({ format: { duration: '4.899' } })),
