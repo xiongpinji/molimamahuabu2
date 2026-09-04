@@ -534,14 +534,23 @@ const REDRAW_EPISODE_BLUEPRINT_FIRST_BASELINE_ALLOWED_PATHS = [
 ];
 const REDRAW_EPISODE_BLUEPRINT_FIRST_ADDED_PATHS = [
   'docs/superpowers/plans/2026-09-04-fumin-fixed-five-second-full-episode-generation.md',
+  'docs/superpowers/plans/2026-09-05-redraw-isolated-video-model-fallback.md',
   'docs/superpowers/specs/2026-09-04-fumin-fixed-five-second-full-episode-generation-design.md',
+  'docs/superpowers/specs/2026-09-05-redraw-isolated-video-model-fallback-design.md',
   'docs/verification/redraw/fumin-fixed-five-second-full-episode-verification.md',
+  'docs/verification/redraw/isolated-video-model-fallback-verification.md',
+  'frontweb/scripts/episodeVideoProviderAdapter.mjs',
+  'frontweb/scripts/episodeVideoProviderAdapter.test.mjs',
+  'frontweb/scripts/episodeVideoRouteRegistry.mjs',
+  'frontweb/scripts/episodeVideoRouteRegistry.test.mjs',
   'frontweb/scripts/fuminEpisodeExecutionPlan.mjs',
   'frontweb/scripts/fuminEpisodeExecutionPlan.test.mjs',
   'frontweb/scripts/fuminEpisodeMediaPipeline.mjs',
   'frontweb/scripts/fuminEpisodeMediaPipeline.test.mjs',
   'frontweb/scripts/fuminExecutionMotion.mjs',
   'frontweb/scripts/fuminExecutionMotion.test.mjs',
+  'frontweb/scripts/run-redraw-video-model-fallback-live.mjs',
+  'frontweb/scripts/run-redraw-video-model-fallback-live.test.mjs',
 ];
 const REDRAW_EPISODE_BLUEPRINT_FIRST_ALLOWED_PATHS = [
   ...REDRAW_EPISODE_BLUEPRINT_FIRST_BASELINE_ALLOWED_PATHS,
@@ -1159,11 +1168,11 @@ test('真实产品 HTTP 媒体同链 Task E 发布范围拒绝同数量偷换', 
   );
 });
 
-test('母本蓝图优先一键转绘使用旧基线加 9 文件的精确 66 文件主应用发布范围', () => {
+test('母本蓝图优先一键转绘使用旧基线加 18 文件的精确 75 文件主应用发布范围', () => {
   const { manifest, allowedPaths } = loadManifest(redrawEpisodeBlueprintFirstManifestPath);
   assert.equal(manifest.release, 'redraw-episode-blueprint-first-redraw-20260903');
   assertExactRedrawEpisodeBlueprintFirstScope(allowedPaths);
-  assert.equal(REDRAW_EPISODE_BLUEPRINT_FIRST_ADDED_PATHS.length, 9);
+  assert.equal(REDRAW_EPISODE_BLUEPRINT_FIRST_ADDED_PATHS.length, 18);
   assert.equal(
     allowedPaths.length,
     REDRAW_EPISODE_BLUEPRINT_FIRST_BASELINE_ALLOWED_PATHS.length

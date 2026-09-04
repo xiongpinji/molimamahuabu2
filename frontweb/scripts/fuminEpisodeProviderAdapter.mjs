@@ -100,7 +100,8 @@ function targetDialogue(pack) {
 }
 
 async function responseJson(response) {
-  const raw = await response.text()
+  let raw
+  try { raw = await response.text() } catch { return null }
   try { return JSON.parse(raw) } catch { return null }
 }
 
@@ -138,7 +139,20 @@ function parseStatus(payload) {
     return { state: 'completed', video_url: String(videoUrl) }
   }
   if (/fail|error|reject|cancel/.test(raw)) {
-    fail('FUMIN_EPISODE_PROVIDER_FAILED', raw)
+    const reason = String(pick(payload, [
+      ['fail_reason'],
+      ['error', 'message'],
+      ['error'],
+      ['message'],
+      ['data', 'fail_reason'],
+      ['data', 'error', 'message'],
+      ['data', 'error'],
+      ['data', 'message'],
+    ]) || raw)
+    const error = codedError('FUMIN_EPISODE_PROVIDER_FAILED', reason)
+    error.provider_terminal_failure = true
+    error.provider_reason = reason
+    throw error
   }
   return { state: 'running' }
 }
@@ -326,7 +340,7 @@ export function verifyTranscriptConsensusForPack(pack, transcripts) {
   return verifyTranscriptConsensusForUnit(pack, transcripts)
 }
 
-function buildPrompt(pack) {
+export function buildFuminEpisodePrompt(pack) {
   const dialogue = Array.isArray(pack?.dialogue) ? pack.dialogue : []
   const timingAvailable = dialogue.every((turn) => {
     const startMs = Number(turn?.start_ms)
@@ -746,6 +760,11 @@ function safeReference(reference) {
     mime_type: requireSupportedReferenceMimeType(inferReferenceMimeType(reference)),
     bytes,
     sha256: actual,
+    duration_seconds: Number.isFinite(Number(reference.duration_seconds))
+      ? Number(reference.duration_seconds)
+      : Number.isFinite(Number(reference.duration_ms))
+        ? Number(reference.duration_ms) / 1000
+        : undefined,
   }
 }
 
@@ -754,6 +773,7 @@ export function createFuminEpisodeProviderAdapter(options = {}) {
   const apiKey = options.apiKey || process.env.FUMIN_API_KEY
   const sleep = options.sleep || ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)))
   const verifierPython = options.verifierPython || process.env.REDRAW_VERIFIER_PYTHON
+  const model = options.model || FUMIN_MODEL
   if (typeof fetchImpl !== 'function') fail('FUMIN_EPISODE_FETCH_UNAVAILABLE')
 
   return {
@@ -783,7 +803,15 @@ export function createFuminEpisodeProviderAdapter(options = {}) {
       const url = pick(payload, [['url'], ['data', 'url'], ['file', 'url'], ['data', 'file', 'url']])
       if (!payload || !assetId) fail('FUMIN_EPISODE_REFERENCE_UPLOAD_UNKNOWN')
       if (!/^https:\/\//i.test(String(url || ''))) fail('FUMIN_EPISODE_REFERENCE_UPLOAD_UNKNOWN')
-      return { asset_id: String(assetId), url: String(url), sha256: safe.sha256, bytes: safe.bytes.length, mime_type: safe.mime_type, reference_id: safe.id }
+      return {
+        asset_id: String(assetId),
+        url: String(url),
+        sha256: safe.sha256,
+        bytes: safe.bytes.length,
+        mime_type: safe.mime_type,
+        reference_id: safe.id,
+        ...(safe.duration_seconds == null ? {} : { duration_seconds: safe.duration_seconds }),
+      }
     },
     async submitGeneration({ pack, unit, uploaded_references = [] }) {
       if (!apiKey) fail('FUMIN_EPISODE_API_KEY_MISSING')
@@ -805,8 +833,8 @@ export function createFuminEpisodeProviderAdapter(options = {}) {
       let body
       try {
         body = buildFuminVideoBody({
-          model: FUMIN_MODEL,
-          prompt: buildPrompt(planned),
+          model,
+          prompt: buildFuminEpisodePrompt(planned),
           duration: 5,
           resolution: '480p',
           aspect_ratio: '9:16',
@@ -818,6 +846,12 @@ export function createFuminEpisodeProviderAdapter(options = {}) {
         })
       } catch (error) {
         fail('FUMIN_EPISODE_SUBMISSION_REJECTED', error.message)
+      }
+      if (typeof options.beforeGenerationSubmit === 'function') {
+        await options.beforeGenerationSubmit({
+          unit_id: String(planned?.unit_id || planned?.shot_id || ''),
+          model,
+        })
       }
       let response
       try {
@@ -831,7 +865,15 @@ export function createFuminEpisodeProviderAdapter(options = {}) {
         fail('FUMIN_EPISODE_SUBMISSION_UNKNOWN', error.message)
       }
       const payload = await responseJson(response)
-      if (!response.ok) fail('FUMIN_EPISODE_SUBMISSION_REJECTED', `HTTP ${response.status}`)
+      if (!response.ok) {
+        if (Number(response.status) === 408 || Number(response.status) >= 500 || !payload) {
+          fail('FUMIN_EPISODE_SUBMISSION_UNKNOWN', `HTTP ${response.status}`)
+        }
+        const error = codedError('FUMIN_EPISODE_SUBMISSION_REJECTED', `HTTP ${response.status}`)
+        error.provider_terminal_failure = true
+        error.provider_reason = String(pick(payload, [['fail_reason'], ['error', 'message'], ['error'], ['message']]) || `HTTP ${response.status}`)
+        throw error
+      }
       if (!payload) fail('FUMIN_EPISODE_SUBMISSION_UNKNOWN')
       return parseSubmission(payload)
     },
@@ -849,7 +891,7 @@ export function createFuminEpisodeProviderAdapter(options = {}) {
           fail('FUMIN_EPISODE_STATUS_UNKNOWN', error.message)
         }
         const payload = await responseJson(response)
-        if (!response.ok) fail('FUMIN_EPISODE_STATUS_REJECTED', `HTTP ${response.status}`)
+        if (!response.ok || !payload) fail('FUMIN_EPISODE_STATUS_UNKNOWN', `HTTP ${response.status}`)
         const status = parseStatus(payload || {})
         if (status.state === 'completed') return status
         await sleep(5_000)
@@ -864,7 +906,10 @@ export function createFuminEpisodeProviderAdapter(options = {}) {
         fail('FUMIN_EPISODE_RESULT_DOWNLOAD_UNKNOWN', error.message)
       }
       if (!response.ok) fail('FUMIN_EPISODE_RESULT_DOWNLOAD_REJECTED', `HTTP ${response.status}`)
-      const bytes = Buffer.from(await response.arrayBuffer())
+      let bytes
+      try { bytes = Buffer.from(await response.arrayBuffer()) } catch (error) {
+        fail('FUMIN_EPISODE_RESULT_DOWNLOAD_UNKNOWN', error.message)
+      }
       if (bytes.length < 1) fail('FUMIN_EPISODE_RESULT_TOO_SMALL')
       fs.mkdirSync(path.dirname(output_path), { recursive: true })
       fs.writeFileSync(output_path, bytes, { flag: 'wx' })
@@ -899,10 +944,25 @@ export function createFuminEpisodeProviderAdapter(options = {}) {
       if (options.createContactSheet) {
         options.createContactSheet(filePath, `${filePath}.contact-sheet.jpg`)
       }
+      const characters = (parent_pack?.characters || pack?.characters || [])
+        .map((item) => item.id)
+        .filter(Boolean)
       return {
         media,
         language: { locale: planned?.locale || planned?.audio_contract?.locale || parent_pack?.audio_contract?.locale || 'en-US', passed: true },
-        role: { characters: (parent_pack?.characters || pack?.characters || []).map((item) => item.id).filter(Boolean), passed: true },
+        role: characters.length > 0
+          ? {
+            characters,
+            reference_binding_passed: true,
+            visual_consistency_verified: false,
+            review_status: 'pending_external_review',
+          }
+          : {
+            characters,
+            reference_binding_passed: true,
+            visual_consistency_verified: true,
+            review_status: 'not_applicable',
+          },
         dialogue: speech,
       }
     },

@@ -32,16 +32,16 @@
 2. 补充未知语义：生成 POST 的超时/5xx/非 JSON 和任务查询异常必须标记未知；只有返回的失败终态标记为明确供应商失败。
 3. 通用运行器在任务证据中增加脱敏 `failure_class` 和 `error_reason`，保留既有 `status/error_code` 兼容性。
 
-## 任务 3：修正 ToAPIs 轮询终态元数据
+## 任务 3：在隔离适配层分类 ToAPIs 轮询终态
 
 **文件：**
 
-- 修改：`backend-node/src/services/toapisVideoClient.js`
-- 修改：`backend-node/test/toapisVideoClient.test.js`
+- 新增：`frontweb/scripts/episodeVideoProviderAdapter.mjs`
+- 新增：`frontweb/scripts/episodeVideoProviderAdapter.test.mjs`
 
 1. 先写失败终态与查询失败的区分测试。
-2. 让 200 响应中的真实失败终态返回 `terminalFailure=true`；查询网络、非 JSON 或非 2xx 返回 `queryFailed=true`。
-3. 不修改 URL、模型、请求体和生产配置。
+2. 只在新建的隔离适配层解释现有客户端的稳定返回合同：明确供应商失败可回退，查询异常或非 2xx 属于未知，完成无产物属于本地产物失败。
+3. 不修改受外部证据保护的 ToAPIs 客户端、URL、模型、请求体或生产配置，避免无关地使既有可信证据失效。
 
 ## 任务 4：实现四线路统一适配器
 
@@ -104,4 +104,3 @@
 3. 在全新本地隔离目录运行一次调度器；缺 Key 线路零提交跳过，不手工改写顺序或状态。
 4. 任一未知、产物验收失败或后续单元失败都立即停止，不重试。
 5. 完成时交付整集 MP4、SHA-256、路由/单元清单、音轨/英文对白/角色/时长证据和脱敏计费状态；不部署、不合并。
-

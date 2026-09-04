@@ -900,6 +900,7 @@ test('shot stage keeps private uploaded references for generation POST while pub
     assert.match(result.raw_artifact.artifact_id, /^outputs\/(?:raw|shots)\/[^/]+\.mp4$/)
     assert.match(result.artifact.artifact_id, /^outputs\/units\/[^/]+\.mp4$/)
     assert.equal(result.artifact.sha256, normalizedOutputSha256)
+    assert.equal(result.visual_review_status, 'pending_external_review')
     assert.equal(probedPaths.length, 2)
     assert.ok(probedPaths.includes(rawArtifactPath))
     assert.ok(probedPaths.includes(finalArtifactPath))
@@ -951,6 +952,44 @@ test('shot stage marks unknown provider results as needs_attention without retry
     const manifest = JSON.parse(fs.readFileSync(path.join(stateDir, 'private-manifest.json'), 'utf8'))
     assert.equal(submitCalls, 1)
     assert.equal(manifest.tasks[0].status, 'needs_attention')
+    assert.equal(manifest.tasks[0].failure_class, 'indeterminate')
+    assert.equal(manifest.tasks[0].error_reason, 'timeout')
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('shot stage persists a sanitized explicit provider terminal failure', async () => {
+  const { parseArgs, runStage } = await import('./run-redraw-episode-blueprint-live.mjs')
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-episode-provider-failed-'))
+  try {
+    const { packagePath } = makeEpisodePackage(root)
+    const stateDir = path.join(root, 'isolated-state')
+    await runStage(parseArgs(['--episode-package', packagePath, '--state-dir', stateDir, '--stage', 'preflight']), {
+      provider: { name: 'fake-provider' },
+    })
+    const error = new Error('policy rejected https://private.test/result api_key=secret-value')
+    error.code = 'FAKE_PROVIDER_FAILED'
+    error.provider_terminal_failure = true
+    error.provider_reason = 'policy rejected https://private.test/result api_key=secret-value'
+    await assert.rejects(
+      () => runStage(parseArgs(['--episode-package', packagePath, '--state-dir', stateDir, '--stage', 'shot', '--shot-id', 'shot-1']), {
+        provider: {
+          name: 'fake-provider',
+          uploadReference: async () => ({ asset_id: 'asset' }),
+          submitGeneration: async () => ({ task_id: 'task-1' }),
+          pollGeneration: async () => { throw error },
+          downloadResult: async () => ({}),
+          inspectArtifact: async () => ({}),
+        },
+      }),
+      { code: 'FAKE_PROVIDER_FAILED' },
+    )
+    const manifest = JSON.parse(fs.readFileSync(path.join(stateDir, 'private-manifest.json'), 'utf8'))
+    assert.equal(manifest.tasks[0].status, 'failed')
+    assert.equal(manifest.tasks[0].failure_class, 'explicit_provider_failure')
+    assert.equal(manifest.tasks[0].error_reason, 'policy rejected [url-redacted] api_key=[redacted]')
+    assert.doesNotMatch(JSON.stringify(manifest), /secret-value|private\.test/u)
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }

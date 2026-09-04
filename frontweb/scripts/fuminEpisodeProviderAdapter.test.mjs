@@ -169,6 +169,25 @@ test('planned submissions always request five-second 480p vertical audio regardl
   assert.match(bodies[2].content[0].text, /Ambient sound only/)
 })
 
+test('an approved explicit Fumin model overrides Mini without changing the default', async () => {
+  const { createFuminEpisodeProviderAdapter } = await import('./fuminEpisodeProviderAdapter.mjs')
+  const models = []
+  const fetchImpl = async (_url, options) => {
+    models.push(JSON.parse(options.body).model)
+    return { ok: true, status: 200, text: async () => JSON.stringify({ id: `task-${models.length}` }) }
+  }
+  const input = { unit: plannedUnit(), pack: plannedUnit(), uploaded_references: [] }
+
+  await createFuminEpisodeProviderAdapter({ apiKey: 'test-key', fetchImpl }).submitGeneration(input)
+  await createFuminEpisodeProviderAdapter({
+    apiKey: 'test-key',
+    fetchImpl,
+    model: 'fumin-seedance-2.0-fast',
+  }).submitGeneration(input)
+
+  assert.deepEqual(models, ['seedance-2.0-mini', 'seedance-2.0-fast'])
+})
+
 test('planned submissions reuse the verified backend Fumin body contract with private HTTPS upload urls', async () => {
   const { createFuminEpisodeProviderAdapter } = await import('./fuminEpisodeProviderAdapter.mjs')
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fumin-contract-'))
@@ -280,6 +299,36 @@ test('Fumin 2xx indeterminate submission or completed status without video url a
       await assert.rejects(
         () => adapter.submitGeneration({ unit: plannedUnit(), pack: plannedUnit(), uploaded_references: [] }),
         { code: 'FUMIN_EPISODE_SUBMISSION_UNKNOWN' },
+      )
+    }
+  }
+})
+
+test('Fumin POST 5xx and task query failures are unknown while terminal failed is explicit', async () => {
+  const { createFuminEpisodeProviderAdapter } = await import('./fuminEpisodeProviderAdapter.mjs')
+  const input = { unit: plannedUnit(), pack: plannedUnit(), uploaded_references: [] }
+  const submit = createFuminEpisodeProviderAdapter({
+    apiKey: 'test-key',
+    fetchImpl: async () => ({ ok: false, status: 503, text: async () => JSON.stringify({ message: 'upstream busy' }) }),
+  })
+  await assert.rejects(() => submit.submitGeneration(input), { code: 'FUMIN_EPISODE_SUBMISSION_UNKNOWN' })
+
+  for (const scenario of ['query-503', 'terminal-failed']) {
+    const adapter = createFuminEpisodeProviderAdapter({
+      apiKey: 'test-key',
+      fetchImpl: async () => scenario === 'query-503'
+        ? { ok: false, status: 503, text: async () => JSON.stringify({ message: 'busy' }) }
+        : { ok: true, status: 200, text: async () => JSON.stringify({ status: 'failed', fail_reason: 'policy rejected' }) },
+      sleep: async () => {},
+    })
+    if (scenario === 'query-503') {
+      await assert.rejects(() => adapter.pollGeneration({ task_id: 'task-1' }), { code: 'FUMIN_EPISODE_STATUS_UNKNOWN' })
+    } else {
+      await assert.rejects(
+        () => adapter.pollGeneration({ task_id: 'task-1' }),
+        (error) => error.code === 'FUMIN_EPISODE_PROVIDER_FAILED'
+          && error.provider_terminal_failure === true
+          && error.provider_reason === 'policy rejected',
       )
     }
   }
@@ -756,10 +805,20 @@ test('inspectArtifact accepts runner planned raw_path parameters and validates t
   const inspected = await adapter.inspectArtifact({
     raw_path: 'raw-unit.mp4',
     unit: plannedUnit(),
-    parent_pack: { dialogue: [{ text: 'Forbidden parent line.' }] },
+    parent_pack: {
+      characters: [{ id: 'lead' }],
+      dialogue: [{ text: 'Forbidden parent line.' }],
+    },
   })
   assert.equal(inspected.media.media_passed, true)
   assert.deepEqual(inspected.dialogue.target_dialogue, ['Unit line.'])
+  assert.deepEqual(inspected.role, {
+    characters: ['lead'],
+    reference_binding_passed: true,
+    visual_consistency_verified: false,
+    review_status: 'pending_external_review',
+  })
+  assert.equal(Object.hasOwn(inspected.role, 'passed'), false)
   await assert.rejects(
     () => adapter.inspectArtifact({
       raw_path: 'raw-unit.mp4',
@@ -768,6 +827,29 @@ test('inspectArtifact accepts runner planned raw_path parameters and validates t
     }),
     { code: 'FUMIN_EPISODE_TARGET_LOCALE_FAILED' },
   )
+})
+
+test('inspectArtifact marks character-free units as not requiring visual role review', async () => {
+  const { createFuminEpisodeProviderAdapter } = await import('./fuminEpisodeProviderAdapter.mjs')
+  const adapter = createFuminEpisodeProviderAdapter({
+    apiKey: 'test-key',
+    fetchImpl: async () => { throw new Error('network forbidden') },
+    runProcess: () => JSON.stringify({
+      streams: [
+        { codec_type: 'video', width: 480, height: 864, codec_name: 'h264' },
+        { codec_type: 'audio', channels: 2, codec_name: 'aac' },
+      ],
+      format: { duration: '5.000' },
+    }),
+    transcribeConsensus: async () => transcriptPair('Unit line.'),
+  })
+  const inspected = await adapter.inspectArtifact({ raw_path: 'raw-unit.mp4', unit: plannedUnit() })
+  assert.deepEqual(inspected.role, {
+    characters: [],
+    reference_binding_passed: true,
+    visual_consistency_verified: true,
+    review_status: 'not_applicable',
+  })
 })
 
 test('inspectArtifact distinguishes five-second raw media from a keep-duration canonical final while retaining unit ASR', async () => {

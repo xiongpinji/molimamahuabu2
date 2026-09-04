@@ -2584,6 +2584,8 @@
         "backend-node/src/services/redrawShotProductionPackService.js",
         "backend-node/src/services/redrawSourceAudioEvidenceService.js",
         "frontweb/package.json",
+        "frontweb/scripts/episodeVideoProviderAdapter.mjs",
+        "frontweb/scripts/episodeVideoRouteRegistry.mjs",
         "frontweb/scripts/fuminEpisodeExecutionPlan.mjs",
         "frontweb/scripts/fuminEpisodeMediaPipeline.mjs",
         "frontweb/scripts/fuminEpisodeProviderAdapter.mjs",
@@ -2591,6 +2593,7 @@
         "frontweb/scripts/fuminFullEpisodeDerivedState.mjs",
         "frontweb/scripts/run-redraw-episode-blueprint-live.mjs",
         "frontweb/scripts/run-redraw-fumin-full-episode-live.mjs",
+        "frontweb/scripts/run-redraw-video-model-fallback-live.mjs",
         "frontweb/src/api/redraw.js",
         "frontweb/src/components/redraw/RedrawBlueprintReviewPanel.vue",
         "frontweb/src/components/redraw/RedrawLocalizationReviewPanel.vue",
@@ -2621,6 +2624,8 @@
         "backend-node/test/redrawSourceAudioEvidence.test.js",
         "frontweb/e2e/redraw-backend-integration.spec.js",
         "frontweb/e2e/redraw-workspace.spec.js",
+        "frontweb/scripts/episodeVideoProviderAdapter.test.mjs",
+        "frontweb/scripts/episodeVideoRouteRegistry.test.mjs",
         "frontweb/scripts/fuminEpisodeExecutionPlan.test.mjs",
         "frontweb/scripts/fuminEpisodeMediaPipeline.test.mjs",
         "frontweb/scripts/fuminEpisodeProviderAdapter.test.mjs",
@@ -2628,6 +2633,7 @@
         "frontweb/scripts/fuminFullEpisodeDerivedState.test.mjs",
         "frontweb/scripts/run-redraw-episode-blueprint-live.test.mjs",
         "frontweb/scripts/run-redraw-fumin-full-episode-live.test.mjs",
+        "frontweb/scripts/run-redraw-video-model-fallback-live.test.mjs",
         "frontweb/src/utils/redrawBlueprintReviewState.test.mjs",
         "frontweb/test/redrawSourceRuntime.test.js",
         "workers/redraw-locale-verifier/tests/test_server.py",
@@ -2638,7 +2644,10 @@
         "docs/superpowers/plans/2026-09-03-episode-blueprint-first-redraw.md",
         "docs/superpowers/specs/2026-09-04-fumin-fixed-five-second-full-episode-generation-design.md",
         "docs/superpowers/plans/2026-09-04-fumin-fixed-five-second-full-episode-generation.md",
-        "docs/verification/redraw/fumin-fixed-five-second-full-episode-verification.md"
+        "docs/verification/redraw/fumin-fixed-five-second-full-episode-verification.md",
+        "docs/superpowers/specs/2026-09-05-redraw-isolated-video-model-fallback-design.md",
+        "docs/superpowers/plans/2026-09-05-redraw-isolated-video-model-fallback.md",
+        "docs/verification/redraw/isolated-video-model-fallback-verification.md"
       ],
       "fixCommit": null,
       "unlockHistory": [
@@ -2701,17 +2710,30 @@
             "frontweb/scripts/fuminEpisodeProviderAdapter.test.mjs",
             "backend-node/test/featureLockManifest.test.js"
           ]
+        },
+        {
+          "reason": "2026-09-04 Fumin 对白保留裁剪修复获批",
+          "approvedBy": "product-owner 2026-09-04 pr217-fumin-dialogue-preserving-normalization",
+          "impactTests": [
+            "frontweb/scripts/fuminEpisodeMediaPipeline.test.mjs",
+            "frontweb/scripts/fuminEpisodeProviderAdapter.test.mjs",
+            "frontweb/scripts/run-redraw-episode-blueprint-live.test.mjs",
+            "frontweb/scripts/run-redraw-fumin-full-episode-live.test.mjs",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-04 Fumin 对白保留裁剪修复获批",
-        "approvedBy": "product-owner 2026-09-04 pr217-fumin-dialogue-preserving-normalization",
+        "reason": "2026-09-05 整集转绘隔离多视频模型回退与最多 31 次提交获批",
+        "approvedBy": "product-owner 2026-09-05 pr217-isolated-video-model-fallback",
         "impactTests": [
-          "frontweb/scripts/fuminEpisodeMediaPipeline.test.mjs",
+          "frontweb/scripts/episodeVideoProviderAdapter.test.mjs",
+          "frontweb/scripts/episodeVideoRouteRegistry.test.mjs",
           "frontweb/scripts/fuminEpisodeProviderAdapter.test.mjs",
           "frontweb/scripts/run-redraw-episode-blueprint-live.test.mjs",
-          "frontweb/scripts/run-redraw-fumin-full-episode-live.test.mjs",
-          "backend-node/test/featureLockManifest.test.js"
+          "frontweb/scripts/run-redraw-video-model-fallback-live.test.mjs",
+          "backend-node/test/featureLockManifest.test.js",
+          "backend-node/test/incrementalReleaseScope.test.js"
         ]
       }
     },

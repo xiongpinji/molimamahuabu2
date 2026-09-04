@@ -519,6 +519,29 @@ function classifyProviderError(error) {
   return /UNKNOWN|TIMEOUT|RESULT_UNKNOWN|STATUS_UNKNOWN|REFERENCE_UPLOAD_UNKNOWN|SUBMISSION_UNKNOWN|DOWNLOAD_UNKNOWN|结果未知/i.test(code) ? 'needs_attention' : 'failed'
 }
 
+function classifyFailure(error) {
+  if (classifyProviderError(error) === 'needs_attention' || error?.indeterminate === true) return 'indeterminate'
+  if (error?.provider_terminal_failure === true) return 'explicit_provider_failure'
+  return 'local_or_verification_failure'
+}
+
+function sanitizeErrorReason(value) {
+  return String(value || '')
+    .replace(/\bBearer\s+[^\s"'<>]+/giu, '[redacted]')
+    .replace(/(\b(?:api[_-]?key|access[_-]?token|token|secret|credential|password)\b\s*[:=]\s*)[^\s"'<>]+/giu, '$1[redacted]')
+    .replace(/https?:\/\/[^\s"'<>]+/giu, '[url-redacted]')
+    .replace(/\s+/gu, ' ')
+    .trim()
+    .slice(0, 300)
+}
+
+function visualReviewStatus(inspection) {
+  const status = inspection?.role?.review_status
+  return status === 'pending_external_review' || status === 'not_applicable'
+    ? status
+    : 'not_recorded'
+}
+
 function expectedEpisodeDurationSeconds(productionPacks) {
   return productionPacks.reduce((sum, pack) => sum + (Number(pack.duration_ms) / 1000), 0)
 }
@@ -649,11 +672,14 @@ async function runShot(options, adapters) {
     task.status = 'completed_verified'
     task.completed_at = now()
     task.verification = publicPathless(finalInspection)
+    task.visual_review_status = visualReviewStatus(finalInspection)
     manifest.updated_at = task.completed_at
     writeManifest(options.stateDir, manifest)
   } catch (error) {
     task.status = classifyProviderError(error)
     task.error_code = error?.code || 'REDRAW_EPISODE_PROVIDER_FAILED'
+    task.failure_class = classifyFailure(error)
+    task.error_reason = sanitizeErrorReason(error?.provider_reason || error?.message || task.error_code)
     task.failed_at = now()
     manifest.updated_at = task.failed_at
     writeManifest(options.stateDir, manifest)
@@ -759,6 +785,7 @@ async function runVerify(options, adapters) {
       unit: planned ? clone(item) : undefined,
       parent_pack: planned ? clone(pkg.production_packs.find((pack) => pack.shot_id === item.parent_shot_id)) : undefined,
     }))
+    task.visual_review_status = visualReviewStatus(task.verify_reread)
   }
   if (manifest.episode_artifact?.artifact_id) {
     const episodePath = manifestArtifactPath(options.stateDir, manifest.episode_artifact.artifact_id, path.dirname(episodeOutputPath(options.stateDir)))
