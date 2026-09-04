@@ -38,7 +38,7 @@ test('Fumin adapter lifecycle uses injected fetch and never reads provider confi
       },
       sleep: async () => {},
       runProcess: () => JSON.stringify({
-        streams: [{ codec_type: 'video', width: 496, height: 864, codec_name: 'h264' }, { codec_type: 'audio', channels: 2, codec_name: 'aac' }],
+        streams: [{ codec_type: 'video', width: 480, height: 864, codec_name: 'h264' }, { codec_type: 'audio', channels: 2, codec_name: 'aac' }],
         format: { duration: '5.04' },
       }),
       transcribeConsensus: async () => [
@@ -58,6 +58,7 @@ test('Fumin adapter lifecycle uses injected fetch and never reads provider confi
     const pack = {
       shot_id: 'shot-1',
       duration_ms: 5000,
+      provider_duration_seconds: 5,
       prompt: 'Marcus speaks English.',
       dialogue: [{ speaker_id: 'lead', speaker_name: 'Marcus', text: 'We leave tonight.' }],
       audio_contract: { locale: 'en-US', speech_required: true },
@@ -96,8 +97,303 @@ test('Fumin transcript consensus enforces target English dialogue and silent sho
     /FUMIN_EPISODE_TARGET_LANGUAGE_FAILED/,
   )
   assert.throws(
-    () => verifyTranscriptConsensusForPack({ ...pack, audio_contract: { speech_required: false } }, transcripts),
-    /FUMIN_EPISODE_SILENT_SHOT_HAS_SPEECH/,
+    () => verifyTranscriptConsensusForPack({ ...pack, dialogue: [], audio_contract: { speech_required: false } }, transcripts),
+    /FUMIN_EPISODE_UNAPPROVED_DIALOGUE/,
+  )
+})
+
+function plannedUnit(overrides = {}) {
+  return {
+    schema_version: 'fumin-episode-execution-unit-v1',
+    unit_id: 'shot-1.part-01',
+    parent_shot_id: 'shot-1',
+    part_index: 1,
+    part_count: 1,
+    source_start_ms: 0,
+    source_end_ms: 1200,
+    keep_duration_ms: 1200,
+    provider_duration_seconds: 5,
+    parent_production_pack_hash: 'a'.repeat(64),
+    dialogue: [{ text: 'Unit line.', start_ms: 0, end_ms: 1000 }],
+    identity_reference_ids: [],
+    motion_reference_id: 'motion-1',
+    prompt: 'Clean unit prompt.\nDialogue: Unit line.',
+    ...overrides,
+  }
+}
+
+function transcriptPair(text, overrides = {}) {
+  return [
+    { model_id: 'Systran/faster-whisper-base', language: 'en', probability: 0.99, text, ...overrides },
+    { model_id: 'Systran/faster-whisper-small', language: 'en', probability: 0.99, text, ...overrides },
+  ]
+}
+
+test('planned submissions always request five-second 480p vertical audio regardless of keep duration or silence', async () => {
+  const { createFuminEpisodeProviderAdapter } = await import('./fuminEpisodeProviderAdapter.mjs')
+  const bodies = []
+  const adapter = createFuminEpisodeProviderAdapter({
+    apiKey: 'test-key',
+    fetchImpl: async (_url, options) => {
+      bodies.push(JSON.parse(options.body))
+      return { ok: true, text: async () => JSON.stringify({ id: `task-${bodies.length}` }) }
+    },
+  })
+
+  for (const unit of [
+    plannedUnit({ keep_duration_ms: 900, source_end_ms: 900 }),
+    plannedUnit({ keep_duration_ms: 5000, source_end_ms: 5000 }),
+    plannedUnit({ dialogue: [], prompt: 'Clean silent unit prompt.\nDialogue: None. Ambient sound only.' }),
+  ]) {
+    await adapter.submitGeneration({
+      unit,
+      pack: { ...unit, duration_ms: 9000, audio_contract: { speech_required: false } },
+      parent_pack: { prompt: 'Parent prompt. Dialogue: Forbidden parent line.' },
+      uploaded_references: [],
+    })
+  }
+
+  assert.equal(bodies.length, 3)
+  for (const body of bodies) {
+    assert.equal(body.duration, 5)
+    assert.equal(body.resolution, '480p')
+    assert.equal(body.aspect_ratio, '9:16')
+    assert.equal(body.generate_audio, true)
+    assert.doesNotMatch(body.prompt, /Forbidden parent line/)
+  }
+  assert.match(bodies[0].prompt, /Unit line/)
+  assert.match(bodies[2].prompt, /Ambient sound only/)
+})
+
+test('non-five-second planned unit is rejected before provider HTTP', async () => {
+  const { createFuminEpisodeProviderAdapter } = await import('./fuminEpisodeProviderAdapter.mjs')
+  let fetchCalls = 0
+  const adapter = createFuminEpisodeProviderAdapter({
+    apiKey: 'test-key',
+    fetchImpl: async () => { fetchCalls += 1 },
+  })
+  await assert.rejects(
+    () => adapter.submitGeneration({
+      unit: plannedUnit({ provider_duration_seconds: 4 }),
+      pack: plannedUnit(),
+      uploaded_references: [],
+    }),
+    { code: 'FUMIN_EPISODE_PROVIDER_DURATION_INVALID' },
+  )
+  assert.equal(fetchCalls, 0)
+})
+
+test('raw unit media validation requires readable five-second 480x864 video with audio', async () => {
+  const { validateGeneratedMediaForUnit } = await import('./fuminEpisodeProviderAdapter.mjs')
+  const unit = plannedUnit({ keep_duration_ms: 700, source_end_ms: 700 })
+  const valid = { duration_seconds: 5.04, width: 480, height: 864, rotation: 0, video_codec: 'h264', has_audio: true }
+  assert.equal(validateGeneratedMediaForUnit(unit, valid).media_passed, true)
+  assert.equal(validateGeneratedMediaForUnit(unit, { ...valid, width: 496 }).media_passed, true)
+  assert.equal(validateGeneratedMediaForUnit(unit, { ...valid, width: 864, height: 480, rotation: 90 }).media_passed, true)
+  assert.equal(validateGeneratedMediaForUnit(unit, { ...valid, width: 864, height: 496, rotation: 90 }).media_passed, true)
+  assert.throws(() => validateGeneratedMediaForUnit(unit, { ...valid, duration_seconds: 4.89 }), { code: 'FUMIN_EPISODE_OUTPUT_DURATION_INVALID' })
+  assert.throws(() => validateGeneratedMediaForUnit(unit, { ...valid, has_audio: false }), { code: 'FUMIN_EPISODE_OUTPUT_AUDIO_MISSING' })
+  assert.throws(() => validateGeneratedMediaForUnit(unit, { ...valid, width: 500 }), { code: 'FUMIN_EPISODE_OUTPUT_DIMENSIONS_INVALID' })
+  assert.throws(() => validateGeneratedMediaForUnit(unit, { ...valid, video_codec: '' }), { code: 'FUMIN_EPISODE_OUTPUT_VIDEO_MISSING' })
+})
+
+test('unit transcript consensus accepts ambient silence and rejects any recognized speech', async () => {
+  const { verifyTranscriptConsensusForUnit } = await import('./fuminEpisodeProviderAdapter.mjs')
+  const silent = plannedUnit({ dialogue: [], prompt: 'Ambient only.' })
+  assert.equal(verifyTranscriptConsensusForUnit(silent, transcriptPair('   ')).consensus_passed, true)
+  assert.throws(
+    () => verifyTranscriptConsensusForUnit(silent, transcriptPair('Someone speaks.')),
+    { code: 'FUMIN_EPISODE_UNAPPROVED_DIALOGUE' },
+  )
+})
+
+test('unit transcript consensus requires both ASRs to confirm English en-US and only the full approved dialogue', async () => {
+  const { verifyTranscriptConsensusForUnit } = await import('./fuminEpisodeProviderAdapter.mjs')
+  const unit = plannedUnit({
+    locale: 'en-US',
+    dialogue: [{ text: 'First line.' }, { text: 'Second line.' }],
+  })
+  assert.equal(verifyTranscriptConsensusForUnit(unit, transcriptPair('First line. Second line.')).exact_dialogue_present, true)
+  assert.throws(
+    () => verifyTranscriptConsensusForUnit(unit, transcriptPair('First line. Second line. Extra words.')),
+    { code: 'FUMIN_EPISODE_UNAPPROVED_DIALOGUE' },
+  )
+  assert.throws(
+    () => verifyTranscriptConsensusForUnit(unit, [transcriptPair('First line. Second line.')[0], { ...transcriptPair('First line.')[1] }]),
+    { code: 'FUMIN_EPISODE_ASR_CONSENSUS_FAILED' },
+  )
+  assert.throws(
+    () => verifyTranscriptConsensusForUnit({ ...unit, locale: 'fr-FR' }, transcriptPair('First line. Second line.')),
+    { code: 'FUMIN_EPISODE_TARGET_LOCALE_FAILED' },
+  )
+  assert.throws(
+    () => verifyTranscriptConsensusForUnit(unit, transcriptPair('First line. Second line.', { probability: undefined })),
+    { code: 'FUMIN_EPISODE_TARGET_LANGUAGE_FAILED' },
+  )
+})
+
+function rawMotionProbe() {
+  return {
+    streams: [{
+      codec_type: 'video', codec_name: 'h264', pix_fmt: 'yuv420p',
+      width: 480, height: 864, avg_frame_rate: '24/1',
+    }],
+    format: { duration: '5.000000' },
+  }
+}
+
+function prepareFixture() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fumin-adapter-prepare-'))
+  const inputs = path.join(root, 'inputs')
+  const stateDir = path.join(root, 'state')
+  fs.mkdirSync(inputs)
+  const motionPath = path.join(inputs, 'motion.mp4')
+  fs.writeFileSync(motionPath, 'source-motion')
+  const motionHash = sha256(fs.readFileSync(motionPath))
+  const pkg = {
+    package_path: path.join(inputs, 'package.json'),
+    production_packs: [{
+      shot_id: 'shot-1', start_ms: 1000, end_ms: 2200, duration_ms: 1200,
+      production_pack_hash: 'a'.repeat(64), characters: [], dialogue: [],
+      visual_contract: { references: [{ kind: 'motion', sha256: motionHash }] },
+      audio_contract: { locale: 'en-US', speech_required: false },
+      prompt: 'One silent shot.',
+    }],
+    identity_references: [],
+    motion_references: [{ id: 'motion-1', shot_id: 'shot-1', path: motionPath, sha256: motionHash }],
+  }
+  fs.writeFileSync(pkg.package_path, JSON.stringify({ fixture: true }))
+  return { root, stateDir, pkg }
+}
+
+function prepareAdapter(calls) {
+  return createPrepareAdapter(calls)
+}
+
+async function createPrepareAdapter(calls) {
+  const { createFuminEpisodeProviderAdapter } = await import('./fuminEpisodeProviderAdapter.mjs')
+  return createFuminEpisodeProviderAdapter({
+    apiKey: 'test-key',
+    fetchImpl: async () => { calls.http += 1; throw new Error('provider HTTP forbidden') },
+    ffmpegPath: 'ffmpeg-test',
+    ffprobePath: 'ffprobe-test',
+    runProcess: (command, args, code) => {
+      calls.process.push({ command, code })
+      if (code === 'FUMIN_EXECUTION_MOTION_FFMPEG_FAILED') {
+        calls.writes += 1
+        fs.writeFileSync(args.at(-1), 'materialized-motion')
+        return ''
+      }
+      return JSON.stringify(rawMotionProbe())
+    },
+  })
+}
+
+test('prepareEpisode materializes and verifies the same hash-bound relative motion evidence without HTTP or verify writes', async () => {
+  const item = prepareFixture()
+  const calls = { http: 0, writes: 0, process: [] }
+  try {
+    const adapter = await prepareAdapter(calls)
+    const materialized = await adapter.prepareEpisode({ package: item.pkg, state_dir: item.stateDir, mode: 'materialize' })
+    assert.equal(materialized.units.length, 1)
+    assert.match(materialized.units[0].unit_hash, /^[a-f0-9]{64}$/)
+    assert.deepEqual(Object.keys(materialized.units[0].materialized_motion).sort(), ['artifact_id', 'duration_seconds', 'probe', 'sha256'])
+    assert.equal(materialized.units[0].materialized_motion.artifact_id, 'provider/fumin/motion/shot-1.part-01.mp4')
+    assert.doesNotMatch(JSON.stringify(materialized), new RegExp(item.root.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')))
+    assert.equal(calls.http, 0)
+    assert.equal(calls.writes, 1)
+
+    const beforeWrites = calls.writes
+    const verified = await adapter.prepareEpisode({ package: item.pkg, state_dir: item.stateDir, mode: 'verify' })
+    assert.equal(verified.execution_plan_hash, materialized.execution_plan_hash)
+    assert.deepEqual(verified, materialized)
+    assert.equal(calls.writes, beforeWrites)
+    assert.equal(calls.http, 0)
+  } finally {
+    fs.rmSync(item.root, { recursive: true, force: true })
+  }
+})
+
+test('prepareEpisode verify rejects missing or drifted materialized and source motion', async () => {
+  for (const change of ['missing', 'drift', 'source-drift']) {
+    const item = prepareFixture()
+    const calls = { http: 0, writes: 0, process: [] }
+    try {
+      const adapter = await prepareAdapter(calls)
+      const plan = await adapter.prepareEpisode({ package: item.pkg, state_dir: item.stateDir, mode: 'materialize' })
+      const motionPath = path.join(item.stateDir, ...plan.units[0].materialized_motion.artifact_id.split('/'))
+      if (change === 'missing') fs.rmSync(motionPath)
+      else if (change === 'drift') fs.writeFileSync(motionPath, 'drifted-motion')
+      else fs.writeFileSync(item.pkg.motion_references[0].path, 'drifted-source-motion')
+      await assert.rejects(
+        () => adapter.prepareEpisode({ package: item.pkg, state_dir: item.stateDir, mode: 'verify' }),
+        {
+          code: change === 'missing'
+            ? 'FUMIN_EPISODE_MOTION_MISSING'
+            : change === 'source-drift'
+              ? 'FUMIN_EPISODE_MOTION_REFERENCE_HASH_MISMATCH'
+              : 'FUMIN_EPISODE_MOTION_HASH_MISMATCH',
+        },
+      )
+      assert.equal(calls.http, 0)
+    } finally {
+      fs.rmSync(item.root, { recursive: true, force: true })
+    }
+  }
+})
+
+test('prepareEpisode rejects unsafe state paths and invalid modes before materialization', async () => {
+  const item = prepareFixture()
+  const calls = { http: 0, writes: 0, process: [] }
+  try {
+    const adapter = await prepareAdapter(calls)
+    await assert.rejects(
+      () => adapter.prepareEpisode({ package: item.pkg, state_dir: 'relative/state', mode: 'materialize' }),
+      { code: 'FUMIN_EPISODE_STATE_PATH_INVALID' },
+    )
+    await assert.rejects(
+      () => adapter.prepareEpisode({ package: item.pkg, state_dir: path.dirname(item.pkg.package_path), mode: 'materialize' }),
+      { code: 'FUMIN_EPISODE_STATE_OVERLAPS_INPUT' },
+    )
+    await assert.rejects(
+      () => adapter.prepareEpisode({ package: item.pkg, state_dir: item.stateDir, mode: 'write' }),
+      { code: 'FUMIN_EPISODE_PREPARE_MODE_INVALID' },
+    )
+    assert.equal(calls.process.length, 0)
+    assert.equal(calls.http, 0)
+  } finally {
+    fs.rmSync(item.root, { recursive: true, force: true })
+  }
+})
+
+test('inspectArtifact accepts runner planned raw_path parameters and validates the unit contract', async () => {
+  const { createFuminEpisodeProviderAdapter } = await import('./fuminEpisodeProviderAdapter.mjs')
+  const adapter = createFuminEpisodeProviderAdapter({
+    apiKey: 'test-key',
+    fetchImpl: async () => { throw new Error('network forbidden') },
+    runProcess: () => JSON.stringify({
+      streams: [
+        { codec_type: 'video', width: 480, height: 864, codec_name: 'h264' },
+        { codec_type: 'audio', channels: 2, codec_name: 'aac' },
+      ],
+      format: { duration: '5.000' },
+    }),
+    transcribeConsensus: async () => transcriptPair('Unit line.'),
+  })
+  const inspected = await adapter.inspectArtifact({
+    raw_path: 'raw-unit.mp4',
+    unit: plannedUnit(),
+    parent_pack: { dialogue: [{ text: 'Forbidden parent line.' }] },
+  })
+  assert.equal(inspected.media.media_passed, true)
+  assert.deepEqual(inspected.dialogue.target_dialogue, ['Unit line.'])
+  await assert.rejects(
+    () => adapter.inspectArtifact({
+      raw_path: 'raw-unit.mp4',
+      unit: plannedUnit(),
+      parent_pack: { audio_contract: { locale: 'fr-FR' } },
+    }),
+    { code: 'FUMIN_EPISODE_TARGET_LOCALE_FAILED' },
   )
 })
 
