@@ -608,6 +608,16 @@ test('finalizeArtifact delegates exact raw, final, and keep-duration inputs to t
   assert.equal(calls[0].ffprobePath, 'ffprobe-local')
 })
 
+test('runProcess injection never removes the mandatory finalizeArtifact hook', async () => {
+  const { createFuminEpisodeProviderAdapter } = await import('./fuminEpisodeProviderAdapter.mjs')
+  const adapter = createFuminEpisodeProviderAdapter({
+    apiKey: 'test-key',
+    fetchImpl: async () => { throw new Error('network forbidden') },
+    runProcess: () => JSON.stringify({ streams: [], format: {} }),
+  })
+  assert.equal(typeof adapter.finalizeArtifact, 'function')
+})
+
 test('planned assemble passes normalized unit paths in execution-plan order and returns the exact episode artifact', async () => {
   const { createFuminEpisodeProviderAdapter } = await import('./fuminEpisodeProviderAdapter.mjs')
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fumin-planned-assemble-'))
@@ -618,6 +628,10 @@ test('planned assemble passes normalized unit paths in execution-plan order and 
       plannedUnit({ unit_id: 'shot-1.part-02', parent_shot_id: 'shot-1', part_index: 2, part_count: 2, keep_duration_ms: 1300 }),
     ]
     const unitPaths = units.map((unit) => path.join(root, 'outputs', 'units', `${unit.unit_id}.mp4`))
+    for (const [index, unitPath] of unitPaths.entries()) {
+      fs.mkdirSync(path.dirname(unitPath), { recursive: true })
+      fs.writeFileSync(unitPath, `normalized-${index}`)
+    }
     const calls = []
     const adapter = createFuminEpisodeProviderAdapter({
       apiKey: 'test-key',
@@ -633,7 +647,11 @@ test('planned assemble passes normalized unit paths in execution-plan order and 
       output_path: outputPath,
     })
     assert.deepEqual(result, { path: outputPath, sha256: 'b'.repeat(64) })
-    assert.deepEqual(calls[0].unitArtifacts, unitPaths)
+    assert.deepEqual(calls[0].unitArtifacts, unitPaths.map((unitPath, index) => ({
+      unit_id: units[index].unit_id,
+      path: unitPath,
+      sha256: sha256(fs.readFileSync(unitPath)),
+    })))
     assert.deepEqual(calls[0].units.map((unit) => unit.unit_id), units.map((unit) => unit.unit_id))
     assert.equal(calls[0].episodeOutputPath, outputPath)
   } finally {

@@ -767,20 +767,18 @@ export function createFuminEpisodeProviderAdapter(options = {}) {
       fs.writeFileSync(output_path, bytes, { flag: 'wx' })
       return { path: output_path, sha256: sha256Buffer(bytes), bytes: bytes.length }
     },
-    ...(options.runProcess && !options.normalizeUnitArtifact ? {} : {
-      async finalizeArtifact({ raw_path, output_path, unit }) {
-        const finalize = options.normalizeUnitArtifact || normalizeUnitArtifact
-        const finalized = finalize({
-          inputPath: raw_path,
-          outputPath: output_path,
-          outputRoot: outputRootForFinal(output_path),
-          keepDurationMs: unit?.keep_duration_ms,
-          ffmpegPath: options.ffmpegPath || defaultFfmpegPath(),
-          ffprobePath: options.ffprobePath || process.env.FFPROBE_PATH || 'ffprobe',
-        })
-        return { path: finalized.path, sha256: finalized.sha256 }
-      },
-    }),
+    async finalizeArtifact({ raw_path, output_path, unit }) {
+      const finalize = options.normalizeUnitArtifact || normalizeUnitArtifact
+      const finalized = finalize({
+        inputPath: raw_path,
+        outputPath: output_path,
+        outputRoot: outputRootForFinal(output_path),
+        keepDurationMs: unit?.keep_duration_ms,
+        ffmpegPath: options.ffmpegPath || defaultFfmpegPath(),
+        ffprobePath: options.ffprobePath || process.env.FFPROBE_PATH || 'ffprobe',
+      })
+      return { path: finalized.path, sha256: finalized.sha256 }
+    },
     async inspectArtifact({ output_path, raw_path, pack, unit, parent_pack }) {
       const filePath = output_path || raw_path
       const planned = unit
@@ -810,9 +808,14 @@ export function createFuminEpisodeProviderAdapter(options = {}) {
           fail('FUMIN_EPISODE_ASSEMBLE_PLAN_INVALID')
         }
         const assemble = options.assembleNormalizedEpisode || assembleNormalizedEpisode
+        const unitArtifacts = unit_paths.map((unitPath, index) => ({
+          unit_id: execution_plan.units[index]?.unit_id,
+          path: unitPath,
+          sha256: sha256File(unitPath),
+        }))
         const assembled = assemble({
           units: execution_plan.units,
-          unitArtifacts: unit_paths,
+          unitArtifacts,
           outputRoot: path.dirname(path.resolve(output_path)),
           episodeOutputPath: path.resolve(output_path),
           ffmpegPath: options.ffmpegPath || defaultFfmpegPath(),

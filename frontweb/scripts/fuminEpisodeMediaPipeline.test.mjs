@@ -149,7 +149,7 @@ function r4Units() {
 }
 
 test('execution units reject reordered, missing, non-contiguous parent, drifted hash, and unsafe IDs', async () => {
-  const { validateExecutionUnits, validateArtifactMapping } = await import('./fuminEpisodeMediaPipeline.mjs')
+  const { assembleNormalizedEpisode, validateExecutionUnits, validateArtifactMapping } = await import('./fuminEpisodeMediaPipeline.mjs')
   const units = r4Units()
   const reordered = [...units]
   ;[reordered[0], reordered[1]] = [reordered[1], reordered[0]]
@@ -160,11 +160,36 @@ test('execution units reject reordered, missing, non-contiguous parent, drifted 
     () => validateArtifactMapping(units, units.slice(1).map((unit) => ({ unit_id: unit.unit_id, path: 'x.mp4' }))),
     { code: 'FUMIN_MEDIA_ARTIFACT_MAPPING_INVALID' },
   )
+  assert.throws(
+    () => validateArtifactMapping(units, units.map((unit) => ({ unit_id: unit.unit_id, path: 'x.mp4' }))),
+    { code: 'FUMIN_MEDIA_ARTIFACT_HASH_INVALID' },
+  )
+  assert.throws(
+    () => validateArtifactMapping(units, units.map((unit) => ({ unit_id: unit.unit_id, path: 'x.mp4', sha256: 'not-a-sha' }))),
+    { code: 'FUMIN_MEDIA_ARTIFACT_HASH_INVALID' },
+  )
   const files = units.map((unit) => ({ unit_id: unit.unit_id, path: 'x.mp4', sha256: 'a'.repeat(64) }))
   assert.throws(
     () => validateArtifactMapping(units, [{ ...files[0], sha256: 'b'.repeat(64), actual_sha256: 'c'.repeat(64) }, ...files.slice(1)]),
     { code: 'FUMIN_MEDIA_ARTIFACT_HASH_MISMATCH' },
   )
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fumin-hash-required-'))
+  try {
+    const artifactPath = path.join(root, 'unit.mp4')
+    fs.writeFileSync(artifactPath, 'drifted')
+    const unit = { ...units[0], part_count: 1 }
+    assert.throws(
+      () => assembleNormalizedEpisode({
+        units: [unit],
+        unitArtifacts: [{ unit_id: unit.unit_id, path: artifactPath, sha256: 'a'.repeat(64) }],
+        outputRoot: path.join(root, 'outputs'),
+      }),
+      { code: 'FUMIN_MEDIA_ARTIFACT_HASH_MISMATCH' },
+    )
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
 })
 
 test('28 valid five-second raws become 28 normalized units, 24 parents, and one 68.733 second episode', { skip: !haveMediaTools(), timeout: 180_000 }, async () => {

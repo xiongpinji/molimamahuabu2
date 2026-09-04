@@ -189,6 +189,7 @@ export function normalizeUnitArtifact({
   const input = assertNoLinks(inputPath)
   const inputStat = lstat(input)
   if (!inputStat?.isFile() || inputStat.isSymbolicLink()) fail('FUMIN_MEDIA_INPUT_MISSING', input)
+  const inputHash = sha256File(input)
   ensureSafeDirectory(root)
   ensureSafeDirectory(path.dirname(target))
   assertOutputPath(root, target)
@@ -200,9 +201,11 @@ export function normalizeUnitArtifact({
       outputPath: stagingPath,
       keepDurationMs,
     }), 'FUMIN_MEDIA_FFMPEG_FAILED')
+    if (sha256File(input) !== inputHash) fail('FUMIN_MEDIA_ARTIFACT_HASH_MISMATCH', input)
     const stat = lstat(stagingPath)
     if (!stat?.isFile() || stat.isSymbolicLink() || stat.size < 1) fail('FUMIN_MEDIA_OUTPUT_MISSING')
     const media = validateNormalizedMedia(probeNormalizedMedia(stagingPath, { ffprobePath }), keepDurationMs)
+    if (sha256File(input) !== inputHash) fail('FUMIN_MEDIA_ARTIFACT_HASH_MISMATCH', input)
     const stagingHash = sha256File(stagingPath)
     assertOutputPath(root, target)
     publishExclusive(stagingPath, target)
@@ -295,6 +298,9 @@ export function validateArtifactMapping(units, artifacts) {
       fail('FUMIN_MEDIA_ARTIFACT_MAPPING_INVALID', units[index].unit_id)
     }
     seen.add(item.unit_id)
+    if (typeof item.sha256 !== 'string' || !/^[a-f0-9]{64}$/u.test(item.sha256)) {
+      fail('FUMIN_MEDIA_ARTIFACT_HASH_INVALID', item.unit_id)
+    }
     if (item.actual_sha256 && item.sha256 && item.actual_sha256 !== item.sha256) {
       fail('FUMIN_MEDIA_ARTIFACT_HASH_MISMATCH', item.unit_id)
     }
@@ -324,16 +330,22 @@ function concatArtifacts({
   ensureSafeDirectory(path.dirname(target))
   assertOutputPath(root, target)
   if (lstat(target)) fail('FUMIN_MEDIA_OUTPUT_EXISTS', target)
-  for (const input of inputs) {
-    const stat = lstat(assertNoLinks(input))
-    if (!stat?.isFile() || stat.isSymbolicLink()) fail('FUMIN_MEDIA_INPUT_MISSING', input)
-  }
+  const verifiedInputs = inputs.map((input) => {
+    if (!input || typeof input.path !== 'string' || !/^[a-f0-9]{64}$/u.test(String(input.sha256 || ''))) {
+      fail('FUMIN_MEDIA_ARTIFACT_HASH_INVALID')
+    }
+    const inputPath = assertNoLinks(input.path)
+    const stat = lstat(inputPath)
+    if (!stat?.isFile() || stat.isSymbolicLink()) fail('FUMIN_MEDIA_INPUT_MISSING', inputPath)
+    if (sha256File(inputPath) !== input.sha256) fail('FUMIN_MEDIA_ARTIFACT_HASH_MISMATCH', inputPath)
+    return { path: inputPath, sha256: input.sha256 }
+  })
   const token = `${process.pid}-${crypto.randomUUID()}`
   const listPath = path.join(path.dirname(target), `.fumin-concat-${token}.txt`)
   const stagingPath = path.join(path.dirname(target), `.fumin-concat-${token}.mp4`)
   try {
-    const list = inputs.flatMap((input, index) => [
-      `file '${escapeConcatPath(input)}'`,
+    const list = verifiedInputs.flatMap((input, index) => [
+      `file '${escapeConcatPath(input.path)}'`,
       `duration ${(inputDurationsMs[index] / 1000).toFixed(3)}`,
     ])
     fs.writeFileSync(listPath, `${list.join('\n')}\n`, { flag: 'wx' })
@@ -347,6 +359,9 @@ function concatArtifacts({
       '-c:a', 'aac', '-ar', '48000', '-ac', '2',
       '-movflags', '+faststart', stagingPath,
     ], 'FUMIN_MEDIA_CONCAT_FAILED')
+    for (const input of verifiedInputs) {
+      if (sha256File(input.path) !== input.sha256) fail('FUMIN_MEDIA_ARTIFACT_HASH_MISMATCH', input.path)
+    }
     const media = validateCanonicalMedia(
       probeNormalizedMedia(stagingPath, { ffprobePath }),
       expectedDurationMs,
@@ -380,13 +395,16 @@ export function assembleNormalizedEpisode({
     const stat = lstat(inputPath)
     if (!stat?.isFile() || stat.isSymbolicLink()) fail('FUMIN_MEDIA_INPUT_MISSING', artifact.unit_id)
     const actualHash = sha256File(inputPath)
-    if (artifact.sha256 && actualHash !== artifact.sha256) {
+    if (actualHash !== artifact.sha256) {
       fail('FUMIN_MEDIA_ARTIFACT_HASH_MISMATCH', artifact.unit_id)
     }
     const media = validateNormalizedMedia(
       probeNormalizedMedia(inputPath, { ffprobePath }),
       units[index].keep_duration_ms,
     )
+    if (sha256File(inputPath) !== actualHash) {
+      fail('FUMIN_MEDIA_ARTIFACT_HASH_MISMATCH', artifact.unit_id)
+    }
     return { ...artifact, path: inputPath, sha256: actualHash, media }
   })
   const parentShots = []
@@ -401,7 +419,7 @@ export function assembleNormalizedEpisode({
     }
     const expectedDurationMs = groupUnits.reduce((sum, unit) => sum + unit.keep_duration_ms, 0)
     const parent = concatArtifacts({
-      inputs: groupArtifacts.map((artifact) => artifact.path),
+      inputs: groupArtifacts,
       inputDurationsMs: groupUnits.map((unit) => unit.keep_duration_ms),
       outputPath: path.join(outputRoot, 'parents', `${parentId}.mp4`),
       outputRoot,
@@ -413,7 +431,7 @@ export function assembleNormalizedEpisode({
   }
   const totalDurationMs = units.reduce((sum, unit) => sum + unit.keep_duration_ms, 0)
   const episode = concatArtifacts({
-    inputs: parentShots.map((parent) => parent.path),
+    inputs: parentShots,
     inputDurationsMs: parentShots.map((parent) => units
       .filter((unit) => unit.parent_shot_id === parent.parent_shot_id)
       .reduce((sum, unit) => sum + unit.keep_duration_ms, 0)),
@@ -437,8 +455,8 @@ export function finalizeEpisodeMedia({
   const raws = validateArtifactMapping(units, rawArtifacts)
   const normalized = raws.map((raw, index) => {
     const actualHash = fs.existsSync(raw.path) ? sha256File(raw.path) : null
-    if (raw.sha256 && actualHash !== raw.sha256) fail('FUMIN_MEDIA_ARTIFACT_HASH_MISMATCH', raw.unit_id)
-    return {
+    if (actualHash !== raw.sha256) fail('FUMIN_MEDIA_ARTIFACT_HASH_MISMATCH', raw.unit_id)
+    const normalizedArtifact = {
       unit_id: raw.unit_id,
       ...normalizeUnitArtifact({
         inputPath: raw.path,
@@ -449,6 +467,8 @@ export function finalizeEpisodeMedia({
         ffprobePath,
       }),
     }
+    if (sha256File(raw.path) !== raw.sha256) fail('FUMIN_MEDIA_ARTIFACT_HASH_MISMATCH', raw.unit_id)
+    return normalizedArtifact
   })
   return assembleNormalizedEpisode({
     units,
