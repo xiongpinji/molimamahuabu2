@@ -862,9 +862,20 @@ test('shot stage keeps private uploaded asset IDs for generation POST while publ
       },
       sleep: async () => {},
       runProcess: () => JSON.stringify({
-        streams: [{ codec_type: 'video', width: 496, height: 864, codec_name: 'h264' }, { codec_type: 'audio', channels: 2, codec_name: 'aac' }],
+        streams: [
+          { codec_type: 'video', width: 480, height: 864, codec_name: 'h264', pix_fmt: 'yuv420p', avg_frame_rate: '24/1' },
+          { codec_type: 'audio', channels: 2, codec_name: 'aac', sample_rate: '48000' },
+        ],
         format: { duration: '5.02' },
       }),
+      normalizeUnitArtifact: ({ inputPath, outputPath, keepDurationMs }) => {
+        assert.equal(keepDurationMs, 5000)
+        assert.notEqual(path.resolve(inputPath), path.resolve(outputPath))
+        assert.equal(path.dirname(path.resolve(outputPath)), path.resolve(stateDir, 'outputs', 'units'))
+        fs.mkdirSync(path.dirname(outputPath), { recursive: true })
+        fs.writeFileSync(outputPath, fs.readFileSync(inputPath), { flag: 'wx' })
+        return { path: outputPath, sha256: sha256(fs.readFileSync(outputPath)) }
+      },
       transcribeConsensus: async () => [
         { model_id: 'Systran/faster-whisper-base', language: 'en', probability: 0.99, text: 'We leave tonight.' },
         { model_id: 'Systran/faster-whisper-small', language: 'en', probability: 0.99, text: 'We leave tonight.' },
