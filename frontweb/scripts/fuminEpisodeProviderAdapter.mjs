@@ -9,6 +9,12 @@ import {
   materializeFuminExecutionMotion,
   validateFuminExecutionMotionProbe,
 } from './fuminExecutionMotion.mjs'
+import {
+  assembleNormalizedEpisode,
+  normalizeUnitArtifact,
+  validateAssembledMedia,
+  validateNormalizedMedia,
+} from './fuminEpisodeMediaPipeline.mjs'
 
 const FUMIN_BASE_URL = 'https://fumin.ai'
 const FUMIN_MODEL = 'fumin-seedance-2.0-mini'
@@ -155,11 +161,28 @@ export function probeMediaWithFfprobe(filePath, adapters = {}) {
     width: Number(video.width),
     height: Number(video.height),
     video_codec: String(video.codec_name || ''),
+    pixel_format: String(video.pix_fmt || ''),
+    frame_rate: (() => {
+      const [numerator, denominator = '1'] = String(video.avg_frame_rate || video.r_frame_rate || '').split('/')
+      return Number(numerator) / Number(denominator)
+    })(),
     has_audio: Boolean(audio),
     audio_codec: String(audio?.codec_name || ''),
     audio_channels: Number(audio?.channels || 0),
+    audio_sample_rate: Number(audio?.sample_rate || 0),
+    audio_duration_seconds: Number(audio?.duration ?? payload.format?.duration),
+    audio_start_seconds: Number(audio?.start_time || 0),
     rotation: Number.isFinite(rotation) ? rotation : 0,
   }
+}
+
+export function isFinalUnitArtifactPath(filePath) {
+  return path.basename(path.dirname(path.resolve(String(filePath || '')))).toLowerCase() === 'units'
+}
+
+function outputRootForFinal(outputPath) {
+  const parent = path.dirname(path.resolve(outputPath))
+  return path.basename(parent).toLowerCase() === 'units' ? path.dirname(parent) : parent
 }
 
 export function validateGeneratedMediaForUnit(unit, probe) {
@@ -744,12 +767,29 @@ export function createFuminEpisodeProviderAdapter(options = {}) {
       fs.writeFileSync(output_path, bytes, { flag: 'wx' })
       return { path: output_path, sha256: sha256Buffer(bytes), bytes: bytes.length }
     },
+    ...(options.runProcess && !options.normalizeUnitArtifact ? {} : {
+      async finalizeArtifact({ raw_path, output_path, unit }) {
+        const finalize = options.normalizeUnitArtifact || normalizeUnitArtifact
+        const finalized = finalize({
+          inputPath: raw_path,
+          outputPath: output_path,
+          outputRoot: outputRootForFinal(output_path),
+          keepDurationMs: unit?.keep_duration_ms,
+          ffmpegPath: options.ffmpegPath || defaultFfmpegPath(),
+          ffprobePath: options.ffprobePath || process.env.FFPROBE_PATH || 'ffprobe',
+        })
+        return { path: finalized.path, sha256: finalized.sha256 }
+      },
+    }),
     async inspectArtifact({ output_path, raw_path, pack, unit, parent_pack }) {
       const filePath = output_path || raw_path
       const planned = unit
         ? { ...unit, locale: unit.locale || parent_pack?.audio_contract?.locale || pack?.audio_contract?.locale || 'en-US' }
         : pack
-      const media = validateGeneratedMediaForUnit(planned, probeMediaWithFfprobe(filePath, options))
+      const probe = probeMediaWithFfprobe(filePath, options)
+      const media = unit && isFinalUnitArtifactPath(filePath)
+        ? validateNormalizedMedia(probe, unit.keep_duration_ms)
+        : validateGeneratedMediaForUnit(planned, probe)
       const transcripts = options.transcribeConsensus
         ? await options.transcribeConsensus(filePath, verifierPython)
         : transcribeEnglishConsensus(filePath, verifierPython, options)
@@ -764,7 +804,22 @@ export function createFuminEpisodeProviderAdapter(options = {}) {
         dialogue: speech,
       }
     },
-    async assembleEpisode({ shot_paths, output_path }) {
+    async assembleEpisode({ shot_paths, unit_paths, execution_plan, output_path }) {
+      if (unit_paths || execution_plan) {
+        if (!Array.isArray(unit_paths) || !Array.isArray(execution_plan?.units)) {
+          fail('FUMIN_EPISODE_ASSEMBLE_PLAN_INVALID')
+        }
+        const assemble = options.assembleNormalizedEpisode || assembleNormalizedEpisode
+        const assembled = assemble({
+          units: execution_plan.units,
+          unitArtifacts: unit_paths,
+          outputRoot: path.dirname(path.resolve(output_path)),
+          episodeOutputPath: path.resolve(output_path),
+          ffmpegPath: options.ffmpegPath || defaultFfmpegPath(),
+          ffprobePath: options.ffprobePath || process.env.FFPROBE_PATH || 'ffprobe',
+        })
+        return { path: assembled.episode.path, sha256: assembled.episode.sha256 }
+      }
       fs.mkdirSync(path.dirname(output_path), { recursive: true })
       if (fs.existsSync(output_path)) fail('FUMIN_EPISODE_ASSEMBLE_OUTPUT_EXISTS', output_path)
       for (const shotPath of shot_paths) {
@@ -787,8 +842,16 @@ export function createFuminEpisodeProviderAdapter(options = {}) {
       if (bytes.length < 1) fail('FUMIN_EPISODE_ASSEMBLE_OUTPUT_EMPTY', output_path)
       return { path: output_path, sha256: sha256Buffer(bytes), bytes: bytes.length }
     },
-    async inspectEpisode({ output_path }) {
-      return { media: probeMediaWithFfprobe(output_path, options) }
+    async inspectEpisode({ output_path, manifest }) {
+      const probe = probeMediaWithFfprobe(output_path, options)
+      const units = manifest?.execution_plan?.units || manifest?.execution_units
+      const media = Array.isArray(units) && units.length > 0
+        ? validateAssembledMedia(
+          probe,
+          units.reduce((sum, unit) => sum + Number(unit.keep_duration_ms), 0),
+        )
+        : probe
+      return { media }
     },
   }
 }

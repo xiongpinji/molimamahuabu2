@@ -546,6 +546,101 @@ test('inspectArtifact accepts runner planned raw_path parameters and validates t
   )
 })
 
+test('inspectArtifact distinguishes five-second raw media from a keep-duration canonical final while retaining unit ASR', async () => {
+  const { createFuminEpisodeProviderAdapter } = await import('./fuminEpisodeProviderAdapter.mjs')
+  const probes = []
+  const adapter = createFuminEpisodeProviderAdapter({
+    apiKey: 'test-key',
+    fetchImpl: async () => { throw new Error('network forbidden') },
+    runProcess: (_command, args) => {
+      const filePath = args.at(-1)
+      const final = /[\\/]outputs[\\/]units[\\/]/.test(filePath)
+      probes.push(final ? 'final' : 'raw')
+      return JSON.stringify({
+        streams: [
+          {
+            codec_type: 'video', codec_name: 'h264', pix_fmt: 'yuv420p', width: 480, height: 864,
+            avg_frame_rate: '24/1', duration: final ? '1.266' : '5.000', start_time: '0.000',
+          },
+          {
+            codec_type: 'audio', codec_name: 'aac', sample_rate: '48000', channels: 2,
+            duration: final ? '1.266' : '5.000', start_time: '0.000',
+          },
+        ],
+        format: { duration: final ? '1.266' : '5.000' },
+      })
+    },
+    transcribeConsensus: async () => transcriptPair('Unit line.'),
+  })
+  const unit = plannedUnit({ keep_duration_ms: 1266 })
+  const raw = await adapter.inspectArtifact({ output_path: 'C:/state/outputs/raw/shot.part-01.mp4', unit })
+  const final = await adapter.inspectArtifact({ output_path: 'C:/state/outputs/units/shot.part-01.mp4', unit })
+  assert.equal(raw.media.duration_seconds, 5)
+  assert.equal(final.media.duration_seconds, 1.266)
+  assert.equal(final.media.pixel_format, 'yuv420p')
+  assert.equal(final.dialogue.exact_dialogue_present, true)
+  assert.deepEqual(probes, ['raw', 'final'])
+})
+
+test('finalizeArtifact delegates exact raw, final, and keep-duration inputs to the local pipeline', async () => {
+  const { createFuminEpisodeProviderAdapter } = await import('./fuminEpisodeProviderAdapter.mjs')
+  const calls = []
+  const adapter = createFuminEpisodeProviderAdapter({
+    apiKey: 'test-key',
+    fetchImpl: async () => { throw new Error('network forbidden') },
+    normalizeUnitArtifact: (input) => {
+      calls.push(input)
+      return { path: input.outputPath, sha256: 'a'.repeat(64), media: { media_passed: true } }
+    },
+    ffmpegPath: 'ffmpeg-local',
+    ffprobePath: 'ffprobe-local',
+  })
+  const result = await adapter.finalizeArtifact({
+    raw_path: 'C:/state/outputs/raw/shot.part-01.mp4',
+    output_path: 'C:/state/outputs/units/shot.part-01.mp4',
+    unit: plannedUnit({ keep_duration_ms: 1266 }),
+  })
+  assert.deepEqual(result, { path: 'C:/state/outputs/units/shot.part-01.mp4', sha256: 'a'.repeat(64) })
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].keepDurationMs, 1266)
+  assert.equal(calls[0].outputRoot, path.resolve('C:/state/outputs'))
+  assert.equal(calls[0].ffmpegPath, 'ffmpeg-local')
+  assert.equal(calls[0].ffprobePath, 'ffprobe-local')
+})
+
+test('planned assemble passes normalized unit paths in execution-plan order and returns the exact episode artifact', async () => {
+  const { createFuminEpisodeProviderAdapter } = await import('./fuminEpisodeProviderAdapter.mjs')
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fumin-planned-assemble-'))
+  try {
+    const outputPath = path.join(root, 'outputs', 'episode.mp4')
+    const units = [
+      plannedUnit({ unit_id: 'shot-1.part-01', parent_shot_id: 'shot-1', part_index: 1, part_count: 2, keep_duration_ms: 1200 }),
+      plannedUnit({ unit_id: 'shot-1.part-02', parent_shot_id: 'shot-1', part_index: 2, part_count: 2, keep_duration_ms: 1300 }),
+    ]
+    const unitPaths = units.map((unit) => path.join(root, 'outputs', 'units', `${unit.unit_id}.mp4`))
+    const calls = []
+    const adapter = createFuminEpisodeProviderAdapter({
+      apiKey: 'test-key',
+      fetchImpl: async () => { throw new Error('network forbidden') },
+      assembleNormalizedEpisode: (input) => {
+        calls.push(input)
+        return { episode: { path: input.episodeOutputPath, sha256: 'b'.repeat(64), media: {} }, parent_shots: [] }
+      },
+    })
+    const result = await adapter.assembleEpisode({
+      unit_paths: unitPaths,
+      execution_plan: { units },
+      output_path: outputPath,
+    })
+    assert.deepEqual(result, { path: outputPath, sha256: 'b'.repeat(64) })
+    assert.deepEqual(calls[0].unitArtifacts, unitPaths)
+    assert.deepEqual(calls[0].units.map((unit) => unit.unit_id), units.map((unit) => unit.unit_id))
+    assert.equal(calls[0].episodeOutputPath, outputPath)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('Fumin adapter assembles two verified shots with ffmpeg concat instead of raw byte concatenation', async () => {
   const { createFuminEpisodeProviderAdapter } = await import('./fuminEpisodeProviderAdapter.mjs')
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fumin-assemble-'))
