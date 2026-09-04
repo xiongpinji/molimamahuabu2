@@ -464,6 +464,57 @@ test('prepareEpisode stages motion before rejecting a final-directory junction s
   }
 })
 
+test('prepareEpisode gives the materializer only an unpredictable staging file in the canonical state root', async (t) => {
+  const item = prepareFixture()
+  const outside = path.join(item.root, 'outside')
+  const linkType = process.platform === 'win32' ? 'junction' : 'dir'
+  let materializerParent = null
+  let swappedChildDirectory = false
+  try {
+    fs.mkdirSync(outside)
+    const linkProbe = path.join(item.root, 'link-probe')
+    try {
+      fs.symlinkSync(outside, linkProbe, linkType)
+      fs.rmSync(linkProbe)
+    } catch (error) {
+      if (['EPERM', 'EACCES', 'ENOSYS'].includes(error?.code)) {
+        t.skip('directory symlink/junction creation is not permitted on this host')
+        return
+      }
+      throw error
+    }
+    const { createFuminEpisodeProviderAdapter } = await import('./fuminEpisodeProviderAdapter.mjs')
+    const adapter = createFuminEpisodeProviderAdapter({
+      apiKey: 'test-key',
+      fetchImpl: async () => { throw new Error('provider HTTP forbidden') },
+      ffmpegPath: 'ffmpeg-test',
+      ffprobePath: 'ffprobe-test',
+      runProcess: (_command, args, code) => {
+        if (code === 'FUMIN_EXECUTION_MOTION_FFMPEG_FAILED') {
+          materializerParent = path.dirname(args.at(-1))
+          const canonicalState = fs.realpathSync(item.stateDir)
+          if (path.resolve(materializerParent) !== path.resolve(canonicalState)) {
+            fs.rmSync(materializerParent, { recursive: true, force: true })
+            fs.symlinkSync(outside, materializerParent, linkType)
+            swappedChildDirectory = true
+          }
+          fs.writeFileSync(args.at(-1), 'materialized-motion')
+          return ''
+        }
+        return JSON.stringify(rawMotionProbe())
+      },
+    })
+
+    await adapter.prepareEpisode({ package: item.pkg, state_dir: item.stateDir, mode: 'materialize' })
+    assert.equal(path.resolve(materializerParent), path.resolve(fs.realpathSync(item.stateDir)))
+    assert.equal(swappedChildDirectory, false)
+    assert.deepEqual(fs.readdirSync(outside), [])
+    assert.equal(fs.existsSync(path.join(item.stateDir, 'provider', 'fumin', '.staging')), false)
+  } finally {
+    fs.rmSync(item.root, { recursive: true, force: true })
+  }
+})
+
 test('inspectArtifact accepts runner planned raw_path parameters and validates the unit contract', async () => {
   const { createFuminEpisodeProviderAdapter } = await import('./fuminEpisodeProviderAdapter.mjs')
   const adapter = createFuminEpisodeProviderAdapter({
