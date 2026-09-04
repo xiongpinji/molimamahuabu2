@@ -16,6 +16,18 @@ function sha256(value) {
   return crypto.createHash('sha256').update(value).digest('hex')
 }
 
+function assertNoSensitiveEvidenceFields(value) {
+  if (Array.isArray(value)) {
+    for (const item of value) assertNoSensitiveEvidenceFields(item)
+    return
+  }
+  if (!value || typeof value !== 'object') return
+  for (const [key, nested] of Object.entries(value)) {
+    assert.equal(['bytes', 'url', 'key', 'model'].includes(key.toLowerCase()), false, key)
+    assertNoSensitiveEvidenceFields(nested)
+  }
+}
+
 function rawProbe(overrides = {}) {
   return {
     streams: [{
@@ -260,12 +272,12 @@ test('successful materialization publishes SHA-256-bound local evidence', () => 
     assert.equal(fs.readFileSync(item.outputPath).equals(outputBytes), true)
     assert.equal(evidence.outputPath, item.outputPath)
     assert.equal(evidence.sha256, sha256(outputBytes))
-    assert.equal(evidence.bytes, outputBytes.length)
     assert.equal(evidence.duration_seconds, 5)
     assert.equal(evidence.probe.has_audio, false)
     assert.deepEqual(Object.keys(evidence).sort(), [
-      'bytes', 'duration_seconds', 'outputPath', 'probe', 'sha256',
+      'duration_seconds', 'outputPath', 'probe', 'sha256',
     ])
+    assertNoSensitiveEvidenceFields(evidence)
     assert.deepEqual(fs.readdirSync(path.dirname(item.outputPath)), ['unit.mp4'])
   } finally {
     fs.rmSync(item.root, { recursive: true, force: true })

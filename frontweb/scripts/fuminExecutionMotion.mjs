@@ -197,7 +197,6 @@ export function materializeFuminExecutionMotion(input, adapters = {}) {
     const evidence = {
       outputPath,
       sha256: sha256File(temporaryPath),
-      bytes: fs.statSync(temporaryPath).size,
       duration_seconds: probe.duration_seconds,
       probe,
     }
