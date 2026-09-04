@@ -177,10 +177,16 @@ function createOfflineFetch(rawBytes, { unknownAt = null } = {}) {
       if (url.hostname === 'fumin.ai' && url.pathname === '/api/v3/contents/generations/tasks' && method === 'POST') {
         generationPosts += 1
         const body = JSON.parse(String(options.body || '{}'))
+        assert.equal(body.model, 'seedance-2.0-mini')
+        assert.deepEqual(body.content.map((item) => item.type), ['text', 'video_url'])
+        assert.match(body.content[0].text, /Ambient sound only/)
+        assert.match(body.content[1].video_url.url, /^https:\/\/offline\.test\/assets\/\d+$/u)
         assert.equal(body.duration, 5)
         assert.equal(body.resolution, '480p')
-        assert.equal(body.aspect_ratio, '9:16')
+        assert.equal(body.ratio, '9:16')
         assert.equal(body.generate_audio, true)
+        assert.equal(body.watermark, false)
+        assert.doesNotMatch(String(options.body), /"references"|"asset_id"|"prompt"|"aspect_ratio"/)
         const unit = executionUnits[generationPosts - 1]
         assert.ok(unit, `missing execution unit for generation ${generationPosts}`)
         generationKeys.push(`${unit.unit_id}:${unit.unit_hash}`)
