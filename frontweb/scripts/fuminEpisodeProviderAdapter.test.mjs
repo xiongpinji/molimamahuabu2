@@ -366,6 +366,41 @@ test('prepareEpisode rejects unsafe state paths and invalid modes before materia
   }
 })
 
+test('prepareEpisode rejects a linked provider directory before materialize or verify can escape state', async (t) => {
+  let linkSupported = true
+  for (const mode of ['materialize', 'verify']) {
+    const item = prepareFixture()
+    const outside = path.join(item.root, 'outside')
+    const provider = path.join(item.stateDir, 'provider')
+    const calls = { http: 0, writes: 0, process: [] }
+    try {
+      fs.mkdirSync(item.stateDir)
+      fs.mkdirSync(outside)
+      try {
+        fs.symlinkSync(outside, provider, process.platform === 'win32' ? 'junction' : 'dir')
+      } catch (error) {
+        if (['EPERM', 'EACCES', 'ENOSYS'].includes(error?.code)) {
+          linkSupported = false
+          break
+        }
+        throw error
+      }
+      const adapter = await prepareAdapter(calls)
+      await assert.rejects(
+        () => adapter.prepareEpisode({ package: item.pkg, state_dir: item.stateDir, mode }),
+        { code: 'FUMIN_EPISODE_STATE_PATH_UNSAFE' },
+      )
+      assert.deepEqual(fs.readdirSync(outside), [])
+      assert.equal(calls.process.length, 0)
+      assert.equal(calls.writes, 0)
+      assert.equal(calls.http, 0)
+    } finally {
+      fs.rmSync(item.root, { recursive: true, force: true })
+    }
+  }
+  if (!linkSupported) t.skip('directory symlink/junction creation is not permitted on this host')
+})
+
 test('inspectArtifact accepts runner planned raw_path parameters and validates the unit contract', async () => {
   const { createFuminEpisodeProviderAdapter } = await import('./fuminEpisodeProviderAdapter.mjs')
   const adapter = createFuminEpisodeProviderAdapter({

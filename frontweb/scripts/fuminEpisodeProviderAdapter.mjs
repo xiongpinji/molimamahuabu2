@@ -274,24 +274,89 @@ function sameOrInside(parent, child) {
   return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative))
 }
 
-function assertPathHasNoSymlink(targetPath) {
+function comparablePath(value) {
+  const resolved = path.resolve(value)
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved
+}
+
+function lstatIfPresent(filePath) {
+  try {
+    return fs.lstatSync(filePath)
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null
+    throw error
+  }
+}
+
+function assertPathComponentsSafe(targetPath) {
   const resolved = path.resolve(targetPath)
   const root = path.parse(resolved).root
   let current = root
   for (const segment of path.relative(root, resolved).split(path.sep).filter(Boolean)) {
     current = path.join(current, segment)
-    if (fs.existsSync(current) && fs.lstatSync(current).isSymbolicLink()) {
-      fail('FUMIN_EPISODE_STATE_SYMLINK_REJECTED', current)
+    const stat = lstatIfPresent(current)
+    if (!stat) break
+    if (stat.isSymbolicLink()) fail('FUMIN_EPISODE_STATE_PATH_UNSAFE', current)
+    const actual = fs.realpathSync(current)
+    if (comparablePath(actual) !== comparablePath(current)) {
+      fail('FUMIN_EPISODE_STATE_PATH_UNSAFE', current)
     }
   }
   return resolved
+}
+
+function assertStateTargetSafe(stateRoot, targetPath) {
+  const target = path.resolve(targetPath)
+  if (!sameOrInside(stateRoot, target)) fail('FUMIN_EPISODE_STATE_PATH_ESCAPE', target)
+  assertPathComponentsSafe(stateRoot)
+  assertPathComponentsSafe(target)
+  if (lstatIfPresent(stateRoot)) {
+    let existing = target
+    while (!lstatIfPresent(existing) && existing !== path.dirname(existing)) existing = path.dirname(existing)
+    const canonicalState = fs.realpathSync(stateRoot)
+    const canonicalExisting = fs.realpathSync(existing)
+    if (!sameOrInside(canonicalState, canonicalExisting)) {
+      fail('FUMIN_EPISODE_STATE_PATH_UNSAFE', existing)
+    }
+  }
+  return target
+}
+
+function ensureDirectoryPathSafe(directoryPath) {
+  const resolved = path.resolve(directoryPath)
+  const root = path.parse(resolved).root
+  let current = root
+  for (const segment of path.relative(root, resolved).split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment)
+    let stat = lstatIfPresent(current)
+    if (!stat) {
+      try {
+        fs.mkdirSync(current)
+      } catch (error) {
+        if (error?.code !== 'EEXIST') throw error
+      }
+      stat = lstatIfPresent(current)
+    }
+    if (!stat?.isDirectory() || stat.isSymbolicLink()
+      || comparablePath(fs.realpathSync(current)) !== comparablePath(current)) {
+      fail('FUMIN_EPISODE_STATE_PATH_UNSAFE', current)
+    }
+  }
+  return resolved
+}
+
+function ensureStateParentSafe(stateRoot, parentPath) {
+  assertStateTargetSafe(stateRoot, parentPath)
+  ensureDirectoryPathSafe(stateRoot)
+  ensureDirectoryPathSafe(parentPath)
+  assertStateTargetSafe(stateRoot, parentPath)
 }
 
 function safeStateRoot(stateDir, pkg) {
   if (typeof stateDir !== 'string' || !path.isAbsolute(stateDir)) {
     fail('FUMIN_EPISODE_STATE_PATH_INVALID')
   }
-  const stateRoot = assertPathHasNoSymlink(stateDir)
+  const stateRoot = assertPathComponentsSafe(stateDir)
   const inputs = [
     pkg?.package_path,
     pkg?.source_media?.path,
@@ -370,9 +435,10 @@ function prepareFuminEpisode(pkg, stateDir, mode, adapters) {
   const packs = new Map(pkg.production_packs.map((pack) => [pack.shot_id, pack]))
   const motions = Array.isArray(pkg.motion_references) ? pkg.motion_references : []
   const planReceipt = receiptPath(stateRoot)
+  assertStateTargetSafe(stateRoot, planReceipt)
 
   if (mode === 'materialize') {
-    if (fs.existsSync(planReceipt)) fail('FUMIN_EPISODE_PREPARE_OUTPUT_EXISTS', planReceipt)
+    if (lstatIfPresent(planReceipt)) fail('FUMIN_EPISODE_PREPARE_OUTPUT_EXISTS', planReceipt)
     const work = basePlan.units.map((unit) => {
       const pack = packs.get(unit.parent_shot_id)
       const matches = motions.filter((item) => String(item.shot_id) === unit.parent_shot_id)
@@ -389,11 +455,15 @@ function prepareFuminEpisode(pkg, stateDir, mode, adapters) {
       }
       const artifactId = motionArtifactId(unit.unit_id)
       const outputPath = artifactPath(stateRoot, artifactId)
-      if (fs.existsSync(outputPath)) fail('FUMIN_EPISODE_PREPARE_OUTPUT_EXISTS', artifactId)
+      assertStateTargetSafe(stateRoot, outputPath)
+      if (lstatIfPresent(outputPath)) fail('FUMIN_EPISODE_PREPARE_OUTPUT_EXISTS', artifactId)
       return { unit, pack, sourcePath, artifactId, outputPath }
     })
     const evidenceByUnit = new Map()
     for (const item of work) {
+      ensureStateParentSafe(stateRoot, path.dirname(item.outputPath))
+      assertStateTargetSafe(stateRoot, item.outputPath)
+      if (lstatIfPresent(item.outputPath)) fail('FUMIN_EPISODE_PREPARE_OUTPUT_EXISTS', item.artifactId)
       const created = materializeFuminExecutionMotion({
         sourcePath: item.sourcePath,
         outputPath: item.outputPath,
@@ -409,12 +479,14 @@ function prepareFuminEpisode(pkg, stateDir, mode, adapters) {
       })
     }
     const plan = withMaterializedEvidence(basePlan, evidenceByUnit)
-    fs.mkdirSync(path.dirname(planReceipt), { recursive: true })
+    ensureStateParentSafe(stateRoot, path.dirname(planReceipt))
+    assertStateTargetSafe(stateRoot, planReceipt)
+    if (lstatIfPresent(planReceipt)) fail('FUMIN_EPISODE_PREPARE_OUTPUT_EXISTS', planReceipt)
     fs.writeFileSync(planReceipt, `${JSON.stringify(plan, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' })
     return plan
   }
 
-  if (!fs.existsSync(planReceipt) || fs.lstatSync(planReceipt).isSymbolicLink()
+  if (!lstatIfPresent(planReceipt) || fs.lstatSync(planReceipt).isSymbolicLink()
     || !fs.lstatSync(planReceipt).isFile()) {
     fail('FUMIN_EPISODE_PLAN_RECEIPT_MISSING')
   }
@@ -441,7 +513,8 @@ function prepareFuminEpisode(pkg, stateDir, mode, adapters) {
     const artifactId = motionArtifactId(unit.unit_id)
     if (!expected || expected.artifact_id !== artifactId) fail('FUMIN_EPISODE_PLAN_DRIFT')
     const outputPath = artifactPath(stateRoot, artifactId)
-    if (!fs.existsSync(outputPath) || fs.lstatSync(outputPath).isSymbolicLink()
+    assertStateTargetSafe(stateRoot, outputPath)
+    if (!lstatIfPresent(outputPath) || fs.lstatSync(outputPath).isSymbolicLink()
       || !fs.lstatSync(outputPath).isFile()) {
       fail('FUMIN_EPISODE_MOTION_MISSING', artifactId)
     }
