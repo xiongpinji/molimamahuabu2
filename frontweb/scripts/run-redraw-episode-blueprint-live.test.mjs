@@ -33,6 +33,38 @@ function packHash(pack) {
   return sha256(stableStringify(copy))
 }
 
+function canonicalHash(value, omittedKey) {
+  const copy = JSON.parse(JSON.stringify(value))
+  if (omittedKey) delete copy[omittedKey]
+  return sha256(stableStringify(copy))
+}
+
+function makeExecutionPlan(pkg, units) {
+  const pack = pkg.production_packs[0]
+  const plan = {
+    schema_version: 'redraw-provider-execution-plan-v1',
+    provider: 'planned-provider',
+    units: units || [{
+      schema_version: 'fumin-episode-execution-unit-v1',
+      unit_id: `${pack.shot_id}.part-01`,
+      parent_shot_id: pack.shot_id,
+      part_index: 1,
+      part_count: 1,
+      source_start_ms: pack.start_ms,
+      source_end_ms: pack.end_ms,
+      keep_duration_ms: pack.duration_ms,
+      provider_duration_seconds: 5,
+      parent_production_pack_hash: pack.production_pack_hash,
+      dialogue: pack.dialogue,
+      identity_reference_ids: ['lead-main'],
+      motion_reference_id: 'shot-1-motion',
+      prompt: pack.prompt,
+    }],
+  }
+  plan.execution_plan_hash = canonicalHash(plan)
+  return plan
+}
+
 function makeEpisodePackage(root, overrides = {}) {
   const sourcePath = file(root, 'source/master.mp4', Buffer.from('master-video'))
   const identityPath = file(root, 'refs/marcus.png', Buffer.from('identity-marcus'))
@@ -71,6 +103,283 @@ function makeEpisodePackage(root, overrides = {}) {
   const packagePath = file(root, 'package/episode-package.json', `${JSON.stringify(episodePackage, null, 2)}\n`)
   return { packagePath, episodePackage, sourcePath, identityPath, motionPath }
 }
+
+test('preflight persists immutable provider execution plan and derived unit hashes without upload or submit', async () => {
+  const { parseArgs, runStage } = await import('./run-redraw-episode-blueprint-live.mjs')
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-execution-plan-'))
+  try {
+    const { packagePath } = makeEpisodePackage(root)
+    const stateDir = path.join(root, 'state')
+    const calls = { prepare: 0, upload: 0, submit: 0 }
+    let prepareInput
+    const provider = {
+      name: 'planned-provider',
+      async prepareEpisode(input) {
+        calls.prepare += 1
+        prepareInput = input
+        input.package.target.locale = 'mutated-by-provider'
+        return makeExecutionPlan(JSON.parse(fs.readFileSync(packagePath, 'utf8')))
+      },
+      async uploadReference() { calls.upload += 1 },
+      async submitGeneration() { calls.submit += 1 },
+    }
+    const result = await runStage(parseArgs(['--episode-package', packagePath, '--state-dir', stateDir, '--stage', 'preflight']), {
+      provider,
+      now: () => new Date('2026-09-04T00:00:00Z'),
+    })
+    const manifest = JSON.parse(fs.readFileSync(path.join(stateDir, 'private-manifest.json'), 'utf8'))
+
+    assert.deepEqual(calls, { prepare: 1, upload: 0, submit: 0 })
+    assert.equal(prepareInput.state_dir, stateDir)
+    assert.equal(prepareInput.mode, 'materialize')
+    assert.equal(manifest.target.locale, 'en-US')
+    assert.equal(result.execution_plan.schema_version, 'redraw-provider-execution-plan-v1')
+    assert.equal(result.execution_units.length, 1)
+    assert.match(result.execution_units[0].unit_hash, /^[a-f0-9]{64}$/)
+    assert.equal(result.execution_units[0].unit_hash, canonicalHash(result.execution_plan.units[0]))
+    assert.equal(result.execution_plan_hash, result.execution_plan.execution_plan_hash)
+    assert.deepEqual(manifest.execution_units, result.execution_units)
+    assert.equal(manifest.tasks.length, 0)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('execution plan validation rejects invalid hashes and reference bindings before any upload or submit', async () => {
+  const { parseArgs, runStage } = await import('./run-redraw-episode-blueprint-live.mjs')
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-execution-plan-invalid-'))
+  try {
+    const { packagePath } = makeEpisodePackage(root)
+    const stateDir = path.join(root, 'state')
+    let providerCalls = 0
+    const provider = {
+      name: 'planned-provider',
+      async prepareEpisode({ package: pkg }) {
+        const plan = makeExecutionPlan(pkg)
+        plan.units[0].motion_reference_id = 'missing-motion'
+        return plan
+      },
+      async uploadReference() { providerCalls += 1 },
+      async submitGeneration() { providerCalls += 1 },
+    }
+    await assert.rejects(
+      () => runStage(parseArgs(['--episode-package', packagePath, '--state-dir', stateDir, '--stage', 'preflight']), { provider }),
+      /REDRAW_EPISODE_EXECUTION_PLAN_HASH_MISMATCH|REDRAW_EPISODE_EXECUTION_UNIT_REFERENCE_INVALID/,
+    )
+    assert.equal(providerCalls, 0)
+    assert.equal(fs.existsSync(path.join(stateDir, 'private-manifest.json')), false)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('sequence persists before upload and stops at the first unknown unit', async () => {
+  const { parseArgs, runStage } = await import('./run-redraw-episode-blueprint-live.mjs')
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-unit-sequence-'))
+  try {
+    const { packagePath } = makeEpisodePackage(root)
+    const stateDir = path.join(root, 'state')
+    const submitted = []
+    const raw = Buffer.from('raw-unit')
+    let plan
+    const provider = {
+      name: 'planned-provider',
+      async prepareEpisode({ package: pkg }) {
+        const pack = pkg.production_packs[0]
+        const units = [[0, 1600], [1600, 3200], [3200, 5000]].map(([start, end], index) => ({
+          schema_version: 'fumin-episode-execution-unit-v1',
+          unit_id: `shot-1.part-0${index + 1}`,
+          parent_shot_id: 'shot-1',
+          part_index: index + 1,
+          part_count: 3,
+          source_start_ms: start,
+          source_end_ms: end,
+          keep_duration_ms: end - start,
+          provider_duration_seconds: 5,
+          parent_production_pack_hash: pack.production_pack_hash,
+          dialogue: [],
+          identity_reference_ids: ['lead-main'],
+          motion_reference_id: 'shot-1-motion',
+          prompt: `part ${index + 1}`,
+        }))
+        plan = makeExecutionPlan(pkg, units)
+        return plan
+      },
+      async uploadReference() {
+        const manifest = JSON.parse(fs.readFileSync(path.join(stateDir, 'private-manifest.json'), 'utf8'))
+        assert.equal(manifest.tasks.at(-1).status, 'reference_upload_started')
+        return { asset_id: 'asset' }
+      },
+      async submitGeneration({ unit }) {
+        submitted.push(unit.unit_id)
+        if (unit.unit_id === 'shot-1.part-02') {
+          const error = new Error('provider result status unknown')
+          error.code = 'FUMIN_EPISODE_STATUS_UNKNOWN'
+          throw error
+        }
+        return { task_id: `task-${unit.unit_id}` }
+      },
+      async pollGeneration() { return { video_url: 'https://example.test/raw.mp4' } },
+      async downloadResult({ output_path }) {
+        fs.mkdirSync(path.dirname(output_path), { recursive: true })
+        fs.writeFileSync(output_path, raw)
+        return { path: output_path, sha256: sha256(raw) }
+      },
+      async inspectArtifact({ unit }) { return { unit_id: unit.unit_id, passed: true } },
+    }
+    await runStage(parseArgs(['--episode-package', packagePath, '--state-dir', stateDir, '--stage', 'preflight']), { provider })
+    await assert.rejects(
+      () => runStage(parseArgs(['--episode-package', packagePath, '--state-dir', stateDir, '--stage', 'sequence']), { provider }),
+      (error) => error.code === 'FUMIN_EPISODE_STATUS_UNKNOWN',
+    )
+    const manifest = JSON.parse(fs.readFileSync(path.join(stateDir, 'private-manifest.json'), 'utf8'))
+    assert.deepEqual(submitted, ['shot-1.part-01', 'shot-1.part-02'])
+    assert.equal(manifest.tasks[0].status, 'completed_verified')
+    assert.equal(manifest.tasks[1].status, 'needs_attention')
+    assert.equal(manifest.tasks.length, 2)
+    assert.equal(manifest.execution_plan_hash, plan.execution_plan_hash)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('sequence skips matching completed units and refuses any existing incomplete unit', async () => {
+  const { parseArgs, runStage } = await import('./run-redraw-episode-blueprint-live.mjs')
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-unit-resume-'))
+  try {
+    const { packagePath } = makeEpisodePackage(root)
+    const stateDir = path.join(root, 'state')
+    const provider = { name: 'planned-provider', async prepareEpisode({ package: pkg }) { return makeExecutionPlan(pkg) } }
+    await runStage(parseArgs(['--episode-package', packagePath, '--state-dir', stateDir, '--stage', 'preflight']), { provider })
+    const manifestPath = path.join(stateDir, 'private-manifest.json')
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+    manifest.tasks.push({
+      unit_id: manifest.execution_units[0].unit_id,
+      unit_hash: manifest.execution_units[0].unit_hash,
+      shot_id: 'shot-1',
+      status: 'completed_verified',
+    })
+    fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
+    const skipped = await runStage(parseArgs(['--episode-package', packagePath, '--state-dir', stateDir, '--stage', 'sequence']), { provider })
+    assert.equal(skipped.tasks.length, 1)
+
+    manifest.tasks[0].status = 'provider_processing'
+    fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
+    await assert.rejects(
+      () => runStage(parseArgs(['--episode-package', packagePath, '--state-dir', stateDir, '--stage', 'sequence']), { provider }),
+      /REDRAW_EPISODE_UNIT_ALREADY_SUBMITTED/,
+    )
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('unit stage fails closed on execution unit, task hash, or plan hash drift', async () => {
+  const { parseArgs, runStage } = await import('./run-redraw-episode-blueprint-live.mjs')
+  for (const drift of ['unit', 'task', 'plan']) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), `redraw-unit-${drift}-drift-`))
+    try {
+      const { packagePath } = makeEpisodePackage(root)
+      const stateDir = path.join(root, 'state')
+      let calls = 0
+      const provider = {
+        name: 'planned-provider',
+        async prepareEpisode({ package: pkg }) { return makeExecutionPlan(pkg) },
+        async uploadReference() { calls += 1 },
+        async submitGeneration() { calls += 1 },
+        async pollGeneration() {},
+        async downloadResult() {},
+        async inspectArtifact() {},
+      }
+      await runStage(parseArgs(['--episode-package', packagePath, '--state-dir', stateDir, '--stage', 'preflight']), { provider })
+      const manifestPath = path.join(stateDir, 'private-manifest.json')
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+      if (drift === 'unit') manifest.execution_units[0].prompt = 'drifted'
+      if (drift === 'plan') manifest.execution_plan_hash = '0'.repeat(64)
+      if (drift === 'task') manifest.tasks.push({ unit_id: manifest.execution_units[0].unit_id, unit_hash: '0'.repeat(64), status: 'completed_verified' })
+      fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
+      await assert.rejects(
+        () => runStage(parseArgs(['--episode-package', packagePath, '--state-dir', stateDir, '--stage', 'shot', '--unit-id', 'shot-1.part-01']), { provider }),
+        /REDRAW_EPISODE_(?:EXECUTION_PLAN|EXECUTION_UNIT|TASK_UNIT)_HASH_MISMATCH/,
+      )
+      assert.equal(calls, 0)
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  }
+})
+
+test('planned unit keeps independently hashed raw and finalized artifacts', async () => {
+  const { parseArgs, runStage } = await import('./run-redraw-episode-blueprint-live.mjs')
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-unit-finalize-'))
+  try {
+    const { packagePath } = makeEpisodePackage(root)
+    const stateDir = path.join(root, 'state')
+    const rawBytes = Buffer.from('raw-five-second-artifact')
+    const finalBytes = Buffer.from('trimmed-final-artifact')
+    const provider = {
+      name: 'planned-provider',
+      async prepareEpisode({ package: pkg }) { return makeExecutionPlan(pkg) },
+      async uploadReference() { return { asset_id: 'asset' } },
+      async submitGeneration() { return { task_id: 'task-1' } },
+      async pollGeneration() { return { video_url: 'https://example.test/raw.mp4' } },
+      async downloadResult({ output_path }) { fs.mkdirSync(path.dirname(output_path), { recursive: true }); fs.writeFileSync(output_path, rawBytes); return { path: output_path, sha256: sha256(rawBytes) } },
+      async inspectArtifact({ output_path }) { assert.equal(sha256(fs.readFileSync(output_path)), sha256(rawBytes)); return { passed: true } },
+      async finalizeArtifact({ raw_path, output_path, unit }) {
+        assert.equal(sha256(fs.readFileSync(raw_path)), sha256(rawBytes))
+        assert.equal(unit.unit_id, 'shot-1.part-01')
+        fs.mkdirSync(path.dirname(output_path), { recursive: true })
+        fs.writeFileSync(output_path, finalBytes)
+        return { path: output_path, sha256: sha256(finalBytes) }
+      },
+    }
+    await runStage(parseArgs(['--episode-package', packagePath, '--state-dir', stateDir, '--stage', 'preflight']), { provider })
+    const result = await runStage(parseArgs(['--episode-package', packagePath, '--state-dir', stateDir, '--stage', 'shot', '--unit-id', 'shot-1.part-01']), { provider })
+    assert.equal(result.raw_artifact.sha256, sha256(rawBytes))
+    assert.equal(result.artifact.sha256, sha256(finalBytes))
+    assert.notEqual(result.raw_artifact.artifact_id, result.artifact.artifact_id)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('planned assemble uses final artifacts in execution-unit order and passes an immutable plan', async () => {
+  const { parseArgs, runStage } = await import('./run-redraw-episode-blueprint-live.mjs')
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-unit-assemble-'))
+  try {
+    const { packagePath } = makeEpisodePackage(root)
+    const stateDir = path.join(root, 'state')
+    const packageValue = JSON.parse(fs.readFileSync(packagePath, 'utf8'))
+    const base = makeExecutionPlan(packageValue).units[0]
+    const units = [1, 2].map((part) => ({ ...base, unit_id: `shot-1.part-0${part}`, part_index: part, part_count: 2, source_start_ms: (part - 1) * 2500, source_end_ms: part * 2500, keep_duration_ms: 2500 }))
+    const provider = { name: 'planned-provider', async prepareEpisode({ package: pkg }) { return makeExecutionPlan(pkg, units) } }
+    await runStage(parseArgs(['--episode-package', packagePath, '--state-dir', stateDir, '--stage', 'preflight']), { provider })
+    const manifestPath = path.join(stateDir, 'private-manifest.json')
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+    manifest.tasks = manifest.execution_units.map((unit, index) => {
+      const bytes = Buffer.from(`final-${index + 1}`)
+      const artifactPath = file(stateDir, `outputs/units/${unit.unit_id}.mp4`, bytes)
+      return { unit_id: unit.unit_id, unit_hash: unit.unit_hash, shot_id: unit.parent_shot_id, status: 'completed_verified', artifact: { artifact_id: path.relative(stateDir, artifactPath).replace(/\\/g, '/'), sha256: sha256(bytes), size: bytes.length } }
+    })
+    fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
+    let assembleInput
+    const episodeBytes = Buffer.from('episode')
+    provider.assembleEpisode = async (input) => {
+      assembleInput = input
+      input.execution_plan.units.reverse()
+      fs.mkdirSync(path.dirname(input.output_path), { recursive: true })
+      fs.writeFileSync(input.output_path, episodeBytes)
+      return { path: input.output_path, sha256: sha256(episodeBytes) }
+    }
+    provider.inspectEpisode = async () => ({ media: { duration_seconds: 5, has_audio: true } })
+    await runStage(parseArgs(['--episode-package', packagePath, '--state-dir', stateDir, '--stage', 'assemble']), { provider })
+    assert.deepEqual(assembleInput.unit_paths.map((item) => path.basename(item)), ['shot-1.part-01.mp4', 'shot-1.part-02.mp4'])
+    const persisted = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+    assert.deepEqual(persisted.execution_plan.units.map((unit) => unit.unit_id), ['shot-1.part-01', 'shot-1.part-02'])
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
 
 async function makeVerifyState(root) {
   const { parseArgs, runStage } = await import('./run-redraw-episode-blueprint-live.mjs')
@@ -165,6 +474,8 @@ test('generic runner rejects relative paths, unknown flags, stale hashes, and pa
   const { parseArgs, loadEpisodePackage } = await import('./run-redraw-episode-blueprint-live.mjs')
   assert.throws(() => parseArgs(['--episode-package', 'relative.json', '--state-dir', 'C:/state', '--stage', 'preflight']), /REDRAW_EPISODE_PACKAGE_PATH_INVALID/)
   assert.throws(() => parseArgs(['--episode-package', 'C:/package.json', '--state-dir', 'C:/state', '--stage', 'preflight', '--provider-url', 'https://example.test']), /REDRAW_EPISODE_RUNNER_ARGUMENT_UNKNOWN/)
+  assert.throws(() => parseArgs(['--episode-package', 'C:/package.json', '--state-dir', 'C:/state', '--stage', 'shot', '--shot-id', 'shot-1', '--unit-id', 'unit-1']), /REDRAW_EPISODE_SHOT_UNIT_AMBIGUOUS/)
+  assert.throws(() => parseArgs(['--episode-package', 'C:/package.json', '--state-dir', 'C:/state', '--stage', 'sequence', '--unit-id', 'unit-1']), /REDRAW_EPISODE_RUNNER_ARGUMENT_INVALID/)
 
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-episode-runner-'))
   try {
