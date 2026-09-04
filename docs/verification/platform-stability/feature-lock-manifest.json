@@ -2306,15 +2306,25 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-09-04 R5 零提交预检顶层身份引用兼容修复",
+          "approvedBy": "product-owner 2026-09-04 fumin-fixed-five-second-full-episode-option-a",
+          "impactTests": [
+            "frontweb/scripts/fuminEpisodeExecutionPlan.test.mjs",
+            "frontweb/scripts/run-redraw-fumin-full-episode-live.test.mjs",
+            "backend-node/test/redrawShotProductionPack.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-04 R5 零提交预检顶层身份引用兼容修复",
+        "reason": "2026-09-04 Fumin 已验证上游提交合同与未知结果收口获批",
         "approvedBy": "product-owner 2026-09-04 fumin-fixed-five-second-full-episode-option-a",
         "impactTests": [
-          "frontweb/scripts/fuminEpisodeExecutionPlan.test.mjs",
+          "frontweb/scripts/fuminEpisodeProviderAdapter.test.mjs",
+          "frontweb/scripts/run-redraw-episode-blueprint-live.test.mjs",
           "frontweb/scripts/run-redraw-fumin-full-episode-live.test.mjs",
-          "backend-node/test/redrawShotProductionPack.test.js",
           "backend-node/test/featureLockManifest.test.js"
         ]
       }
