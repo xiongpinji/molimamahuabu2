@@ -5,7 +5,10 @@ export const FUMIN_PROVIDER_DURATION_SECONDS = 5
 const MAX_KEEP_DURATION_MS = FUMIN_PROVIDER_DURATION_SECONDS * 1000
 const HEX_64 = /^[a-f0-9]{64}$/i
 const CJK_TEXT = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/u
-const FORBIDDEN_RUNTIME_FIELD = /(?:^|_)(?:provider|model|api[_-]?key|base[_-]?url|url|key|token|secret|credential|password)(?:_|$)/i
+const FORBIDDEN_RUNTIME_FIELDS = new Set([
+  'provider', 'model', 'key', 'apikey', 'secret', 'token', 'credential', 'password',
+  'url', 'uri', 'endpoint', 'baseurl',
+])
 
 function fail(code, detail = '') {
   const error = new Error(detail ? `${code}: ${detail}` : code)
@@ -56,7 +59,10 @@ function assertNoRuntimeFields(value) {
   }
   if (!isObject(value)) return
   for (const [key, item] of Object.entries(value)) {
-    if (FORBIDDEN_RUNTIME_FIELD.test(key)) fail('FUMIN_EXECUTION_RUNTIME_CONFIG_FORBIDDEN', key)
+    const compactKey = key.replace(/[_-]/gu, '').toLowerCase()
+    if (FORBIDDEN_RUNTIME_FIELDS.has(compactKey) || /(?:url|uri)$/iu.test(key)) {
+      fail('FUMIN_EXECUTION_RUNTIME_CONFIG_FORBIDDEN', key)
+    }
     assertNoRuntimeFields(item)
   }
 }
@@ -296,6 +302,7 @@ export function buildFuminEpisodeExecutionPlan(pkg) {
   if (!isObject(pkg) || !Array.isArray(pkg.production_packs) || pkg.production_packs.length === 0) {
     fail('FUMIN_EXECUTION_PACKAGE_INVALID')
   }
+  assertNoRuntimeFields(pkg)
   const identityReferences = normalizeIdentityReferences(pkg.identity_references)
   const motionReferences = normalizeMotionReferences(pkg.motion_references)
   const seenShotIds = new Set()

@@ -200,13 +200,8 @@ test('rewrites the parent Dialogue block with only the complete dialogue in each
   assert.ok(plan.units.every((unit) => !/[\u3400-\u9fff]/u.test(unit.prompt)))
 })
 
-test('hashes the canonical plan deterministically and excludes provider runtime configuration', () => {
-  const pkg = {
-    ...makeLockedPackage(),
-    api_key: 'must-not-leak',
-    model: 'must-not-leak',
-    base_url: 'https://must-not-leak.example',
-  }
+test('hashes the canonical plan deterministically', () => {
+  const pkg = makeLockedPackage()
   const first = buildFuminEpisodeExecutionPlan(pkg)
   const second = buildFuminEpisodeExecutionPlan(structuredClone(pkg))
   const changed = structuredClone(pkg)
@@ -214,7 +209,48 @@ test('hashes the canonical plan deterministically and excludes provider runtime 
 
   assert.deepEqual(second, first)
   assert.notEqual(buildFuminEpisodeExecutionPlan(changed).execution_plan_hash, first.execution_plan_hash)
-  assert.doesNotMatch(JSON.stringify(first), /must-not-leak|api_key|base_url|"model"/)
+})
+
+test('rejects runtime-sensitive field names recursively without scanning dialogue text', () => {
+  const sensitiveFields = [
+    'key', 'apiKey', 'api_key', 'secret', 'token', 'credential', 'password', 'model',
+    'url', 'uri', 'endpoint', 'baseUrl', 'base_url', 'audioUrl', 'sourceUrl', 'callbackUrl',
+    'endpointUrl', 'assetURL', 'sourceUri', 'callbackURI',
+  ]
+  for (const field of sensitiveFields) {
+    const pkg = makeLockedPackage()
+    pkg.production_packs[0].dialogue = [{
+      id: 'turn-1',
+      start_ms: 100,
+      end_ms: 900,
+      text: 'The URL label and https://example.test are ordinary dialogue text.',
+      metadata: { nested: { [field]: 'must-not-leak' } },
+    }]
+    assert.throws(
+      () => buildFuminEpisodeExecutionPlan(pkg),
+      (error) => error.code === 'FUMIN_EXECUTION_RUNTIME_CONFIG_FORBIDDEN',
+      field,
+    )
+  }
+
+  const rootNested = makeLockedPackage()
+  rootNested.runtime = { nested: { endpointUrl: 'must-not-leak' } }
+  assert.throws(
+    () => buildFuminEpisodeExecutionPlan(rootNested),
+    (error) => error.code === 'FUMIN_EXECUTION_RUNTIME_CONFIG_FORBIDDEN',
+  )
+
+  const safe = makeLockedPackage()
+  safe.production_packs[0].dialogue = [{
+    id: 'turn-1',
+    start_ms: 100,
+    end_ms: 900,
+    text: 'The URL label and https://example.test are ordinary dialogue text.',
+  }]
+  assert.match(
+    buildFuminEpisodeExecutionPlan(safe).units[0].dialogue[0].text,
+    /URL label.*https:\/\/example\.test/,
+  )
 })
 
 test('fails closed for malformed packs, references, dialogue and non-contiguous timelines', () => {
