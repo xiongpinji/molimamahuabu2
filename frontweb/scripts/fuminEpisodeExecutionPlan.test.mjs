@@ -280,7 +280,7 @@ test('removes only known parent dialogue lines while preserving following non-di
   assert.match(first.prompt, /Audio locale: en-US\./)
 })
 
-test('removes stale speaker dialogue bullets even when structured dialogue text has changed', () => {
+test('removes stale and removed-speaker dialogue bullets without consuming later constraints', () => {
   const pack = makePack({
     shot_id: 'shot-stale-dialogue',
     start_ms: 0,
@@ -297,17 +297,20 @@ test('removes stale speaker dialogue bullets even when structured dialogue text 
       'Shot shot-stale-dialogue.',
       'Dialogue:',
       '- Ava: stale first line.',
+      '* Ben: obsolete removed-speaker line.',
       '- Keep exact logo placement.',
       'Audio locale: en-US.',
+      'Camera: Preserve the locked camera.',
     ].join('\n'),
   })
 
   const [first, second] = buildFuminEpisodeExecutionPlan(makePackage([pack])).units
 
-  assert.doesNotMatch(first.prompt, /stale first line|First line/)
+  assert.doesNotMatch(first.prompt, /stale first line|obsolete removed-speaker line|First line/)
   assert.match(first.prompt, /Keep exact logo placement\./)
   assert.match(first.prompt, /Audio locale: en-US\./)
-  assert.doesNotMatch(second.prompt, /stale first line/)
+  assert.match(first.prompt, /Camera: Preserve the locked camera\./)
+  assert.doesNotMatch(second.prompt, /stale first line|obsolete removed-speaker line/)
   assert.match(second.prompt, /Dialogue: Ava: First line\./)
   assert.equal((second.prompt.match(/^Dialogue:/gmu) || []).length, 1)
 })

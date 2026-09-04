@@ -320,13 +320,11 @@ function normalizePromptLine(line) {
 
 function parentPromptWithoutDialogue(prompt, dialogue) {
   const dialogueLines = new Set()
-  const speakers = new Set()
   for (const turn of dialogue) {
     const text = normalizePromptLine(turn.text)
     dialogueLines.add(text)
     for (const speaker of [turn.speaker_name, turn.speaker_id]) {
       if (speaker) {
-        speakers.add(normalizePromptLine(speaker).toLowerCase())
         dialogueLines.add(normalizePromptLine(`${speaker}: ${turn.text}`))
       }
     }
@@ -343,8 +341,7 @@ function parentPromptWithoutDialogue(prompt, dialogue) {
       continue
     }
     const bullet = line.match(/^\s*[-*]\s*([^:\r\n]+):\s*.+$/u)
-    const knownSpeaker = bullet && speakers.has(normalizePromptLine(bullet[1]).toLowerCase())
-    if (knownSpeaker || dialogueLines.has(normalizePromptLine(line))) continue
+    if (bullet || dialogueLines.has(normalizePromptLine(line))) continue
     if (!/^\s*[-*]\s+/u.test(line) && /^\s*[A-Za-z][A-Za-z0-9 -]*:\s*/u.test(line)) {
       inDialogue = false
     }
