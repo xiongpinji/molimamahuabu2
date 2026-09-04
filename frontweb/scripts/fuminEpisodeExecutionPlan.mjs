@@ -320,18 +320,37 @@ function normalizePromptLine(line) {
 
 function parentPromptWithoutDialogue(prompt, dialogue) {
   const dialogueLines = new Set()
+  const speakers = new Set()
   for (const turn of dialogue) {
     const text = normalizePromptLine(turn.text)
     dialogueLines.add(text)
     for (const speaker of [turn.speaker_name, turn.speaker_id]) {
-      if (speaker) dialogueLines.add(normalizePromptLine(`${speaker}: ${turn.text}`))
+      if (speaker) {
+        speakers.add(normalizePromptLine(speaker).toLowerCase())
+        dialogueLines.add(normalizePromptLine(`${speaker}: ${turn.text}`))
+      }
     }
   }
-  return prompt.split(/\r?\n/u)
-    .filter((line) => !/^\s*Dialogue\s*:/iu.test(line))
-    .filter((line) => !dialogueLines.has(normalizePromptLine(line)))
-    .join('\n')
-    .trim()
+  const kept = []
+  let inDialogue = false
+  for (const line of prompt.split(/\r?\n/u)) {
+    if (/^\s*Dialogue\s*:/iu.test(line)) {
+      inDialogue = true
+      continue
+    }
+    if (!inDialogue) {
+      kept.push(line)
+      continue
+    }
+    const bullet = line.match(/^\s*[-*]\s*([^:\r\n]+):\s*.+$/u)
+    const knownSpeaker = bullet && speakers.has(normalizePromptLine(bullet[1]).toLowerCase())
+    if (knownSpeaker || dialogueLines.has(normalizePromptLine(line))) continue
+    if (!/^\s*[-*]\s+/u.test(line) && /^\s*[A-Za-z][A-Za-z0-9 -]*:\s*/u.test(line)) {
+      inDialogue = false
+    }
+    kept.push(line)
+  }
+  return kept.join('\n').trim()
 }
 
 function buildExecutionUnitPrompt(pack, dialogue) {

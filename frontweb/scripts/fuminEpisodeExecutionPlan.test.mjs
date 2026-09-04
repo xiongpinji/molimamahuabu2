@@ -280,6 +280,38 @@ test('removes only known parent dialogue lines while preserving following non-di
   assert.match(first.prompt, /Audio locale: en-US\./)
 })
 
+test('removes stale speaker dialogue bullets even when structured dialogue text has changed', () => {
+  const pack = makePack({
+    shot_id: 'shot-stale-dialogue',
+    start_ms: 0,
+    end_ms: 8000,
+    dialogue: [{
+      id: 'current',
+      speaker_id: 'lead',
+      speaker_name: 'Ava',
+      start_ms: 5000,
+      end_ms: 7000,
+      text: 'First line.',
+    }],
+    prompt: [
+      'Shot shot-stale-dialogue.',
+      'Dialogue:',
+      '- Ava: stale first line.',
+      '- Keep exact logo placement.',
+      'Audio locale: en-US.',
+    ].join('\n'),
+  })
+
+  const [first, second] = buildFuminEpisodeExecutionPlan(makePackage([pack])).units
+
+  assert.doesNotMatch(first.prompt, /stale first line|First line/)
+  assert.match(first.prompt, /Keep exact logo placement\./)
+  assert.match(first.prompt, /Audio locale: en-US\./)
+  assert.doesNotMatch(second.prompt, /stale first line/)
+  assert.match(second.prompt, /Dialogue: Ava: First line\./)
+  assert.equal((second.prompt.match(/^Dialogue:/gmu) || []).length, 1)
+})
+
 test('hashes the canonical plan deterministically', () => {
   const pkg = makeLockedPackage()
   const first = buildFuminEpisodeExecutionPlan(pkg)
