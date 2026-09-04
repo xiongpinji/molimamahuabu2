@@ -839,7 +839,10 @@ test('shot stage keeps private uploaded asset IDs for generation POST while publ
       provider: { name: 'fumin' },
     })
     const postedBodies = []
+    const probedPaths = []
     let uploadCount = 0
+    let normalizeCalls = 0
+    let normalizedOutputSha256 = null
     const videoBytes = Buffer.from('verified-local-mp4')
     const adapter = createFuminEpisodeProviderAdapter({
       apiKey: 'test-key',
@@ -861,20 +864,25 @@ test('shot stage keeps private uploaded asset IDs for generation POST while publ
         throw new Error(`unexpected url ${url}`)
       },
       sleep: async () => {},
-      runProcess: () => JSON.stringify({
-        streams: [
-          { codec_type: 'video', width: 480, height: 864, codec_name: 'h264', pix_fmt: 'yuv420p', avg_frame_rate: '24/1' },
-          { codec_type: 'audio', channels: 2, codec_name: 'aac', sample_rate: '48000' },
-        ],
-        format: { duration: '5.02' },
-      }),
+      runProcess: (_command, args) => {
+        probedPaths.push(path.resolve(args.at(-1)))
+        return JSON.stringify({
+          streams: [
+            { codec_type: 'video', width: 480, height: 864, codec_name: 'h264', pix_fmt: 'yuv420p', avg_frame_rate: '24/1' },
+            { codec_type: 'audio', channels: 2, codec_name: 'aac', sample_rate: '48000' },
+          ],
+          format: { duration: '5.02' },
+        })
+      },
       normalizeUnitArtifact: ({ inputPath, outputPath, keepDurationMs }) => {
+        normalizeCalls += 1
         assert.equal(keepDurationMs, 5000)
         assert.notEqual(path.resolve(inputPath), path.resolve(outputPath))
         assert.equal(path.dirname(path.resolve(outputPath)), path.resolve(stateDir, 'outputs', 'units'))
         fs.mkdirSync(path.dirname(outputPath), { recursive: true })
         fs.writeFileSync(outputPath, fs.readFileSync(inputPath), { flag: 'wx' })
-        return { path: outputPath, sha256: sha256(fs.readFileSync(outputPath)) }
+        normalizedOutputSha256 = sha256(fs.readFileSync(outputPath))
+        return { path: outputPath, sha256: normalizedOutputSha256 }
       },
       transcribeConsensus: async () => [
         { model_id: 'Systran/faster-whisper-base', language: 'en', probability: 0.99, text: 'We leave tonight.' },
@@ -884,7 +892,17 @@ test('shot stage keeps private uploaded asset IDs for generation POST while publ
     const result = await runStage(parseArgs(['--episode-package', packagePath, '--state-dir', stateDir, '--stage', 'shot', '--shot-id', 'shot-1']), { provider: adapter })
     const privateManifest = JSON.parse(fs.readFileSync(path.join(stateDir, 'private-manifest.json'), 'utf8'))
     const publicEvidence = JSON.parse(fs.readFileSync(path.join(stateDir, 'shot-1-public-evidence.json'), 'utf8'))
+    const rawArtifactPath = path.resolve(stateDir, result.raw_artifact.artifact_id)
+    const finalArtifactPath = path.resolve(stateDir, result.artifact.artifact_id)
 
+    assert.equal(normalizeCalls, 1)
+    assert.notEqual(result.raw_artifact.artifact_id, result.artifact.artifact_id)
+    assert.match(result.raw_artifact.artifact_id, /^outputs\/(?:raw|shots)\/[^/]+\.mp4$/)
+    assert.match(result.artifact.artifact_id, /^outputs\/units\/[^/]+\.mp4$/)
+    assert.equal(result.artifact.sha256, normalizedOutputSha256)
+    assert.equal(probedPaths.length, 2)
+    assert.ok(probedPaths.includes(rawArtifactPath))
+    assert.ok(probedPaths.includes(finalArtifactPath))
     assert.deepEqual(postedBodies[0].references.map((item) => item.asset_id), ['asset-1', 'asset-2'])
     assert.equal(privateManifest.tasks[0].uploaded_references[0].asset_id, 'asset-1')
     assert.equal(privateManifest.tasks[0].uploaded_references[0].size, Buffer.byteLength('identity-marcus'))
