@@ -19,7 +19,7 @@ R7 完成后再次逐行复核 R5、R6，均为 0 个缺失或哈希不匹配；
 
 ## R7 自包含工件
 
-- 根目录：`C:\Users\canqu\Documents\茉莉妈妈2\.codex-staging\episode-blueprint-fumin-readiness-20260904-r7`。
+- 根目录：`<r7-root>`（本地隔离验收目录）。
 - R7 从 R4 只读独立重建，没有从 R5/R6 复制 package 或 state。R4 输入审计确认：8 张 identity、24 个父 motion、24 个 production pack、15 段 dialogue，锁定蓝图、本地化与生产包哈希全部匹配，锁定内容重新编译一致。
 - R7 `SHA256SUMS.txt`：83/83 行复核通过，文件自身 SHA-256 为 `e7d791f0718d74b0dc1538e03c34c795e9af2f583d3b3a84ccaf539b096b9303`；清单按设计不包含自身，避免递归哈希。
 
@@ -46,7 +46,7 @@ R7 完成后再次逐行复核 R5、R6，均为 0 个缺失或哈希不匹配；
 实际命令：
 
 ```text
-node scripts/run-redraw-fumin-full-episode-live.mjs --episode-package "C:\Users\canqu\Documents\茉莉妈妈2\.codex-staging\episode-blueprint-fumin-readiness-20260904-r7\package\episode-package.json" --state-dir "C:\Users\canqu\Documents\茉莉妈妈2\.codex-staging\episode-blueprint-fumin-readiness-20260904-r7\state" --stage preflight
+node scripts/run-redraw-fumin-full-episode-live.mjs --episode-package "<r7-root>\package\episode-package.json" --state-dir "<r7-root>\state" --stage preflight
 ```
 
 - 起止 UTC：`2026-09-04T05:33:43.4987104Z` 至 `2026-09-04T05:34:02.3324040Z`；退出码 0；终态 `preflight_passed`。
