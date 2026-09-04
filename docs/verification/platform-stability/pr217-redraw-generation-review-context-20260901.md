@@ -104,3 +104,14 @@
 - 基于不可变 r8 包重新编译的本地 r9 包位于 `.codex-staging/episode-blueprint-fumin-readiness-20260904-r9-dialogue-revision`：蓝图哈希保持 `f62842d9fbdb006d84b8b7b63ff05c09e7e74850a5d0a86ab5fa01bc607aae8d`，本地化哈希更新为 `3d1787c323f374787ae82a8656b0d992eb15b25c6f8aad1440de6559d45a01f0`，整包 SHA-256 为 `4c3bec472d2586b936f48b0a4c5de55c20f284d30cb6ce02494757b48bad10d8`。
 - r9 零付费 preflight 通过：8 张身份参考、24 段动作参考、24 个生产包、28 个执行单元，目标 `en-US`、美国角色名、480p、9:16、有声合同均完整；末镜提示词和对白快照只包含新句。供应商 GET/POST、上传、生成和计费次数均为 0。
 - r18 仍是失败证据，r9 只证明修订后的产品数据与本地生成合同就绪，不代表真实成片已经通过。新的真实样片必须绑定后续新 HEAD、使用全新隔离状态并取得单独明确授权；不得复用 r18。
+
+### 2026-09-04 r19 整集交付门禁与对白节奏修订
+
+- 用户授权启动真实整集交付测试且不设费用上限后，先在全新隔离状态 `pr217-fumin-full-episode-20260904-r19-delivery` 完成零提交 preflight，再把风险最高的末镜作为整集 28 次提交额度内的首个门禁；该状态最多 28 次生成提交，任一失败或结果未知立即停止且不重试。
+- r19 只提交 `shot-24.part-01` 一次并上传 1 张 Ethan Cole 身份图和 1 段动作参考。生成结果可读取，SHA-256 为 `6b018ed8acfc81146b5c51df8c30a2e930202686c3ed44032703716e9910361f`；媒体为 H.264、496x864、24 fps、5.088 秒，含 AAC 32 kHz 双声道音轨，均方音量约 -22.1 dB、峰值约 -2.6 dB。
+- base ASR 精确识别 `The World Cup is where my fortune begins.`，small ASR 识别为 `The World Cup is where my my fortune begins.`；双模型未达成逐词一致，终态为 `FUMIN_EPISODE_ASR_CONSENSUS_FAILED`。其余 27 个单元保持 0 提交，r19 保留且不复用、不重试。
+- 根因是末镜批准对白在 2033 ms 口播窗口中包含 9 个单词，约 266 WPM；模型生成了可辨识英文，但在 `my fortune` 处出现重复或不稳定。验收器继续保持严格双 ASR 逐词一致，没有用归一化删除重复词或降低门禁。
+- 最小内容修订为 7 词、约 207 WPM 的等义钩子 `My fortune starts with the World Cup.`。TDD 红灯为 27 项中 26 通过、1 失败；更新真实整集 fixture 后 27/27 通过，并新增末镜最多 7 词的节奏锁。
+- r10 本地整集包 SHA-256 为 `eb3777440e662d4b0831a3b6fc0bf342a367eef654d8dff2da6c77fc75321091`，本地化哈希为 `30124d34f9512511e52c8d8a9ee23d2e53182cbe33b2f3e206692bf0254f6f9c`；蓝图、8 张身份参考、24 段动作参考、模型和目标合同保持不变。
+- 全新 r21 零提交 preflight 通过：24 个镜头包、28 个执行单元、目标 `en-US`、480p、9:16、有声，执行计划哈希为 `02c3d2062eba25c92b4241d912ff663aace22ff2d0274080d7edc07daaea77d3`，任务数为 0，供应商调用和扣费为 0。
+- r19 是失败证据，r21 只是修订后的本地就绪状态。必须先把本次 fixture、测试和证据推送到 PR #217 并等待同一新 HEAD 的 Hosted CI 全绿；随后新的真实提交仍须使用全新状态和新的明确授权。

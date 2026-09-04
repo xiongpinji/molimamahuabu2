@@ -407,7 +407,7 @@ export const redrawLatinAmericanCase = Object.freeze({
       kind: 'spoken',
       speech_required: true,
       turns: [
-        { speaker_id: 'mateo', localized_text: 'The World Cup is where my fortune begins.', start_ms: 64_500, end_ms: 68_000 },
+        { speaker_id: 'mateo', localized_text: 'My fortune starts with the World Cup.', start_ms: 64_500, end_ms: 68_000 },
       ],
     }],
   },

@@ -96,8 +96,9 @@ test('末镜英文钩子使用清晰词界且保留原意', () => {
     .find((row) => row.shot_id === 'shot-9')
 
   assert.deepEqual(finalShot?.turns.map((turn) => turn.localized_text), [
-    'The World Cup is where my fortune begins.',
+    'My fortune starts with the World Cup.',
   ])
+  assert.ok(finalShot.turns[0].localized_text.split(/\s+/u).length <= 7)
   assert.doesNotMatch(finalShot.turns[0].localized_text, /\bWorld Cup starts\b/i)
 })
 
