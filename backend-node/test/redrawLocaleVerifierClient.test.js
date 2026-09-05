@@ -205,6 +205,25 @@ function localVoiceOkResponse(request, overrides = {}) {
   };
 }
 
+function sourceAudioOkResponse(request, overrides = {}) {
+  return {
+    ok: true,
+    result: {
+      source_language: 'zh',
+      language_probability: 0.98,
+      segments: [{
+        start: 0,
+        end: 0.5,
+        text: '你回来了',
+        speaker_cluster_id: 'speaker-cluster-1',
+      }],
+      audio_sha256: request.audio_sha256,
+      transcript_sha256: '9'.repeat(64),
+      ...overrides,
+    },
+  };
+}
+
 async function withServer(handler, fn) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-locale-sock-'));
   const socketPath = process.platform === 'win32'
@@ -248,6 +267,150 @@ function clientFor(socketPath, options = {}) {
     ...options,
   });
 }
+
+test('client exposes the signed pack readiness assertion used by generation gates', () => {
+  const expectedPack = nativePack();
+  const calls = [];
+  const client = createRedrawLocaleVerifierClient({
+    socketPath: 'unused',
+    registry: {
+      assertReady(expected) {
+        calls.push(expected);
+        return expectedPack;
+      },
+    },
+  });
+
+  assert.equal(client.assertReady({ language: 'en', scope: 'language' }), expectedPack);
+  assert.deepEqual(calls, [{ language: 'en', scope: 'language' }]);
+});
+
+test('source audio client sends exact hash-bound request and returns sanitized evidence', async () => {
+  const audio = makeAudio();
+  await withServer((socket, request) => {
+    socket.end(`${JSON.stringify(sourceAudioOkResponse(request))}\n`);
+  }, async ({ socketPath, state }) => {
+    const client = clientFor(socketPath);
+    assert.equal(typeof client.analyzeSourceAudio, 'function');
+    const result = await client.analyzeSourceAudio({
+      requestId: 'source-audio-1',
+      audioPath: audio.audioPath,
+      audioSha256: crypto.createHash('sha256').update('fake-audio').digest('hex'),
+      privateAudioRoot: audio.tmp,
+    });
+
+    assert.equal(state.requestCount, 1);
+    assert.deepEqual(Object.keys(state.requests[0]).sort(), [
+      'action',
+      'audio_path',
+      'audio_sha256',
+      'request_id',
+    ]);
+    assert.equal(state.requests[0].action, 'analyze_source_audio');
+    assert.equal(result.requestId, 'source-audio-1');
+    assert.equal(result.audioSha256, state.requests[0].audio_sha256);
+    assert.equal(result.transcriptSha256, '9'.repeat(64));
+    assert.equal(result.segments[0].speakerClusterId, 'speaker-cluster-1');
+    assert.equal(Object.hasOwn(result, 'localPath'), false);
+    assert.equal(JSON.stringify(result).includes(audio.audioPath), false);
+  });
+});
+
+test('source audio client rejects hash drift and paths outside the private root before connecting', async () => {
+  const audio = makeAudio();
+  const outside = makeAudio();
+  const client = clientFor('unused');
+  const base = {
+    requestId: 'source-audio-invalid',
+    audioPath: audio.audioPath,
+    audioSha256: crypto.createHash('sha256').update('fake-audio').digest('hex'),
+    privateAudioRoot: audio.tmp,
+  };
+  await assert.rejects(
+    () => client.analyzeSourceAudio({ ...base, audioSha256: '0'.repeat(64) }),
+    { code: 'SOURCE_AUDIO_EVIDENCE_INVALID' },
+  );
+  await assert.rejects(
+    () => client.analyzeSourceAudio({ ...base, audioPath: outside.audioPath }),
+    { code: 'SOURCE_AUDIO_EVIDENCE_INVALID' },
+  );
+  await assert.rejects(
+    () => client.analyzeSourceAudio({ ...base, requestId: '' }),
+    { code: 'SOURCE_AUDIO_EVIDENCE_INVALID' },
+  );
+});
+
+test('source audio client rejects response drift, unknown fields and absolute paths without retry', async () => {
+  const cases = [
+    { audio_sha256: '0'.repeat(64) },
+    { transcript_sha256: 'bad' },
+    { source_language: 'C:\\private\\audio.wav' },
+    { segments: [{ start: 0, end: 0.5, text: 'C:\\private\\audio.wav', speaker_cluster_id: 'speaker-cluster-1' }] },
+    { segments: [{ start: 0, end: 0.5, text: '你好', speaker_cluster_id: 'speaker-1' }] },
+    { local_path: 'C:\\private\\audio.wav' },
+  ];
+  for (const overrides of cases) {
+    const audio = makeAudio();
+    await withServer((socket, request) => {
+      socket.end(`${JSON.stringify(sourceAudioOkResponse(request, overrides))}\n`);
+    }, async ({ socketPath, state }) => {
+      await assert.rejects(
+        () => clientFor(socketPath).analyzeSourceAudio({
+          requestId: 'source-audio-drift',
+          audioPath: audio.audioPath,
+          audioSha256: crypto.createHash('sha256').update('fake-audio').digest('hex'),
+          privateAudioRoot: audio.tmp,
+        }),
+        { code: 'SOURCE_AUDIO_EVIDENCE_INVALID' },
+      );
+      assert.equal(state.requestCount, 1);
+    });
+  }
+});
+
+test('source audio client maps transport uncertainty to one stable unknown result without retry', async () => {
+  for (const handler of [
+    () => {},
+    (socket) => socket.end('partial'),
+  ]) {
+    const audio = makeAudio();
+    await withServer(handler, async ({ socketPath, state }) => {
+      const client = clientFor(socketPath, { timeoutMs: 30 });
+      await assert.rejects(
+        () => client.analyzeSourceAudio({
+          requestId: 'source-audio-unknown',
+          audioPath: audio.audioPath,
+          audioSha256: crypto.createHash('sha256').update('fake-audio').digest('hex'),
+          privateAudioRoot: audio.tmp,
+        }),
+        (error) => error.code === 'SOURCE_AUDIO_RESULT_UNKNOWN'
+          && error.message === 'SOURCE_AUDIO_RESULT_UNKNOWN'
+          && !Object.hasOwn(error, 'cause'),
+      );
+      assert.equal(state.requestCount, 1);
+    });
+  }
+});
+
+test('source audio client sanitizes deterministic worker rejection and does not retry', async () => {
+  const audio = makeAudio();
+  await withServer((socket) => {
+    socket.end(`${JSON.stringify({ ok: false, error_code: 'C:\\private\\audio.wav' })}\n`);
+  }, async ({ socketPath, state }) => {
+    await assert.rejects(
+      () => clientFor(socketPath).analyzeSourceAudio({
+        requestId: 'source-audio-rejected',
+        audioPath: audio.audioPath,
+        audioSha256: crypto.createHash('sha256').update('fake-audio').digest('hex'),
+        privateAudioRoot: audio.tmp,
+      }),
+      (error) => error.code === 'SOURCE_AUDIO_ANALYSIS_FAILED'
+        && error.message === 'SOURCE_AUDIO_ANALYSIS_FAILED'
+        && !JSON.stringify(error).includes('private'),
+    );
+    assert.equal(state.requestCount, 1);
+  });
+});
 
 test('client maps camelCase request fields, hashes audio, and returns camelCase evidence', async () => {
   const audio = makeAudio();

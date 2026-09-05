@@ -16,6 +16,7 @@ const realRedrawOrchestrator = require('../src/services/redrawOrchestrator');
 const redrawCapabilityService = require('../src/services/redrawCapabilityService');
 const redrawAssetService = require('../src/services/redrawAssetService');
 const redrawReviewService = require('../src/services/redrawReviewService');
+const { normalizeEpisodeBlueprint } = require('../src/services/redrawEpisodeBlueprintService');
 const providerAssetUrlService = require('../src/services/providerAssetUrlService');
 const userAuthService = require('../src/services/userAuthService');
 
@@ -1473,6 +1474,516 @@ test('同步原生分析完成时接口直接返回步骤 2 和已结算账单',
   }
 });
 
+test('默认分析入口按 audio 到 visual 到 fusion 生成 needs_review 母本且停在步骤 1', async () => {
+  const db = createDb();
+  try {
+    insertVerifiedVideoUnderstandingConfig(db);
+    prices.set(db, 'GPT-5.5', 6);
+    creditLedger.setTenantAccountBalance(db, 'tenant-a', 100);
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId);
+    const calls = [];
+    const audioEvidence = {
+      dialogue_mode: 'silent',
+      segments: [],
+      result_asset_id: 201,
+      evidence_sha256: 'c'.repeat(64),
+      evidence_asset: {
+        id: 'evidence-audio-route', kind: 'audio', asset_id: 201,
+        sha256: 'c'.repeat(64), tool: 'audio-worker', tool_version: '1.0.0',
+      },
+    };
+    const visualEvidence = {
+      status: 'completed',
+      provider_task_id: 'provider-blueprint-route',
+      result_asset_id: 202,
+      source: {
+        asset_id: 101,
+        sha256: 'f'.repeat(64),
+        duration_ms: 90_000,
+        width: 1080,
+        height: 1920,
+        fps: 25,
+        video_codec: 'h264',
+        audio_codec: 'aac',
+        audio_sample_rate_hz: 48_000,
+        audio_channels: 2,
+      },
+      facts: { schema_version: '2.0', duration_ms: 90_000, shots: [] },
+      evidence_asset: {
+        id: 'evidence-visual-route', kind: 'visual', asset_id: 202,
+        sha256: 'b'.repeat(64), tool: 'native-vision', tool_version: '2.0.0',
+      },
+    };
+    const blueprint = routeNeedsReviewBlueprint(visualEvidence.source);
+    const handlers = redrawRoutes(db, { error() {}, warn() {}, info() {} }, routeDeps({
+      orchestrator: {
+        startAnalysis: (...args) => realRedrawOrchestrator.startAnalysis(...args),
+      },
+      sourceAudioEvidenceService: {
+        analyzeSourceAudio: async () => {
+          calls.push('audio');
+          return audioEvidence;
+        },
+      },
+      nativeSourceAnalysisService: {
+        analyzeNativeSource: async (_ctx, _input, receivedAudioEvidence) => {
+          calls.push('visual');
+          assert.equal(receivedAudioEvidence, audioEvidence);
+          return visualEvidence;
+        },
+      },
+      evidenceFusionService: {
+        fuseEpisodeEvidence: (input) => {
+          calls.push('fusion');
+          assert.equal(input.source, visualEvidence.source);
+          return blueprint;
+        },
+      },
+    }));
+
+    const submitted = captureResponse();
+    await handlers.analyzeWork(request({
+      id: workId,
+      body: {
+        locale: 'en-US', market: 'US', aspect_ratio: '9:16', style_preset_id: 1,
+      },
+    }), submitted);
+
+    assert.equal(submitted.statusCode, 201);
+    assert.deepEqual(calls, ['audio', 'visual', 'fusion']);
+    assert.equal(submitted.body.data.blueprint_hash, blueprint.blueprint_hash);
+    assert.equal(submitted.body.data.blueprint_revision, 1);
+    assert.ok(submitted.body.data.blueprint_updated_at);
+    assert.equal(submitted.body.data.review_status, 'needs_review');
+    assert.equal(submitted.body.data.current_step, 1);
+    assert.equal(submitted.body.data.status, 'completed');
+    assert.deepEqual(
+      db.prepare('SELECT status, current_step FROM redraw_works WHERE id = ?').get(workId),
+      { status: 'needs_attention', current_step: 1 },
+    );
+    const persisted = db.prepare(`
+      SELECT revision, status, blueprint_hash, updated_at
+      FROM redraw_episode_blueprints
+      WHERE tenant_id = 'tenant-a' AND user_id = 'user-a' AND work_id = ?
+    `).get(workId);
+    assert.deepEqual(persisted, {
+      revision: 1,
+      status: 'draft',
+      blueprint_hash: blueprint.blueprint_hash,
+      updated_at: submitted.body.data.blueprint_updated_at,
+    });
+    assert.deepEqual(db.prepare(`
+      SELECT source_facts_json, facts_hash, blueprint_hash
+      FROM redraw_versions WHERE tenant_id = 'tenant-a' AND user_id = 'user-a' AND work_id = ?
+    `).get(workId), {
+      source_facts_json: null,
+      facts_hash: null,
+      blueprint_hash: null,
+    });
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_shots WHERE work_id = ?').get(workId).count, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM async_tasks WHERE type != 'redraw_analysis'").get().n, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('母本蓝图 GET PUT lock API 只把 owner 和精确 CAS 字段交给 workflow service', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId);
+    const calls = [];
+    const record = {
+      id: 81,
+      work_id: workId,
+      revision: 1,
+      status: 'draft',
+      blueprint_hash: 'a'.repeat(64),
+      blueprint: { schema_version: 'episode-blueprint-v1', story: { summary: '安全摘要' } },
+      evidence_manifest: { items: [] },
+      reviewed_by: null,
+      reviewed_at: null,
+      created_at: NOW,
+      updated_at: NOW,
+    };
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      blueprintWorkflowService: {
+        getCurrentBlueprint(ctx, input) {
+          calls.push(['get', ctx, input]);
+          return record;
+        },
+        saveDraft(ctx, input) {
+          calls.push(['save', ctx, input]);
+          return { ...record, blueprint: input.blueprint };
+        },
+        lockBlueprint(ctx, input) {
+          calls.push(['lock', ctx, input]);
+          return { ...record, status: 'locked', reviewed_by: ctx.userId, reviewed_at: NOW };
+        },
+      },
+    }));
+
+    const read = captureResponse();
+    handlers.getBlueprint(request({ id: workId }), read);
+    assert.equal(read.statusCode, 200);
+    assert.equal(read.body.data.blueprint_hash, record.blueprint_hash);
+
+    const edited = { schema_version: 'episode-blueprint-v1', story: { summary: '审核修订' } };
+    const saved = captureResponse();
+    handlers.saveBlueprint(request({
+      id: workId,
+      body: { expected_updated_at: NOW, blueprint: edited },
+    }), saved);
+    assert.equal(saved.statusCode, 200);
+    assert.deepEqual(saved.body.data.blueprint, edited);
+
+    const locked = captureResponse();
+    handlers.lockBlueprint(request({
+      id: workId,
+      body: { expected_blueprint_hash: 'a'.repeat(64), expected_updated_at: NOW },
+    }), locked);
+    assert.equal(locked.statusCode, 200);
+    assert.equal(locked.body.data.status, 'locked');
+
+    assert.equal(calls.length, 3);
+    for (const [, ctx, input] of calls) {
+      assert.equal(ctx.db, db);
+      assert.equal(ctx.tenantId, 'tenant-a');
+      assert.equal(ctx.userId, 'user-a');
+      assert.equal(input.workId, workId);
+    }
+    assert.deepEqual(calls[1][2], {
+      workId,
+      blueprint: edited,
+      expectedUpdatedAt: NOW,
+    });
+    assert.deepEqual(calls[2][2], {
+      workId,
+      expectedBlueprintHash: 'a'.repeat(64),
+      expectedUpdatedAt: NOW,
+    });
+
+    const foreign = captureResponse();
+    handlers.getBlueprint(request({ id: workId, tenantId: 'tenant-b' }), foreign);
+    assert.equal(foreign.statusCode, 404);
+    assert.equal(calls.length, 3);
+  } finally {
+    db.close();
+  }
+});
+
+test('母本蓝图 PUT 递归拒绝 URL 路径密钥 provider model generation 和包装字段', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId);
+    let calls = 0;
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      blueprintWorkflowService: {
+        saveDraft() {
+          calls += 1;
+          return {};
+        },
+        lockBlueprint() {
+          calls += 1;
+          return {};
+        },
+      },
+    }));
+    const unsafeBodies = [
+      { expected_updated_at: NOW, blueprint: { story: { summary: 'https://provider.example/task' } } },
+      { expected_updated_at: NOW, blueprint: { story: { summary: 'C:\\private\\blueprint.json' } } },
+      { expected_updated_at: NOW, blueprint: { provider: 'private-provider' } },
+      { expected_updated_at: NOW, blueprint: { model: 'private-model' } },
+      { expected_updated_at: NOW, blueprint: { generation_parameters: { seed: 1 } } },
+      { expected_updated_at: NOW, blueprint: { api_key: 'private-key' } },
+      { expected_updated_at: NOW, blueprint: {}, wrapper: 'unknown' },
+    ];
+    for (const body of unsafeBodies) {
+      const result = captureResponse();
+      handlers.saveBlueprint(request({ id: workId, body }), result);
+      assert.equal(result.statusCode, 400, JSON.stringify(body));
+      assert.equal(/provider\.example|C:\\private|private-key|private-model/.test(JSON.stringify(result.body)), false);
+    }
+    const unsafeLocks = [
+      {},
+      { expected_blueprint_hash: 'a'.repeat(64), expected_updated_at: NOW, provider: 'client' },
+      { expected_blueprint_hash: 'short', expected_updated_at: NOW },
+      { expected_blueprint_hash: 'a'.repeat(64), expected_updated_at: '' },
+    ];
+    for (const body of unsafeLocks) {
+      const result = captureResponse();
+      handlers.lockBlueprint(request({ id: workId, body }), result);
+      assert.equal(result.statusCode, 400, JSON.stringify(body));
+    }
+    assert.equal(calls, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('母本蓝图 PUT 对深层、超大、循环和 NFKC 混淆输入稳定返回 400', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId);
+    let calls = 0;
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      blueprintWorkflowService: {
+        saveDraft() {
+          calls += 1;
+          return {};
+        },
+      },
+    }));
+    const tooDeep = {};
+    let cursor = tooDeep;
+    for (let depth = 0; depth <= 64; depth += 1) {
+      cursor.child = {};
+      cursor = cursor.child;
+    }
+    const cycle = {};
+    cycle.self = cycle;
+    const cases = [
+      tooDeep,
+      new Array(50_001).fill(null),
+      { text: '字'.repeat((4 * 1024 * 1024) + 1) },
+      cycle,
+      { 'ｇｅｎｅｒａｔｉｏｎ＿ｐａｒａｍｅｔｅｒｓ': { seed: 1 } },
+    ];
+    for (const blueprint of cases) {
+      const result = captureResponse();
+      handlers.saveBlueprint(request({
+        id: workId,
+        body: { expected_updated_at: NOW, blueprint },
+      }), result);
+      assert.equal(result.statusCode, 400);
+      assert.equal(result.body.error.code, 'REDRAW_BLUEPRINT_INPUT_INVALID');
+    }
+    assert.equal(calls, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('母本蓝图 API 稳定映射 400 404 409 且内部错误不泄露路径和 secret', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId);
+    const cases = [
+      ['REDRAW_BLUEPRINT_INPUT_INVALID', 400],
+      ['REDRAW_BLUEPRINT_FORBIDDEN_FIELD', 400],
+      ['REDRAW_BLUEPRINT_NOT_FOUND', 404],
+      ['REDRAW_BLUEPRINT_CAS_CONFLICT', 409],
+      ['REDRAW_BLUEPRINT_LOCKED', 409],
+      ['REDRAW_BLUEPRINT_HASH_MISMATCH', 409],
+      ['REDRAW_BLUEPRINT_VERSION_ALREADY_BOUND', 409],
+      ['BLUEPRINT_REVIEW_REQUIRED', 409],
+      ['BLUEPRINT_SPEAKER_REVIEW_REQUIRED', 409],
+    ];
+    for (const [code, status] of cases) {
+      const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+        blueprintWorkflowService: {
+          saveDraft() {
+            throw Object.assign(new Error(`${code}: private detail`), { code });
+          },
+        },
+      }));
+      const result = captureResponse();
+      handlers.saveBlueprint(request({
+        id: workId,
+        body: { expected_updated_at: NOW, blueprint: {} },
+      }), result);
+      assert.equal(result.statusCode, status, code);
+      assert.equal(result.body.error.code, code);
+    }
+
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      blueprintWorkflowService: {
+        saveDraft() {
+          throw new Error('C:\\private\\blueprint.json Authorization Bearer provider-secret');
+        },
+      },
+    }));
+    const failed = captureResponse();
+    handlers.saveBlueprint(request({
+      id: workId,
+      body: { expected_updated_at: NOW, blueprint: {} },
+    }), failed);
+    assert.equal(failed.statusCode, 500);
+    assert.equal(failed.body.error.code, 'INTERNAL_ERROR');
+    assert.equal(/private|Authorization|Bearer|provider-secret/i.test(JSON.stringify(failed.body)), false);
+  } finally {
+    db.close();
+  }
+});
+
+test('本地化审核 GET PUT lock API 只把 owner、精确 CAS 和语言门禁交给服务', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1, current_step: 1, status: 'needs_review' });
+    const versionId = Number(insertVersion(db, workId, { locale: 'source', status: 'needs_review' }));
+    const localization = {
+      schema_version: 'episode-localization-v1',
+      blueprint_hash: 'a'.repeat(64),
+      locale: 'en-US',
+      market: 'US',
+      character_name_map: { c1: 'Maya' },
+      dialogue_map: [],
+      text_region_map: [],
+      cultural_adaptations: [],
+      glossary: [],
+      locked_terms: [],
+      review: { status: 'review', character_name_map: { c1: true }, dialogue_map: {}, text_region_map: {}, cultural_adaptations: {}, glossary: {}, locked_terms: {} },
+      localization_hash: 'b'.repeat(64),
+    };
+    const record = {
+      version_id: versionId,
+      work_id: Number(workId),
+      version: 1,
+      status: 'review',
+      blueprint_hash: 'a'.repeat(64),
+      localization_hash: 'b'.repeat(64),
+      locale: 'en-US',
+      market: 'US',
+      localization,
+      updated_at: NOW,
+    };
+    const calls = [];
+    const languageGate = () => ({ language_verified: true });
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      localizationLanguageGate: languageGate,
+      localizationReviewService: {
+        getLocalizationReview(database, currentOwner, id) {
+          calls.push(['get', database, currentOwner, id]);
+          return record;
+        },
+        saveLocalizationReview(database, currentOwner, id, input) {
+          calls.push(['save', database, currentOwner, id, input]);
+          return { ...record, localization: input.localization };
+        },
+        lockLocalizationReview(database, currentOwner, id, input) {
+          calls.push(['lock', database, currentOwner, id, input]);
+          return { ...record, status: 'locked', localization: { ...localization, review: { ...localization.review, status: 'locked' } } };
+        },
+      },
+    }));
+
+    const read = captureResponse();
+    handlers.getLocalizationReview(request({ id: versionId }), read);
+    assert.equal(read.statusCode, 200);
+    assert.equal(read.body.data.version_id, versionId);
+
+    const saved = captureResponse();
+    handlers.saveLocalizationReview(request({
+      id: versionId,
+      body: { expected_updated_at: NOW, localization },
+    }), saved);
+    assert.equal(saved.statusCode, 200);
+
+    const locked = captureResponse();
+    handlers.lockLocalizationReview(request({
+      id: versionId,
+      body: {
+        blueprint_hash: 'a'.repeat(64),
+        expected_localization_hash: 'b'.repeat(64),
+        expected_updated_at: NOW,
+      },
+    }), locked);
+    assert.equal(locked.statusCode, 200);
+    assert.equal(locked.body.data.status, 'locked');
+
+    assert.equal(calls.length, 3);
+    for (const call of calls) {
+      assert.equal(call[1], db);
+      assert.deepEqual(call[2], { tenantId: 'tenant-a', userId: 'user-a' });
+      assert.equal(call[3], versionId);
+    }
+    assert.deepEqual(calls[1][4], {
+      expectedUpdatedAt: NOW,
+      localization,
+      validateTargetText: languageGate,
+    });
+    assert.deepEqual(calls[2][4], {
+      blueprintHash: 'a'.repeat(64),
+      expectedLocalizationHash: 'b'.repeat(64),
+      expectedUpdatedAt: NOW,
+      validateTargetText: languageGate,
+    });
+
+    const foreign = captureResponse();
+    handlers.getLocalizationReview(request({ id: versionId, tenantId: 'tenant-b' }), foreign);
+    assert.equal(foreign.statusCode, 404);
+    assert.equal(calls.length, 3);
+  } finally {
+    db.close();
+  }
+});
+
+test('本地化审核 API 严格拒绝危险字段并把并发与锁定冲突稳定映射为 409', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1, current_step: 1, status: 'needs_review' });
+    const versionId = Number(insertVersion(db, workId, { status: 'needs_review' }));
+    let calls = 0;
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      localizationReviewService: {
+        saveLocalizationReview() { calls += 1; return {}; },
+        lockLocalizationReview() { calls += 1; return {}; },
+      },
+    }));
+    const unsafeBodies = [
+      {},
+      { expected_updated_at: NOW, localization: {}, provider: 'client' },
+      { expected_updated_at: NOW, localization: { provider: 'client' } },
+      { expected_updated_at: NOW, localization: { model: 'private-model' } },
+      { expected_updated_at: NOW, localization: { 'ｍｏｄｅｌ': 'private-model' } },
+      { expected_updated_at: NOW, localization: { target: 'https://provider.example/result' } },
+      { expected_updated_at: NOW, localization: { target: 'C:\\private\\result.json' } },
+      { expected_updated_at: NOW, localization: { api_key: 'private-key' } },
+    ];
+    for (const body of unsafeBodies) {
+      const result = captureResponse();
+      handlers.saveLocalizationReview(request({ id: versionId, body }), result);
+      assert.equal(result.statusCode, 400, JSON.stringify(body));
+      assert.equal(/provider\.example|C:\\private|private-key|private-model/.test(JSON.stringify(result.body)), false);
+    }
+    const unsafeLocks = [
+      {},
+      { blueprint_hash: 'a'.repeat(64), expected_localization_hash: 'b'.repeat(64), expected_updated_at: NOW, secret: 'x' },
+      { blueprint_hash: 'short', expected_localization_hash: 'b'.repeat(64), expected_updated_at: NOW },
+      { blueprint_hash: 'a'.repeat(64), expected_localization_hash: 'short', expected_updated_at: NOW },
+    ];
+    for (const body of unsafeLocks) {
+      const result = captureResponse();
+      handlers.lockLocalizationReview(request({ id: versionId, body }), result);
+      assert.equal(result.statusCode, 400, JSON.stringify(body));
+    }
+    assert.equal(calls, 0);
+
+    for (const code of ['LOCALIZATION_CAS_CONFLICT', 'LOCALIZATION_LOCKED', 'LOCALIZATION_HASH_MISMATCH', 'LOCALIZATION_REVIEW_REQUIRED', 'BLUEPRINT_HASH_MISMATCH']) {
+      const conflictHandlers = redrawRoutes(db, { error() {} }, routeDeps({
+        localizationReviewService: {
+          saveLocalizationReview() { throw Object.assign(new Error('private conflict'), { code }); },
+        },
+      }));
+      const result = captureResponse();
+      conflictHandlers.saveLocalizationReview(request({
+        id: versionId,
+        body: { expected_updated_at: NOW, localization: {} },
+      }), result);
+      assert.equal(result.statusCode, 409, code);
+      assert.equal(result.body.error.code, code);
+    }
+  } finally {
+    db.close();
+  }
+});
+
 test('未注入外部分析器时路由使用原生视觉服务完成真实编排合同', async () => {
   const db = createDb();
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-native-route-'));
@@ -1960,11 +2471,13 @@ test('本地化版本提交走异步 orchestrator 并返回 202 草稿版本和�
     const canReadArtifact = () => true;
     const provider = async () => ({});
     const schedule = () => {};
+    const languageGate = () => ({ language_verified: true });
     const calls = [];
     const handlers = redrawRoutes(db, { error() {} }, routeDeps({
       canReadArtifact,
       localizationProvider: provider,
       localizationSchedule: schedule,
+      localizationLanguageGate: languageGate,
       localizationOrchestrator: {
         quoteLocalization: () => ({ priced: true, credits: 7, model: 'gpt-localize', quote_hash: 'quote-ok' }),
         startLocalization: (_db, _log, input, deps) => {
@@ -2015,6 +2528,7 @@ test('本地化版本提交走异步 orchestrator 并返回 202 草稿版本和�
     assert.equal(calls[0].deps.provider, provider);
     assert.equal(calls[0].deps.schedule, schedule);
     assert.equal(calls[0].deps.canReadArtifact, canReadArtifact);
+    assert.equal(calls[0].deps.validateTargetText, languageGate);
   } finally {
     db.close();
   }
@@ -2581,12 +3095,70 @@ test('作品详情只有 draft 版本时不泄漏隐藏 current_version', () => 
   }
 });
 
+test('作品详情只公开最小本地化审核状态并派生 localization_review phase', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, {
+      current_version: 1,
+      current_step: 1,
+      status: 'needs_review',
+      task_id: 'task-analysis-localization-review',
+    });
+    const versionId = insertVersion(db, workId, {
+      locale: 'source',
+      market: 'US',
+      status: 'needs_review',
+      localization_task_id: 'task-localization-review',
+    });
+    db.prepare(`
+      UPDATE redraw_versions
+      SET localization_review_json = ?, localization_hash = ?
+      WHERE id = ?
+    `).run(JSON.stringify({
+      schema_version: 'episode-localization-v1',
+      review: { status: 'review', updated_at: NOW },
+    }), 'd'.repeat(64), Number(versionId));
+    db.prepare(`INSERT INTO async_tasks
+      (id, type, status, progress, message, resource_id, tenant_id, user_id, created_at, updated_at)
+      VALUES
+        ('task-analysis-localization-review', 'redraw_analysis', 'completed', 100, '分析完成', ?, 'tenant-a', 'user-a', ?, ?),
+        ('task-localization-review', 'redraw_localization', 'completed', 100, '等待审核', ?, 'tenant-a', 'user-a', ?, ?)
+    `).run(String(workId), NOW, NOW, String(workId), NOW, NOW);
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps());
+
+    const result = captureResponse();
+    handlers.getWork(request({ id: workId }), result);
+
+    assert.equal(result.statusCode, 200);
+    assert.equal(result.body.data.version_id, Number(versionId));
+    assert.equal(result.body.data.workflow_phase, 'localization_review');
+    assert.equal(result.body.data.localization_review_status, 'review');
+    assert.equal(Object.hasOwn(result.body.data, 'localization_review_json'), false);
+  } finally {
+    db.close();
+  }
+});
+
 test('workflowPhase 纯函数按阶段优先级返回状态', () => {
   assert.equal(redrawRoutes.workflowPhase({ current_step: 3 }, null, null, null), 'video_generation');
   assert.equal(redrawRoutes.workflowPhase({ current_step: 2 }, null, null, { status: 'pending' }), 'asset_generating');
   assert.equal(redrawRoutes.workflowPhase({ current_step: 2 }, null, null, null), 'asset_review');
   assert.equal(redrawRoutes.workflowPhase({ current_step: 1 }, null, { status: 'processing' }, null), 'localizing');
   assert.equal(redrawRoutes.workflowPhase({ current_step: 1 }, null, { status: 'needs_attention' }, null), 'localization_needs_attention');
+  assert.equal(redrawRoutes.workflowPhase(
+    { current_step: 1 },
+    { status: 'completed' },
+    { status: 'completed' },
+    null,
+    { status: 'needs_review', localization_review_json: JSON.stringify({
+      schema_version: 'episode-localization-v1', review: { status: 'review' },
+    }) },
+  ), 'localization_review');
+  assert.equal(redrawRoutes.workflowPhase(
+    { current_step: 1 }, { status: 'completed' }, { status: 'completed' }, null,
+    { status: 'needs_review', localization_review_json: null },
+  ), 'analysis_review');
   assert.equal(redrawRoutes.workflowPhase({ current_step: 1 }, { status: 'completed' }, null, null), 'analysis_review');
   assert.equal(redrawRoutes.workflowPhase({ current_step: 1 }, { status: 'pending' }, null, null), 'analyzing');
   assert.equal(redrawRoutes.workflowPhase({ current_step: 1 }, null, null, null), 'source');
@@ -4634,6 +5206,40 @@ test('单镜生成错误保持结构化 code details 与规定 HTTP 状态', asy
   }
 });
 
+test('单镜生成向准备门禁传入与公开门禁一致的可信资产读取上下文', async () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1 });
+    const versionId = insertVersion(db, workId);
+    const shotId = insertShot(db, versionId);
+    const storageRoot = path.join(process.cwd(), 'test-generation-storage');
+    let capturedContext = null;
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      cfg: { storage: { local_path: storageRoot } },
+      canReadArtifact: (assetId) => Number(assetId) === 41,
+      generationService: {
+        generateShot: async (context) => {
+          capturedContext = context;
+          return { status: 'processing', billing: { held: 1, charged: 0, released: 0 } };
+        },
+      },
+    }));
+    const result = captureResponse();
+    await handlers.generateShot(request({ id: shotId }), result);
+
+    assert.equal(result.statusCode, 202);
+    assert.ok(capturedContext?.preparationContext);
+    assert.equal(capturedContext.preparationContext.storageRoot, storageRoot);
+    assert.equal(capturedContext.preparationContext.canReadArtifact(41), true);
+    assert.equal(capturedContext.preparationContext.assetReader.canRead({ id: 41 }), true);
+    assert.equal(capturedContext.preparationContext.assetReader.owns({ id: 41 }), true);
+    assert.equal(capturedContext.preparationContext.assetReader.owns({ id: 42 }), false);
+  } finally {
+    db.close();
+  }
+});
+
 test('未审批单镜生成返回 409 missing 且不会冻结积分或调用 provider', async () => {
   const db = createDb();
   try {
@@ -5580,6 +6186,9 @@ test('第三步、角色身份包、本地化确认和参考准备 API 已真实
       .flatMap((layer) => Object.keys(layer.route.methods)
         .map((method) => `${method.toUpperCase()} ${layer.route.path}`)));
     assert.equal(routes.has('GET /redraw/works/:id'), true);
+    assert.equal(routes.has('GET /redraw/works/:id/blueprint'), true);
+    assert.equal(routes.has('PUT /redraw/works/:id/blueprint'), true);
+    assert.equal(routes.has('POST /redraw/works/:id/blueprint/lock'), true);
     assert.equal(routes.has('PUT /redraw/shots/:id'), true);
     assert.equal(routes.has('GET /redraw/shots/:id/reference-bundle'), true);
     assert.equal(routes.has('PUT /redraw/shots/:id/reference-bundle'), true);
@@ -5588,6 +6197,9 @@ test('第三步、角色身份包、本地化确认和参考准备 API 已真实
     assert.equal(routes.has('POST /redraw/works/:id/generate-batch'), true);
     assert.equal(routes.has('POST /redraw/works/:id/localization-quote'), true);
     assert.equal(routes.has('POST /redraw/works/:id/versions'), true);
+    assert.equal(routes.has('GET /redraw/versions/:id/localization'), true);
+    assert.equal(routes.has('PUT /redraw/versions/:id/localization'), true);
+    assert.equal(routes.has('POST /redraw/versions/:id/localization/lock'), true);
     assert.equal(routes.has('POST /redraw/versions/:id/assets/batch-quote'), true);
     assert.equal(routes.has('POST /redraw/versions/:id/assets/batches'), true);
     assert.equal(routes.has('GET /redraw/assets/:id/preview/:variant'), true);
@@ -6763,6 +7375,63 @@ async function withRouteServer(router, run) {
     server.closeAllConnections?.();
     await new Promise((resolve) => server.close(resolve));
   }
+}
+
+function routeNeedsReviewBlueprint(source) {
+  return normalizeEpisodeBlueprint({
+    schema_version: 'episode-blueprint-v1',
+    source,
+    evidence_manifest: {
+      items: [{
+        id: 'evidence-visual-route', kind: 'visual', asset_id: 202,
+        sha256: 'b'.repeat(64), tool: 'native-vision', tool_version: '2.0.0',
+      }],
+    },
+    story: {
+      summary: '人物在门边阅读手机消息。', beats: ['人物抬头'],
+      evidence_refs: ['evidence-visual-route'], confidence: 0.9,
+    },
+    characters: [{
+      id: 'character-route', source_name: '人物', display_name: '人物', relationship: '主角',
+      relationships: [], face_track_ids: ['face-route'], evidence_refs: ['evidence-visual-route'],
+      confidence: 0.9, review_status: 'approved',
+    }],
+    scenes: [{
+      id: 'scene-route', location: '门边', time: '夜',
+      source_ranges: [{ start_ms: 0, end_ms: source.duration_ms }],
+      evidence_refs: ['evidence-visual-route'], confidence: 0.9,
+    }],
+    props: [{
+      id: 'prop-route-phone', name: '手机',
+      evidence_ranges: [{ start_ms: 1000, end_ms: Math.min(source.duration_ms, 5000) }],
+      evidence_refs: ['evidence-visual-route'], confidence: 0.9,
+    }],
+    shots: [{
+      id: 'shot-route-1', index: 1, start_ms: 0, end_ms: source.duration_ms,
+      composition: '人物站在门边。', camera_movement: '定机位',
+      opening_state: '人物站在门边。', continuous_action: '人物阅读手机消息。',
+      ending_state: '人物抬头。', visible_character_ids: ['character-route'], dialogue: [],
+      text_regions: [], audio_contract: { dialogue_mode: 'silent', ambient_audio: 'preserve_or_rebuild' },
+      confidence: { character_mapping: 0.9, speaker_mapping: 0.9, text_regions: 0.9, shot_boundary: 0.9 },
+      evidence_refs: ['evidence-visual-route'],
+    }],
+    causal_chain: [{
+      id: 'causal-route', cause: '手机消息出现。', effect: '人物抬头。',
+      evidence_refs: ['evidence-visual-route'], confidence: 0.9,
+    }],
+    locked_facts: [{
+      id: 'fact-route', text: '人物在门边查看手机。',
+      evidence_refs: ['evidence-visual-route'], confidence: 0.9,
+    }],
+    reversals: [{
+      id: 'reversal-route', text: '消息改变人物行动。',
+      evidence_refs: ['evidence-visual-route'], confidence: 0.8,
+    }],
+    episode_hook: {
+      text: '消息内容是什么？', evidence_refs: ['evidence-visual-route'], confidence: 0.9,
+    },
+    review: { status: 'needs_review' },
+  });
 }
 
 function waitForDirectoryState(directory, predicate, label) {

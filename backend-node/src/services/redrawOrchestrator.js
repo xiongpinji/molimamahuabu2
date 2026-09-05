@@ -10,6 +10,7 @@ const {
 } = require('./redrawAutomationPolicyService');
 const redrawGenerationService = require('./redrawGenerationService');
 const { appendWorkflowEvent } = require('./redrawWorkflowEventService');
+const redrawBlueprintWorkflowService = require('./redrawBlueprintWorkflowService');
 
 const DEFAULT_RESUME_QUERY_TIMEOUT_MS = 10_000;
 const RESUME_ERROR_SNIPPET_LIMIT = 512;
@@ -160,6 +161,215 @@ function updateDynamic(db, table, values, whereName, whereValue) {
     .run(...names.map((name) => values[name]), whereValue);
 }
 
+function resolveBlueprintPipeline(options) {
+  const candidates = [
+    options.sourceAudioEvidenceService,
+    options.nativeSourceAnalysisService,
+    options.evidenceFusionService,
+  ];
+  if (candidates.every((item) => item == null)) return null;
+  if (typeof candidates[0]?.analyzeSourceAudio !== 'function'
+    || typeof candidates[1]?.analyzeNativeSource !== 'function'
+    || typeof candidates[2]?.fuseEpisodeEvidence !== 'function') {
+    throw codedError(
+      'REDRAW_BLUEPRINT_PIPELINE_DEPENDENCY_REQUIRED',
+      '母本蓝图分析必须完整注入音频、视觉和证据融合服务',
+    );
+  }
+  return {
+    sourceAudioEvidenceService: candidates[0],
+    nativeSourceAnalysisService: candidates[1],
+    evidenceFusionService: candidates[2],
+  };
+}
+
+function evidenceAsset(result, kind, idPrefix, tool) {
+  if (result?.evidence_asset) return result.evidence_asset;
+  const assetId = result?.result_asset_id;
+  const sha256 = result?.evidence_sha256 || result?.sha256;
+  if (assetId == null || !sha256) return null;
+  return {
+    id: `${idPrefix}-${assetId}`,
+    kind,
+    asset_id: assetId,
+    sha256,
+    tool,
+    tool_version: '1.0.0',
+  };
+}
+
+async function runBlueprintPipeline(db, log, pipeline, request, options) {
+  const context = { ...(options.analysisContext || {}), db, log };
+  const audioEvidence = await pipeline.sourceAudioEvidenceService.analyzeSourceAudio(context, {
+    sourceAssetId: Number(request.sourceAssetId),
+    tenantId: String(request.tenantId || ''),
+    userId: String(request.userId || ''),
+    workId: Number(request.workId),
+  });
+  const visualEvidence = await pipeline.nativeSourceAnalysisService.analyzeNativeSource(context, {
+    taskId: request.taskId,
+    workId: request.workId,
+    tenantId: request.tenantId,
+    userId: request.userId,
+    model: request.model,
+    probeTimeoutMs: options.nativeAnalysisProbeTimeoutMs,
+    ffmpegTimeoutMs: options.nativeAnalysisFfmpegTimeoutMs,
+    maxTokens: options.nativeAnalysisMaxTokens,
+  }, audioEvidence);
+  if (visualEvidence?.status !== 'completed') {
+    throw codedError('REDRAW_BLUEPRINT_VISUAL_ANALYSIS_INCOMPLETE', '视觉证据分析未完成');
+  }
+  const audioAsset = evidenceAsset(
+    audioEvidence,
+    audioEvidence?.dialogue_mode === 'silent' ? 'audio' : 'audio_transcript',
+    'evidence-audio',
+    'source-audio-evidence',
+  );
+  const visualAsset = evidenceAsset(
+    visualEvidence,
+    'visual',
+    'evidence-visual',
+    'native-source-analysis',
+  );
+  const evidenceAssets = [audioAsset, visualAsset].filter(Boolean);
+  const boundAudioEvidence = audioAsset
+    ? { ...audioEvidence, evidence_ref: audioAsset.id }
+    : audioEvidence;
+  const boundVisualFacts = visualAsset
+    ? {
+        ...(visualEvidence.facts || visualEvidence.visualFacts),
+        result_asset_id: visualEvidence.result_asset_id ?? visualAsset.asset_id,
+        sha256: visualEvidence.evidence_sha256 || visualEvidence.sha256 || visualAsset.sha256,
+        evidence_ref: visualAsset.id,
+      }
+    : visualEvidence.facts || visualEvidence.visualFacts;
+  const blueprint = await pipeline.evidenceFusionService.fuseEpisodeEvidence({
+    source: visualEvidence.source || audioEvidence?.source,
+    visualFacts: boundVisualFacts,
+    audioEvidence: boundAudioEvidence,
+    evidenceAssets,
+  });
+  return {
+    status: 'completed',
+    provider_task_id: visualEvidence.provider_task_id,
+    result_asset_id: visualEvidence.result_asset_id || null,
+    blueprint,
+  };
+}
+
+function assertNeedsReviewBlueprint(blueprint) {
+  if (!blueprint
+    || blueprint.schema_version !== 'episode-blueprint-v1'
+    || !/^[a-f0-9]{64}$/.test(String(blueprint.blueprint_hash || ''))
+    || blueprint.review?.status !== 'needs_review'
+    || !Array.isArray(blueprint.shots)
+    || blueprint.shots.length === 0) {
+    throw codedError('REDRAW_BLUEPRINT_RESULT_INVALID', '母本蓝图必须完整且进入 needs_review');
+  }
+  return blueprint;
+}
+
+function writeBlueprintOnce(db, work, blueprint) {
+  const now = new Date().toISOString();
+  const existingDraft = db.prepare(`
+    SELECT id
+    FROM redraw_episode_blueprints
+    WHERE tenant_id = ? AND user_id = ? AND work_id = ? AND blueprint_hash = ?
+    LIMIT 1
+  `).get(work.tenant_id, work.user_id, work.id, blueprint.blueprint_hash);
+  const draft = redrawBlueprintWorkflowService.createOrSaveDraft({
+    db,
+    tenantId: work.tenant_id,
+    userId: work.user_id,
+  }, { workId: work.id, blueprint });
+  const changed = !existingDraft;
+  let version = db.prepare(`
+    SELECT *
+    FROM redraw_versions
+    WHERE tenant_id = ? AND user_id = ? AND work_id = ? AND version = ?
+      AND deleted_at IS NULL
+    LIMIT 1
+  `).get(work.tenant_id, work.user_id, work.id, draft.revision);
+  if (!version) {
+    throw codedError('REDRAW_BLUEPRINT_VERSION_NOT_FOUND', '母本蓝图缺少精确 source review 版本');
+  }
+  const versionBound = version.source_facts_json != null
+    || version.facts_hash != null
+    || version.blueprint_hash != null;
+  if (draft.status === 'draft') {
+    if (version.locale !== 'source' || versionBound) {
+      throw codedError('REDRAW_BLUEPRINT_VERSION_ALREADY_BOUND', '对应修订版本已有不可变事实');
+    }
+    const versionUpdate = db.prepare(`
+      UPDATE redraw_versions
+      SET status = 'needs_attention', updated_at = ?
+      WHERE tenant_id = ? AND user_id = ? AND work_id = ? AND version = ?
+        AND locale = 'source' AND source_facts_json IS NULL
+        AND facts_hash IS NULL AND blueprint_hash IS NULL AND deleted_at IS NULL
+    `).run(now, work.tenant_id, work.user_id, work.id, draft.revision);
+    if (versionUpdate.changes !== 1) {
+      throw codedError('REDRAW_BLUEPRINT_VERSION_ALREADY_BOUND', '对应修订版本已有不可变事实');
+    }
+    version = { ...version, status: 'needs_attention', updated_at: now };
+  } else if (version.locale !== 'source'
+    || !versionBound
+    || version.blueprint_hash !== draft.blueprint_hash) {
+    throw codedError('REDRAW_BLUEPRINT_VERSION_ALREADY_BOUND', '锁定蓝图与 source review 版本不一致');
+  }
+  db.prepare(`
+    UPDATE redraw_works
+    SET status = 'needs_attention', current_version = ?, current_step = 1,
+        error_msg = NULL, updated_at = ?
+    WHERE tenant_id = ? AND user_id = ? AND id = ? AND deleted_at IS NULL
+  `).run(draft.revision, now, work.tenant_id, work.user_id, work.id);
+  return { version, draft, changed };
+}
+
+function finalizeBlueprintAnalysis(db, task, work, pipelineResult) {
+  const blueprint = assertNeedsReviewBlueprint(pipelineResult.blueprint);
+  return atomicFinalize(db, () => {
+    const { version, draft, changed } = writeBlueprintOnce(db, work, blueprint);
+    const project = readProjectPolicy(db, work);
+    if (changed && project) {
+      appendWorkflowEvent(db, {
+        tenantId: String(project.tenant_id || ''),
+        userId: String(project.user_id || ''),
+        projectId: Number(project.id),
+        resourceType: 'version',
+        resourceId: String(version.id),
+        fromState: String(work.status || ''),
+        toState: 'analysis_review',
+        reasonCode: 'analysis_completed',
+        evidenceHash: draft.blueprint_hash,
+        metadata: {
+          action: 'needs_review',
+          effective_mode: 'safe',
+          reason_codes: ['blueprint_review_required'],
+          policy_version: Number(project.policy_version || 0),
+        },
+        createdAt: new Date().toISOString(),
+      });
+    }
+    const payload = {
+      status: 'completed',
+      work_id: work.id,
+      version_id: version.id,
+      blueprint_hash: draft.blueprint_hash,
+      blueprint_revision: draft.revision,
+      blueprint_updated_at: draft.updated_at,
+      review_status: draft.blueprint.review.status,
+      blueprint: draft.blueprint,
+    };
+    taskService.updateTaskResult(db, task.id, payload);
+    creditLedger.settleGeneration(
+      db,
+      task.credit_reservation_id || work.credit_reservation_id,
+      'completed',
+    );
+    return payload;
+  });
+}
+
 function buildUrl(baseUrl, endpoint, providerTaskId) {
   const base = String(baseUrl || '').replace(/\/$/, '');
   const ep = String(endpoint || '').trim();
@@ -269,6 +479,7 @@ async function startAnalysis(db, log, input, options = {}) {
   const userId = String(input.userId || work.user_id || '');
   const tenantId = input.tenantId || work.tenant_id;
   if (!userId) throw codedError('UNAUTHORIZED', '缺少用户身份');
+  const blueprintPipeline = resolveBlueprintPipeline(options);
 
   const config = loadVerifiedCapability(db);
   const model = modelPrice.canonicalModel(config.default_model || config.model || 'GPT-5.5');
@@ -324,8 +535,7 @@ async function startAnalysis(db, log, input, options = {}) {
 
   let providerResult;
   try {
-    providerResult = options.provider?.startAnalysis
-      ? await options.provider.startAnalysis({
+    const request = {
         taskId: created.task_id,
         reservationId: created.reservation_id,
         workId: work.id,
@@ -337,7 +547,11 @@ async function startAnalysis(db, log, input, options = {}) {
         config,
         analysisSettings,
         operationKey: `redraw_analysis:${work.id}:${sourceAssetId}`,
-      })
+      };
+    providerResult = blueprintPipeline
+      ? await runBlueprintPipeline(db, log, blueprintPipeline, request, options)
+      : options.provider?.startAnalysis
+        ? await options.provider.startAnalysis(request)
       : {};
   } catch (error) {
     markFailure(db, log, getTask(db, created.task_id), getWork(db, work.id), error.message);
@@ -354,6 +568,27 @@ async function startAnalysis(db, log, input, options = {}) {
       .run(String(providerTaskId), new Date().toISOString(), created.task_id);
     db.prepare('UPDATE redraw_works SET provider_task_id = ?, updated_at = ? WHERE id = ?')
       .run(String(providerTaskId), new Date().toISOString(), work.id);
+  }
+  if (blueprintPipeline) {
+    try {
+      const completion = finalizeBlueprintAnalysis(
+        db,
+        getTask(db, created.task_id),
+        getWork(db, work.id),
+        providerResult,
+      );
+      return {
+        ...created,
+        ...completion,
+        provider_task_id: String(providerTaskId),
+        result_asset_id: providerResult.result_asset_id || null,
+        current_step: 1,
+        billing: { charged: price, held: 0, released: 0 },
+      };
+    } catch (error) {
+      markFailure(db, log, getTask(db, created.task_id), getWork(db, work.id), error.message);
+      throw error;
+    }
   }
   const normalizedResult = normalizeProviderResult(providerResult);
   if (normalizedResult.status === 'failed') {

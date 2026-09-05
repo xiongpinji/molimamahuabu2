@@ -36,6 +36,13 @@ VALID_NATIVE_AUDIO_REQUEST = {
     },
 }
 
+VALID_NATIVE_ENGLISH_AUDIO_REQUEST = {
+    **VALID_NATIVE_AUDIO_REQUEST,
+    "request_id": "req-native-en-1",
+    "approved_text": "Mateo, come with me.",
+    "locale_pack": "en@1",
+}
+
 VALID_LOCAL_VOICE_REQUEST = {
     "action": "verify_local_voice",
     "request_id": "req-local-1",
@@ -117,6 +124,13 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(parsed["locale_pack"], "es@1")
         self.assertEqual(parsed["video_invocation"]["artifact_sha256"], "b" * 64)
 
+    def test_native_audio_accepts_english_language_pack_without_tts_invocation(self):
+        parsed = parse_request(dict(VALID_NATIVE_ENGLISH_AUDIO_REQUEST))
+
+        self.assertEqual(parsed["locale_pack"], "en@1")
+        self.assertEqual(parsed["approved_text"], "Mateo, come with me.")
+        self.assertNotIn("tts_invocation", parsed)
+
     def test_native_audio_rejects_tts_invocation_and_unknown_fields(self):
         invalid_requests = [
             {
@@ -149,6 +163,8 @@ class ProtocolTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ProtocolError, "LOCALE_PACK_UNSUPPORTED"):
             parse_request({**VALID_NATIVE_AUDIO_REQUEST, "locale_pack": "es-MX@1"})
+        with self.assertRaisesRegex(ProtocolError, "LOCALE_PACK_UNSUPPORTED"):
+            parse_request({**VALID_NATIVE_AUDIO_REQUEST, "locale_pack": "en-US@1"})
 
     def test_local_voice_request_accepts_only_exact_local_invocation(self):
         parsed = parse_request(dict(VALID_LOCAL_VOICE_REQUEST))

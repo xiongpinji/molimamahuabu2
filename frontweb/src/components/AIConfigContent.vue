@@ -583,7 +583,7 @@ input_reference = (图片文件，可选)</pre>
               <el-collapse-item name="toapis-video">
                 <template #title><span class="ph-tag ph-tag-vid">视频</span> ToAPIs — Seedance 2 异步生成</template>
                 <div class="ph-body">
-                  <b>Base URL：</b><code>https://toapis.xyz</code><br>
+                  <b>Base URL：</b><code>https://toapis.cn</code><br>
                   <b>接口：</b><code>POST /v1/videos/generations</code>（创建），<code>GET /v1/videos/generations/{taskId}</code>（查询）<br>
                   <b>模型：</b><code>seedance-2-fast</code>、<code>seedance-2-mini</code><br>
                   <b>分辨率：</b>仅支持 <code>480P</code>、<code>720P</code>；不支持 1080P。<br>
@@ -1692,7 +1692,7 @@ function getBaseUrlForProvider(provider) {
   if (p === 'deepwl' || p === 'deepwl_grok') return 'https://zx1.deepwl.net'
   if (p === 'icreat' || p === 'icreat_task') return 'https://api.icreat.ai'
   if (p === 'usmercari' || p === 'usmercari_media') return 'https://ai.usmercari.com'
-  if (p === 'toapis' || p === 'toapis_wan3') return 'https://toapis.xyz'
+  if (p === 'toapis' || p === 'toapis_wan3') return 'https://toapis.cn'
   if (p === 'feituo') return 'https://feituokuajing.com'
   if (p === 'lingjing') return 'https://seed.alimyun.xyz/api/open/v1'
   if (p === 'fumin' || p === 'fumin_video') return 'https://fumin.ai'

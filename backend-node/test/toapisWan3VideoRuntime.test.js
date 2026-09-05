@@ -27,7 +27,7 @@ function configFingerprint() {
     id: String(CONFIG_ID),
     provider: 'toapis_wan3',
     model: MODEL,
-    base_url: 'https://toapis.xyz',
+    base_url: 'https://toapis.cn',
     api_key: API_KEY,
   })).digest('hex');
 }
@@ -88,7 +88,7 @@ function makeConfig(overrides = {}) {
     provider: 'toapis_wan3',
     api_protocol: 'toapis_wan3_video',
     name: 'ToAPIs Wan 3.0',
-    base_url: 'https://toapis.xyz',
+    base_url: 'https://toapis.cn',
     api_key: API_KEY,
     model: JSON.stringify([MODEL]),
     default_model: MODEL,
@@ -257,7 +257,7 @@ test('Wan 3.0 runtime submit is gated by evidence capabilities and exact resolut
 
   assert.deepEqual(submitted, { task_id: 'wan-runtime-task', status: 'queued' });
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].url, 'https://toapis.xyz/v1/videos/generations');
+  assert.equal(calls[0].url, 'https://toapis.cn/v1/videos/generations');
   assert.deepEqual(calls[0].body.reference_images, [
     'https://cdn.example.com/reference-1.png',
     'https://cdn.example.com/reference-2.png',
@@ -395,7 +395,7 @@ test('Wan 3.0 runtime poll and one-shot reconciliation use the independent task 
   });
   assert.deepEqual(completed, { video_url: 'https://cdn.example.com/wan.mp4' });
   assert.equal(calls.length, 2);
-  assert.equal(calls.every((call) => call.url === 'https://toapis.xyz/v1/videos/generations/wan-runtime-task'), true);
+  assert.equal(calls.every((call) => call.url === 'https://toapis.cn/v1/videos/generations/wan-runtime-task'), true);
   assert.equal(calls.every((call) => call.method === 'GET'), true);
 
   let queries = 0;

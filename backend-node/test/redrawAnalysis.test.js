@@ -11,6 +11,8 @@ const prices = require('../src/services/modelPriceService');
 const taskService = require('../src/services/taskService');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const { normalizeSourceFacts } = require('../src/services/redrawAnalysisService');
+const { normalizeEpisodeBlueprint } = require('../src/services/redrawEpisodeBlueprintService');
+const blueprintWorkflow = require('../src/services/redrawBlueprintWorkflowService');
 const redraw = require('../src/services/redrawOrchestrator');
 
 const log = { info() {}, warn() {}, error() {} };
@@ -153,6 +155,73 @@ function validFactsV2(confidence = {}) {
     reversals: ['订单客户知道乔安会来'],
     episode_hook: '餐袋封条出现旧案编号',
   };
+}
+
+function needsReviewBlueprint() {
+  return normalizeEpisodeBlueprint({
+    schema_version: 'episode-blueprint-v1',
+    source: {
+      asset_id: 101,
+      sha256: 'a'.repeat(64),
+      duration_ms: 10_000,
+      width: 1080,
+      height: 1920,
+      fps: 25,
+      video_codec: 'h264',
+      audio_codec: 'aac',
+      audio_sample_rate_hz: 48_000,
+      audio_channels: 2,
+    },
+    evidence_manifest: {
+      items: [{
+        id: 'evidence-visual-1', kind: 'visual', asset_id: 202,
+        sha256: 'b'.repeat(64), tool: 'native-vision', tool_version: '1.0.0',
+      }],
+    },
+    story: {
+      summary: '人物在门边查看手机。',
+      beats: ['人物拿起手机'],
+      evidence_refs: ['evidence-visual-1'],
+      confidence: 0.9,
+    },
+    characters: [{
+      id: 'character-1', source_name: '人物', display_name: '人物', relationship: '主角',
+      relationships: [], face_track_ids: ['face-1'], evidence_refs: ['evidence-visual-1'],
+      confidence: 0.9, review_status: 'approved',
+    }],
+    scenes: [{
+      id: 'scene-1', location: '门边', time: '夜',
+      source_ranges: [{ start_ms: 0, end_ms: 10_000 }],
+      evidence_refs: ['evidence-visual-1'], confidence: 0.9,
+    }],
+    props: [{
+      id: 'prop-phone', name: '手机', evidence_ranges: [{ start_ms: 1000, end_ms: 5000 }],
+      evidence_refs: ['evidence-visual-1'], confidence: 0.9,
+    }],
+    shots: [{
+      id: 'shot-blueprint-1', index: 1, start_ms: 0, end_ms: 10_000,
+      composition: '人物站在门边。', camera_movement: '定机位',
+      opening_state: '人物站在门边。', continuous_action: '人物拿起手机。',
+      ending_state: '人物看向屏幕。', visible_character_ids: ['character-1'], dialogue: [],
+      text_regions: [], audio_contract: { dialogue_mode: 'silent', ambient_audio: 'preserve_or_rebuild' },
+      confidence: { character_mapping: 0.9, speaker_mapping: 0.9, text_regions: 0.9, shot_boundary: 0.9 },
+      evidence_refs: ['evidence-visual-1'],
+    }],
+    causal_chain: [{
+      id: 'causal-1', cause: '手机响起。', effect: '人物查看手机。',
+      evidence_refs: ['evidence-visual-1'], confidence: 0.9,
+    }],
+    locked_facts: [{
+      id: 'fact-1', text: '人物在门边。', evidence_refs: ['evidence-visual-1'], confidence: 0.9,
+    }],
+    reversals: [{
+      id: 'reversal-1', text: '手机消息改变行动。', evidence_refs: ['evidence-visual-1'], confidence: 0.8,
+    }],
+    episode_hook: {
+      text: '手机里是什么消息？', evidence_refs: ['evidence-visual-1'], confidence: 0.9,
+    },
+    review: { status: 'needs_review' },
+  });
 }
 
 function createDb() {
@@ -699,6 +768,224 @@ test('safe analysis waits for manual review even with v2 confidence', async () =
   });
   assert.equal(db.prepare("SELECT to_state FROM redraw_workflow_events WHERE reason_code = 'analysis_completed'").get().to_state, 'analysis_review');
   db.close();
+});
+
+test('blueprint pipeline runs audio then visual then fusion and stops at needs_review', async () => {
+  const db = setupAutomationDb({ executionMode: 'auto', budget: 30 });
+  const calls = [];
+  const audioEvidence = {
+    dialogue_mode: 'spoken',
+    result_asset_id: 201,
+    evidence_asset: {
+      id: 'evidence-audio-1', kind: 'audio_transcript', asset_id: 201,
+      sha256: 'c'.repeat(64), tool: 'audio-worker', tool_version: '1.0.0',
+    },
+  };
+  const visualEvidence = {
+    status: 'completed',
+    provider_task_id: 'provider-blueprint-1',
+    source: needsReviewBlueprint().source,
+    facts: { schema_version: '2.0', duration_ms: 10_000, shots: [] },
+    evidence_asset: {
+      id: 'evidence-visual-1', kind: 'visual', asset_id: 202,
+      sha256: 'b'.repeat(64), tool: 'native-vision', tool_version: '1.0.0',
+    },
+  };
+  const blueprint = needsReviewBlueprint();
+
+  const result = await redraw.startAnalysis(db, log, {
+    workId: 1,
+    userId: 'user-1',
+    tenantId: 'tenant-1',
+  }, {
+    sourceAudioEvidenceService: {
+      analyzeSourceAudio: async (ctx, input) => {
+        calls.push('audio');
+        assert.equal(ctx.db, db);
+        assert.equal(input.workId, 1);
+        assert.equal(input.sourceAssetId, 101);
+        return audioEvidence;
+      },
+    },
+    nativeSourceAnalysisService: {
+      analyzeNativeSource: async (ctx, input, receivedAudioEvidence) => {
+        calls.push('visual');
+        assert.equal(ctx.db, db);
+        assert.equal(input.workId, 1);
+        assert.equal(receivedAudioEvidence, audioEvidence);
+        return visualEvidence;
+      },
+    },
+    evidenceFusionService: {
+      fuseEpisodeEvidence: (input) => {
+        calls.push('fusion');
+        assert.equal(input.source, visualEvidence.source);
+        assert.deepEqual(input.visualFacts, {
+          ...visualEvidence.facts,
+          result_asset_id: visualEvidence.evidence_asset.asset_id,
+          sha256: visualEvidence.evidence_asset.sha256,
+          evidence_ref: visualEvidence.evidence_asset.id,
+        });
+        assert.deepEqual(input.audioEvidence, {
+          ...audioEvidence,
+          evidence_ref: audioEvidence.evidence_asset.id,
+        });
+        assert.deepEqual(input.evidenceAssets, [
+          audioEvidence.evidence_asset,
+          visualEvidence.evidence_asset,
+        ]);
+        return blueprint;
+      },
+    },
+  });
+
+  assert.deepEqual(calls, ['audio', 'visual', 'fusion']);
+  assert.equal(result.status, 'completed');
+  assert.equal(result.blueprint_hash, blueprint.blueprint_hash);
+  assert.equal(result.review_status, 'needs_review');
+  assert.deepEqual(result.blueprint, blueprint);
+  assert.equal(result.blueprint_revision, 1);
+  assert.ok(result.blueprint_updated_at);
+  assert.equal(Object.hasOwn(result, 'automation_decision'), false);
+  assert.deepEqual(
+    db.prepare('SELECT status, current_step FROM redraw_works WHERE id = 1').get(),
+    { status: 'needs_attention', current_step: 1 },
+  );
+  const version = db.prepare(`
+    SELECT id, source_facts_json, facts_hash, blueprint_hash, status
+    FROM redraw_versions WHERE work_id = 1
+  `).get();
+  assert.equal(version.source_facts_json, null);
+  assert.equal(version.facts_hash, null);
+  assert.equal(version.blueprint_hash, null);
+  assert.equal(version.status, 'needs_attention');
+  const persisted = db.prepare(`
+    SELECT revision, status, blueprint_json, blueprint_hash, evidence_manifest_json, updated_at
+    FROM redraw_episode_blueprints
+    WHERE tenant_id = 'tenant-1' AND user_id = 'user-1' AND work_id = 1
+  `).get();
+  assert.equal(persisted.revision, 1);
+  assert.equal(persisted.status, 'draft');
+  assert.deepEqual(JSON.parse(persisted.blueprint_json), blueprint);
+  assert.equal(persisted.blueprint_hash, blueprint.blueprint_hash);
+  assert.deepEqual(JSON.parse(persisted.evidence_manifest_json), blueprint.evidence_manifest);
+  assert.equal(result.blueprint_updated_at, persisted.updated_at);
+  const taskResult = JSON.parse(db.prepare('SELECT result FROM async_tasks WHERE id = ?').get(result.task_id).result);
+  assert.equal(taskResult.blueprint_hash, blueprint.blueprint_hash);
+  assert.equal(taskResult.review_status, 'needs_review');
+  assert.equal(taskResult.blueprint_revision, 1);
+  assert.equal(taskResult.blueprint_updated_at, persisted.updated_at);
+  assert.equal(Object.hasOwn(taskResult, 'automation_decision'), false);
+  assert.deepEqual(
+    db.prepare("SELECT to_state, evidence_hash FROM redraw_workflow_events WHERE reason_code = 'analysis_completed'").get(),
+    { to_state: 'analysis_review', evidence_hash: blueprint.blueprint_hash },
+  );
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM async_tasks WHERE type != 'redraw_analysis'").get().n, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_shots WHERE version_id = ?').get(version.id).count, 0);
+  db.close();
+});
+
+test('re-analysis binds each blueprint revision to its exact immutable source review version', async () => {
+  const db = setupAutomationDb({ executionMode: 'auto', budget: 30 });
+  const owner = { db, tenantId: 'tenant-1', userId: 'user-1' };
+  const analyze = (blueprint, suffix) => redraw.startAnalysis(db, log, {
+    workId: 1,
+    userId: 'user-1',
+    tenantId: 'tenant-1',
+  }, {
+    sourceAudioEvidenceService: {
+      analyzeSourceAudio: async () => ({
+        dialogue_mode: 'silent',
+        result_asset_id: 201,
+        evidence_asset: {
+          id: 'evidence-audio-1', kind: 'audio_silence', asset_id: 201,
+          sha256: 'c'.repeat(64), tool: 'audio-worker', tool_version: '1.0.0',
+        },
+      }),
+    },
+    nativeSourceAnalysisService: {
+      analyzeNativeSource: async () => ({
+        status: 'completed',
+        provider_task_id: `provider-blueprint-${suffix}`,
+        source: blueprint.source,
+        facts: { schema_version: '2.0', duration_ms: 10_000, shots: [] },
+        evidence_asset: blueprint.evidence_manifest.items[0],
+      }),
+    },
+    evidenceFusionService: { fuseEpisodeEvidence: () => blueprint },
+  });
+  const approve = (blueprint, summary) => {
+    const raw = JSON.parse(JSON.stringify(blueprint));
+    raw.story.summary = summary;
+    raw.review = { status: 'approved', reviewer: 'user-1' };
+    delete raw.blueprint_hash;
+    return normalizeEpisodeBlueprint(raw);
+  };
+
+  try {
+    const firstAnalysis = await analyze(needsReviewBlueprint(), 'one');
+    const firstReviewed = blueprintWorkflow.saveDraft(owner, {
+      workId: 1,
+      expectedUpdatedAt: firstAnalysis.blueprint_updated_at,
+      blueprint: approve(firstAnalysis.blueprint, '第一版审核通过。'),
+    });
+    const firstLocked = blueprintWorkflow.lockBlueprint(owner, {
+      workId: 1,
+      expectedUpdatedAt: firstReviewed.updated_at,
+      expectedBlueprintHash: firstReviewed.blueprint_hash,
+    });
+    assert.equal(firstLocked.revision, 1);
+    assert.equal(firstLocked.status, 'locked');
+
+    const versionOneId = firstAnalysis.version_id;
+    db.prepare("UPDATE redraw_versions SET status = 'asset_review', updated_at = ? WHERE id = ?")
+      .run('2026-09-03T01:00:00.000Z', versionOneId);
+    const versionOneBefore = db.prepare(`
+      SELECT id, version, source_facts_json, facts_hash, blueprint_hash, status, updated_at
+      FROM redraw_versions
+      WHERE id = ? AND work_id = 1 AND tenant_id = 'tenant-1' AND user_id = 'user-1'
+    `).get(versionOneId);
+    const blueprintOneBefore = db.prepare(`
+      SELECT * FROM redraw_episode_blueprints
+      WHERE work_id = 1 AND tenant_id = 'tenant-1' AND user_id = 'user-1' AND revision = 1
+    `).get();
+
+    const nextRaw = needsReviewBlueprint();
+    nextRaw.story.summary = '重新分析得到第二版母本。';
+    delete nextRaw.blueprint_hash;
+    const secondAnalysis = await analyze(normalizeEpisodeBlueprint(nextRaw), 'two');
+    assert.equal(secondAnalysis.blueprint_revision, 2);
+    assert.equal(secondAnalysis.version_id, db.prepare(`
+      SELECT id FROM redraw_versions
+      WHERE work_id = 1 AND tenant_id = 'tenant-1' AND user_id = 'user-1' AND version = 2
+    `).get().id);
+
+    const secondReviewed = blueprintWorkflow.saveDraft(owner, {
+      workId: 1,
+      expectedUpdatedAt: secondAnalysis.blueprint_updated_at,
+      blueprint: approve(secondAnalysis.blueprint, '第二版审核通过。'),
+    });
+    const secondLocked = blueprintWorkflow.lockBlueprint(owner, {
+      workId: 1,
+      expectedUpdatedAt: secondReviewed.updated_at,
+      expectedBlueprintHash: secondReviewed.blueprint_hash,
+    });
+    assert.equal(secondLocked.revision, 2);
+    assert.equal(secondLocked.status, 'locked');
+    assert.deepEqual(db.prepare(`
+      SELECT id, version, source_facts_json, facts_hash, blueprint_hash, status, updated_at
+      FROM redraw_versions WHERE id = ?
+    `).get(versionOneId), versionOneBefore);
+    assert.deepEqual(db.prepare(`
+      SELECT * FROM redraw_episode_blueprints
+      WHERE work_id = 1 AND tenant_id = 'tenant-1' AND user_id = 'user-1' AND revision = 1
+    `).get(), blueprintOneBefore);
+    assert.deepEqual(db.prepare(`
+      SELECT current_version, current_step FROM redraw_works WHERE id = 1
+    `).get(), { current_version: 2, current_step: 1 });
+  } finally {
+    db.close();
+  }
 });
 
 test('auto analysis blocks with stable error when budget, project policy, or thresholds are missing', async () => {

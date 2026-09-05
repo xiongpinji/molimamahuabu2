@@ -197,8 +197,9 @@ test('重绘语言验证 worker 发布材料保持 shared verifier 与付费 can
   const readme = read('deploy/redraw-locale-verifier/README.md');
   const scope = JSON.parse(read('deploy/release-scopes/redraw-locale-verifier.json'));
 
-  assert.match(readme, /其余 worker source、模型权重和 venv 必须预置/);
-  assert.match(readme, /release 允许携带受审计的 `server\.py` 入口源码/);
+  assert.match(readme, /release 允许携带受审计的 `server\.py` 入口及其传递本地源码闭包/);
+  assert.match(readme, /生产运行使用的 worker source 必须预置/);
+  assert.match(readme, /候选激活不会安装或切换 shared worker source/);
   assert.match(readme, /先完成基准、签名和 disabled 部署/);
   assert.match(readme, /再批准付费 canary/);
   assert.match(readme, /不能替代 Worker evidence/);
@@ -209,11 +210,33 @@ test('重绘语言验证 worker 发布材料保持 shared verifier 与付费 can
     'deploy/redraw-locale-verifier/moli-redraw-locale-verifier.service',
     'deploy/release-scopes/redraw-locale-verifier.json',
     'docs/superpowers/reports/2026-08-08-redraw-locale-worker-gate.md',
+    'workers/redraw-locale-verifier/src/redraw_locale_worker/__init__.py',
+    'workers/redraw-locale-verifier/src/redraw_locale_worker/commonaccent_interface.py',
+    'workers/redraw-locale-verifier/src/redraw_locale_worker/engines.py',
+    'workers/redraw-locale-verifier/src/redraw_locale_worker/errors.py',
+    'workers/redraw-locale-verifier/src/redraw_locale_worker/normalization.py',
+    'workers/redraw-locale-verifier/src/redraw_locale_worker/protocol.py',
     'workers/redraw-locale-verifier/src/redraw_locale_worker/server.py',
+    'workers/redraw-locale-verifier/src/redraw_locale_worker/source_evidence.py',
+    'workers/redraw-locale-verifier/src/redraw_locale_worker/verifier.py',
+    'workers/redraw-locale-verifier/tests/test_release_scope.py',
   ]);
   assert.doesNotMatch(JSON.stringify(scope), /secret|key|token|password|credential/i);
   assert.doesNotMatch(JSON.stringify(scope), /(^|\/)(weights?|models?|venv)(\/|$)/i);
   assert.doesNotMatch(JSON.stringify(scope), /production.*db|current|shared\/release-guard/i);
+});
+
+test('Hosted CI 在重绘语言 worker 变更时运行固定 Python 依赖的完整单测', () => {
+  const workflow = read('.github/workflows/backend-node-tests.yml');
+
+  assert.match(workflow, /- 'workers\/redraw-locale-verifier\/\*\*'/);
+  assert.match(workflow, /- 'deploy\/redraw-locale-verifier\/\*\*'/);
+  assert.match(workflow, /- 'deploy\/release-scopes\/redraw-locale-verifier\.json'/);
+  assert.match(workflow, /uses: actions\/setup-python@v7/);
+  assert.match(workflow, /python-version: "3\.12"/);
+  assert.match(workflow, /python -m pip install jiwer==4\.0\.0/);
+  assert.match(workflow, /PYTHONPATH: workers\/redraw-locale-verifier\/src/);
+  assert.match(workflow, /python -m unittest discover -s workers\/redraw-locale-verifier\/tests -p 'test_\*\.py' -v/);
 });
 
 test('重绘语言验证 worker entrypoint 真实调用 run_server 且缺配置时 fail closed', () => {

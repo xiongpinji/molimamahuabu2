@@ -131,7 +131,7 @@ function completeEvidence() {
   });
   return {
     contract_version: 'toapis-video-real-verification-v1',
-    provider_origin: 'https://toapis.xyz',
+    provider_origin: 'https://toapis.cn',
     results,
     speed_evidence: speedSummary(results),
     cost_review: {

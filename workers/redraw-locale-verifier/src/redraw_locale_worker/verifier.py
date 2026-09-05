@@ -4,7 +4,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .normalization import score_text
-from .protocol import HEX_SHA256_RE, SUPPORTED_LOCALE_PACK, SUPPORTED_NATIVE_AUDIO_PACK
+from .protocol import (
+    HEX_SHA256_RE,
+    SUPPORTED_LOCALE_PACK,
+    SUPPORTED_NATIVE_AUDIO_PACKS,
+)
 
 
 REQUIRED_THRESHOLDS = {
@@ -130,10 +134,11 @@ def verify_native_audio(request, pack, *, allowed_root, asr, accent=None):
     detected_language = str(asr_evidence.get("language") or "").strip().casefold() or None
     expected_language = str(pack.get("language") or "").strip().casefold() if isinstance(pack, dict) else ""
     pack_id = _pack_id(pack)
+    native_language = SUPPORTED_NATIVE_AUDIO_PACKS.get(pack_id)
 
     checks = {
-        "locale_pack": request.get("locale_pack") == pack_id == SUPPORTED_NATIVE_AUDIO_PACK,
-        "expected_language": expected_language == "es",
+        "locale_pack": request.get("locale_pack") == pack_id and native_language is not None,
+        "expected_language": expected_language == native_language,
         "audio_path": audio_path is not None,
         "audio_sha256_matches_request": audio_sha256 is not None and request.get("audio_sha256") == audio_sha256,
         "asr_inference": asr_evidence.get("ok") is True,
@@ -152,6 +157,7 @@ def verify_native_audio(request, pack, *, allowed_root, asr, accent=None):
     language_verified = all(checks.values())
     return {
         "source": "offline-worker",
+        "request_id": request.get("request_id"),
         "locale_pack": pack_id,
         "detected_language": detected_language,
         "detected_locale": None,

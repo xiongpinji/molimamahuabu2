@@ -34,8 +34,8 @@ const FRESHNESS_SURFACES = Object.freeze({
   ]),
 });
 const TRUSTED_UNCHANGED_TOAPIS_STANDARD_SURFACE_SHA256 = Object.freeze({
-  'backend-node/src/services/toapisVideoClient.js': '2d6825dab8cb036bc32069793118ea5656f3dff528dec92df0f467291d555d7b',
-  'backend-node/scripts/verify-toapis-video-models.js': 'eb8bf4259c4f55b4d7d61a1d18b5de1ad261a5b573414f5a8fdade659b0bdd3d',
+  'backend-node/src/services/toapisVideoClient.js': '9079e3ff6931d1e14b9ea698d59199c0fb1ee586964d04c9ead81b1752495c15',
+  'backend-node/scripts/verify-toapis-video-models.js': '1bfbed0d2fda28bcca3964e6d86dca71dfed39433bc2dd8a446decbff355773c',
 });
 const PROVIDERS = Object.freeze({
   toapis: Object.freeze({
@@ -732,7 +732,7 @@ function auditToapisRuntime(candidate, options = {}) {
       || !sameValues(arrayValues(mini, 'durations', 'ToAPIs Mini'), [4, 8, 10, 12, 15])) {
     fail('ToAPIs client duration tables do not match the protected contract');
   }
-  requirePattern(client, /hostname\s*!==\s*['"]toapis\.xyz['"]/, 'ToAPIs client does not lock the official host');
+  requirePattern(client, /hostname\s*!==\s*['"]toapis\.cn['"]/, 'ToAPIs client does not lock the official host');
   requirePattern(client, /protocol\s*!==\s*['"]https:['"]/, 'ToAPIs client does not require HTTPS');
   for (const role of ['first_frame', 'last_frame', 'reference_image', 'reference_video', 'reference_audio']) {
     requirePattern(client, new RegExp(`['"]${role}['"]`), `ToAPIs client is missing role ${role}`);
@@ -1005,7 +1005,7 @@ function auditToapisWan3Runtime(candidate, options = {}) {
     [/supportsLastFrame\s*:\s*true/, 'ToAPIs Wan 3.0 last-frame capability is missing'],
     [/supportsAudio\s*:\s*true/, 'ToAPIs Wan 3.0 output-audio capability is missing'],
   ]) requirePattern(client, pattern, message);
-  requirePattern(sharedClient, /hostname\s*!==\s*['"]toapis\.xyz['"]/, 'ToAPIs Wan 3.0 shared URL normalizer does not lock the official host');
+  requirePattern(sharedClient, /hostname\s*!==\s*['"]toapis\.cn['"]/, 'ToAPIs Wan 3.0 shared URL normalizer does not lock the official host');
   requirePattern(sharedClient, /protocol\s*!==\s*['"]https:['"]/, 'ToAPIs Wan 3.0 shared URL normalizer does not require HTTPS');
 
   for (const [pattern, message] of [
@@ -1596,7 +1596,7 @@ function auditToapisSpeedEvidence(evidence, results, freshness) {
 function auditToapisEvidence(evidenceRoot, envelope, now, requireRecent = true) {
   const evidence = envelope.evidence;
   if (evidence?.contract_version !== PROVIDERS.toapis.contract) fail('ToAPIs evidence contract_version is invalid');
-  if (evidence.provider_origin !== 'https://toapis.xyz') fail('ToAPIs evidence provider origin is not official');
+  if (evidence.provider_origin !== 'https://toapis.cn') fail('ToAPIs evidence provider origin is not official');
   const freshness = auditFreshness(evidence, 'ToAPIs', now, requireRecent);
   const results = Array.isArray(evidence.results) ? evidence.results : [];
   if (results.length !== TOAPIS_CASES.length) fail('ToAPIs evidence must contain exactly 8 cases');
@@ -1758,7 +1758,7 @@ function auditToapisWan3Evidence(evidenceRoot, envelope, now, requireRecent = tr
   if (evidence?.contract_version !== PROVIDERS.toapisWan3.contract) {
     fail('ToAPIs Wan 3.0 evidence contract_version is invalid');
   }
-  if (evidence.provider_origin !== 'https://toapis.xyz') {
+  if (evidence.provider_origin !== 'https://toapis.cn') {
     fail('ToAPIs Wan 3.0 evidence provider origin is not official');
   }
   const freshness = auditGeneratedAtFreshnessOnly(evidence, 'ToAPIs Wan 3.0', now, requireRecent);

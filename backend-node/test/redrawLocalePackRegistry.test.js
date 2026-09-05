@@ -80,6 +80,24 @@ function spanishPack(overrides = {}) {
   };
 }
 
+function languageScopedEnglishPack(overrides = {}) {
+  return {
+    id: 'en@1',
+    language: 'en',
+    locale: null,
+    scope: 'language',
+    prompt_language_label: 'English',
+    model_manifest_sha256: 'a'.repeat(64),
+    calibration_manifest_sha256: 'b'.repeat(64),
+    thresholds: {
+      language_probability_min: 0.8,
+      dialogue_similarity_min: 0.8,
+      speech_chars_per_second_max: 20,
+    },
+    ...overrides,
+  };
+}
+
 function multiPackFixture(options = {}) {
   const manifest = options.manifest || {
     schema_version: 1,
@@ -253,6 +271,25 @@ test('registry resolves signed language packs without promoting them to locales'
     () => registry.assertReady({ language: 'es', locale: 'es-MX', scope: 'locale' }),
     { code: 'REDRAW_LOCALE_VERIFIER_NOT_READY' },
   );
+});
+
+test('registry resolves a regional locale string through a matching language-scoped pack', () => {
+  const pack = languageScopedEnglishPack();
+  const fixture = multiPackFixture({
+    manifest: { schema_version: 1, enabled_packs: [pack] },
+    ready: {
+      locale_pack: pack.id,
+      model_manifest_sha256: pack.model_manifest_sha256,
+      calibration_manifest_sha256: pack.calibration_manifest_sha256,
+      enabled_pack_ids: [pack.id],
+      pack_attestations: [{
+        id: pack.id,
+        model_manifest_sha256: pack.model_manifest_sha256,
+        calibration_manifest_sha256: pack.calibration_manifest_sha256,
+      }],
+    },
+  });
+  assert.equal(registryFor(fixture).assertReady('en-US').id, 'en@1');
 });
 
 test('registry lists only the exact sorted signed packs attested by a multi-pack ready payload', () => {

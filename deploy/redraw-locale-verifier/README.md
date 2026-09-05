@@ -1,12 +1,14 @@
 # 重绘语言验证 worker 沙箱材料
 
-本目录只保存重绘语言验证 worker 的 systemd unit 和发布说明。release 允许携带受审计的 `server.py` 入口源码；其余 worker source、模型权重和 venv 必须预置在 `/opt/moli-drama/shared/redraw-locale-verifier/`。release 不携带模型权重、虚拟环境、密钥或生产数据。
+本目录只保存重绘语言验证 worker 的 systemd unit 和发布说明。release 允许携带受审计的 `server.py` 入口及其传递本地源码闭包，用于候选构建和 verify-only；模型权重、venv 和生产运行使用的 worker source 必须预置在 `/opt/moli-drama/shared/redraw-locale-verifier/`。候选激活不会安装或切换 shared worker source；这类变更必须单独审查和授权。release 不携带模型权重、虚拟环境、密钥或生产数据。
 
 上线顺序必须保持保守：先完成基准、签名和 disabled 部署，确认 unit 仍保持离线、单进程和资源受限，再批准付费 canary。付费 canary 需要单独授权，不能由本材料自动触发。
 
 本 worker 只提供语言/地区重绘验证的独立补充信号，不能替代 Worker evidence。生产验收仍必须保留原 Worker evidence 链路，包括真实任务、状态写回、可读产物、计费/审计证据和用户产品流。
 
 systemd 通过 shared verifier 目录下的 `verifier.env` 注入 socket、ready、allowed-root、pack、model-manifest、ASR 模型、口音 runtime 和 smoke 音频路径；缺少任一项时 entrypoint fail closed，不发布 ready attestation。
+
+`verifier.env` 还必须提供 `REDRAW_LOCALE_VERIFIER_MANIFEST_SHA256`，其值是签名 `enabled-packs.json` canonical payload 的 SHA-256。Worker 会把该值绑定到 ready attestation，Node 侧 registry 据此拒绝与签名语言包不一致的 ready 状态。
 
 发布包边界由 `deploy/release-scopes/redraw-locale-verifier.json` 固定。禁止将密钥、模型权重、venv、生产 DB、`current` symlink 或 `shared/release-guard` 文件加入该 scope。
 

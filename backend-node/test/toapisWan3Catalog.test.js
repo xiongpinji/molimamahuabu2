@@ -23,7 +23,7 @@ function configFingerprint(config) {
     id: String(config.id),
     provider: 'toapis_wan3',
     model: MODEL,
-    base_url: 'https://toapis.xyz',
+    base_url: 'https://toapis.cn',
     api_key: config.api_key,
   })).digest('hex');
 }
@@ -66,7 +66,7 @@ function setup(t) {
     provider: 'toapis_wan3',
     api_protocol: 'toapis_wan3_video',
     name: 'ToAPIs Wan 3.0',
-    base_url: 'https://toapis.xyz',
+    base_url: 'https://toapis.cn',
     api_key: 'wan3-test-key',
     model: [MODEL],
     default_model: MODEL,
@@ -129,7 +129,7 @@ test('Wan 3.0 public catalog exposes the approved full capability and all paid r
   assert.equal(item.capabilities.supportsFirstFrame, true);
   assert.equal(item.capabilities.supportsLastFrame, true);
   assert.deepEqual(Object.keys(item.resolution_prices).sort(), ['1080p', '480p', '720p']);
-  assert.equal(JSON.stringify(item).includes('toapis.xyz'), false);
+  assert.equal(JSON.stringify(item).includes('toapis.cn'), false);
   assert.equal(JSON.stringify(item).includes('wan3-test-key'), false);
 
   const publicPrice = prices.listPublic(db, { evidenceRoots: evidence.roots })

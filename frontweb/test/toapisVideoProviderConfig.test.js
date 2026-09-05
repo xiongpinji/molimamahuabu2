@@ -14,7 +14,7 @@ test('ToAPIs 视频协议和预设只包含指定的 Seedance 2 模型', () => {
 })
 
 test('选择 ToAPIs 预设会写入异步创建和查询合同', () => {
-  assert.match(source, /p === 'toapis'[\s\S]*return 'https:\/\/toapis\.xyz'/)
+  assert.match(source, /p === 'toapis'[\s\S]*return 'https:\/\/toapis\.cn'/)
   assert.match(source, /proto === 'toapis_video' \|\| p === 'toapis'[\s\S]*submitPath = endpoint \|\| '\/v1\/videos\/generations'/)
   assert.match(source, /proto === 'toapis_video' \|\| p === 'toapis'[\s\S]*queryPath = '\/v1\/videos\/generations\/\{taskId\}'/)
   assert.match(source, /providerId === 'toapis'[\s\S]*form\.value\.api_protocol = 'toapis_video'/)
@@ -24,7 +24,7 @@ test('选择 ToAPIs 预设会写入异步创建和查询合同', () => {
 
 test('ToAPIs 帮助明确分辨率、验证门禁和参考模式互斥', () => {
   const help = source.match(/<el-collapse-item name="toapis-video">[\s\S]*?<\/el-collapse-item>/)?.[0] || ''
-  assert.match(help, /https:\/\/toapis\.xyz/)
+  assert.match(help, /https:\/\/toapis\.cn/)
 
   assert.match(help, /仅支持 <code>480P<\/code>、<code>720P<\/code>/)
   assert.match(help, /真实生成验证成功后才可在前端可见/)

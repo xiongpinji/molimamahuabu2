@@ -80,7 +80,7 @@ function evidenceFixture(mutate = () => {}) {
   };
   const evidence = {
     contract_version: CONTRACT,
-    provider_origin: 'https://toapis.xyz',
+    provider_origin: 'https://toapis.cn',
     generated_at: generatedAt,
     run_id: '2db64e31-ff48-451c-9da8-b014a2ad92ec',
     results: [{

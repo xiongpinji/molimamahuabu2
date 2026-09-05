@@ -37,7 +37,7 @@ function fixture() {
      endpoint, query_endpoint, priority, is_default, is_active, verification_status,
      verified_capabilities, settings, logical_model_id, failover_enabled, canary_paused,
      created_at, updated_at)
-    VALUES ('video', 'toapis', 'toapis_video', 'ToAPIs FAST', 'https://toapis.xyz',
+    VALUES ('video', 'toapis', 'toapis_video', 'ToAPIs FAST', 'https://toapis.cn',
       'shared-fast-secret', '["fumin-seedance-2.0-fast"]', 'fumin-seedance-2.0-fast',
       '/v1/videos/generations', '/v1/videos/generations/{taskId}', 11, 0, 1, 'verified',
       '{}', '{}', 'fumin-seedance-2.0-fast', 0, 0, ?, ?)`)
@@ -108,12 +108,12 @@ function writeEvidenceForBinding(current, targetConfigId, sourceConfigId, apiKey
     id: String(targetConfigId),
     provider: 'toapis_wan3',
     model: MODEL,
-    base_url: 'https://toapis.xyz',
+    base_url: 'https://toapis.cn',
     api_key: apiKey,
   }));
   const base = {
     contract_version: EVIDENCE_CONTRACT,
-    provider_origin: 'https://toapis.xyz',
+    provider_origin: 'https://toapis.cn',
     generated_at: '2026-08-30T07:30:00.000Z',
     results: [{
       model: MODEL,
@@ -210,7 +210,7 @@ async function arrangeRotatedActiveWan3(current) {
     id: String(prepared.configId),
     provider: 'toapis_wan3',
     model: MODEL,
-    base_url: 'https://toapis.xyz',
+    base_url: 'https://toapis.cn',
     api_key: rotatedKey,
   }));
   priorSettings.credential_fingerprint = credentialFingerprint;
@@ -248,7 +248,7 @@ test('prepare creates one independent inactive Wan3 route by copying only the so
     assert.equal(row.provider, 'toapis_wan3');
     assert.equal(row.api_protocol, 'toapis_wan3_video');
     assert.equal(row.service_type, 'video');
-    assert.equal(row.base_url, 'https://toapis.xyz');
+    assert.equal(row.base_url, 'https://toapis.cn');
     assert.deepEqual(JSON.parse(row.model), [MODEL]);
     assert.equal(row.default_model, MODEL);
     assert.equal(row.logical_model_id, MODEL);

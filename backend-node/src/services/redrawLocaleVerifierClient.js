@@ -1,10 +1,18 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const net = require('node:net');
+const path = require('node:path');
 
 const REQUEST_LIMIT_BYTES = 64 * 1024;
 const RESPONSE_LIMIT_BYTES = 256 * 1024;
 const DEFAULT_TIMEOUT_MS = 180_000;
+const SOURCE_AUDIO_RESULT_KEYS = [
+  'audio_sha256',
+  'language_probability',
+  'segments',
+  'source_language',
+  'transcript_sha256',
+];
 const LOCAL_VOICE_RESULT_KEYS = [
   'accent',
   'approved_text_sha256',
@@ -50,6 +58,10 @@ function createRedrawLocaleVerifierClient(options = {}) {
   const registry = options.registry;
   if (!registry || typeof registry.assertReady !== 'function') {
     throw codedError('REDRAW_LOCALE_VERIFIER_CONFIG_INVALID');
+  }
+
+  function assertReady(expected) {
+    return registry.assertReady(expected);
   }
 
   async function verify(input = {}) {
@@ -104,7 +116,34 @@ function createRedrawLocaleVerifierClient(options = {}) {
     return validateLocalVoiceWrapper(response, request, pack);
   }
 
-  return { verify, verifyNativeAudio, verifyLocalVoice };
+  async function analyzeSourceAudio(input = {}) {
+    const audioPath = resolvePrivateAudioPath(input.privateAudioRoot, input.audioPath);
+    const audioSha256 = await sha256File(audioPath);
+    if (!isNonEmptyString(input.requestId)
+      || !isSha256(input.audioSha256)
+      || input.audioSha256 !== audioSha256) {
+      throw codedError('SOURCE_AUDIO_EVIDENCE_INVALID');
+    }
+    const request = {
+      action: 'analyze_source_audio',
+      request_id: input.requestId,
+      audio_path: audioPath,
+      audio_sha256: audioSha256,
+    };
+    const line = `${JSON.stringify(request)}\n`;
+    if (Buffer.byteLength(line, 'utf8') > REQUEST_LIMIT_BYTES) {
+      throw codedError('REDRAW_LOCALE_REQUEST_TOO_LARGE');
+    }
+    let response;
+    try {
+      response = await roundTrip(socketPath, line, timeoutMs, input.signal);
+    } catch {
+      throw codedError('SOURCE_AUDIO_RESULT_UNKNOWN');
+    }
+    return validateSourceAudioWrapper(response, request);
+  }
+
+  return { analyzeSourceAudio, assertReady, verify, verifyNativeAudio, verifyLocalVoice };
 }
 
 function toWorkerRequest(input, pack, audioSha256) {
@@ -296,6 +335,111 @@ function validateLocalVoiceWrapper(response, request, pack) {
     throw codedError('REDRAW_LOCALE_EVIDENCE_INVALID');
   }
   return validateLocalVoiceEvidence(response.result, request, pack);
+}
+
+function validateSourceAudioWrapper(response, request) {
+  if (!response || typeof response !== 'object' || Array.isArray(response)) {
+    throw codedError('SOURCE_AUDIO_EVIDENCE_INVALID');
+  }
+  if (response.ok === false) {
+    if (!sameKeys(response, ['error_code', 'ok']) || !isNonEmptyString(response.error_code)) {
+      throw codedError('SOURCE_AUDIO_EVIDENCE_INVALID');
+    }
+    throw codedError('SOURCE_AUDIO_ANALYSIS_FAILED');
+  }
+  if (!sameKeys(response, ['ok', 'result'])
+    || response.ok !== true
+    || !response.result
+    || typeof response.result !== 'object'
+    || Array.isArray(response.result)) {
+    throw codedError('SOURCE_AUDIO_EVIDENCE_INVALID');
+  }
+  return validateSourceAudioEvidence(response.result, request);
+}
+
+function validateSourceAudioEvidence(evidence, request) {
+  if (!sameKeys(evidence, SOURCE_AUDIO_RESULT_KEYS)
+    || containsAbsolutePath(evidence)
+    || !/^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/i.test(String(evidence.source_language || ''))
+    || !isProbability(evidence.language_probability)
+    || evidence.audio_sha256 !== request.audio_sha256
+    || !isSha256(evidence.transcript_sha256)) {
+    throw codedError('SOURCE_AUDIO_EVIDENCE_INVALID');
+  }
+  const segments = sourceAudioSegments(evidence.segments);
+  if (!segments) throw codedError('SOURCE_AUDIO_EVIDENCE_INVALID');
+  return {
+    requestId: request.request_id,
+    sourceLanguage: evidence.source_language,
+    languageProbability: evidence.language_probability,
+    audioSha256: evidence.audio_sha256,
+    transcriptSha256: evidence.transcript_sha256,
+    segments,
+  };
+}
+
+function sourceAudioSegments(value) {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 4096) return null;
+  const result = [];
+  let previousEnd = 0;
+  for (const segment of value) {
+    if (!segment || typeof segment !== 'object' || Array.isArray(segment)
+      || !sameKeys(segment, ['end', 'speaker_cluster_id', 'start', 'text'])
+      || typeof segment.start !== 'number'
+      || typeof segment.end !== 'number'
+      || !Number.isFinite(segment.start)
+      || !Number.isFinite(segment.end)
+      || segment.start < previousEnd
+      || segment.end <= segment.start
+      || !isNonEmptyString(segment.text)
+      || !/^speaker-cluster-[1-9][0-9]*$/.test(String(segment.speaker_cluster_id || ''))) {
+      return null;
+    }
+    result.push({
+      startMs: Math.round(segment.start * 1000),
+      endMs: Math.round(segment.end * 1000),
+      text: segment.text.trim(),
+      speakerClusterId: segment.speaker_cluster_id,
+    });
+    previousEnd = segment.end;
+  }
+  return result;
+}
+
+function resolvePrivateAudioPath(privateRoot, audioPath) {
+  try {
+    if (!path.isAbsolute(String(privateRoot || '')) || !path.isAbsolute(String(audioPath || ''))) {
+      throw new Error('absolute paths required');
+    }
+    const root = fs.realpathSync.native(privateRoot);
+    const inputStat = fs.lstatSync(audioPath);
+    const resolved = fs.realpathSync.native(audioPath);
+    const relative = path.relative(root, resolved);
+    if (!fs.statSync(root).isDirectory()
+      || inputStat.isSymbolicLink()
+      || !fs.statSync(resolved).isFile()
+      || path.extname(resolved).toLowerCase() !== '.wav'
+      || relative.startsWith('..')
+      || path.isAbsolute(relative)) {
+      throw new Error('audio path not allowed');
+    }
+    return resolved;
+  } catch {
+    throw codedError('SOURCE_AUDIO_EVIDENCE_INVALID');
+  }
+}
+
+function containsAbsolutePath(value) {
+  if (typeof value === 'string') {
+    return path.win32.isAbsolute(value)
+      || path.posix.isAbsolute(value)
+      || /file:\/\//i.test(value)
+      || /(?:^|\s)[a-z]:[\\/]/i.test(value)
+      || /\\\\[^\\]+\\[^\\]+/.test(value);
+  }
+  if (Array.isArray(value)) return value.some(containsAbsolutePath);
+  if (value && typeof value === 'object') return Object.values(value).some(containsAbsolutePath);
+  return false;
 }
 
 function validateEvidence(evidence, request, pack) {

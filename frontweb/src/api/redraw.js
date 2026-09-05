@@ -176,6 +176,15 @@ export const redrawAPI = {
   getWork(workId) {
     return request.get(`/redraw/works/${workId}`)
   },
+  getBlueprint(workId) {
+    return request.get(`/redraw/works/${workId}/blueprint`, { silentError: true })
+  },
+  saveBlueprint(workId, body) {
+    return request.put(`/redraw/works/${workId}/blueprint`, body, { silentError: true })
+  },
+  lockBlueprint(workId, body) {
+    return request.post(`/redraw/works/${workId}/blueprint/lock`, body, { silentError: true })
+  },
   updateShot(shotId, body) {
     return request.put(`/redraw/shots/${shotId}`, body)
   },
@@ -196,6 +205,15 @@ export const redrawAPI = {
   },
   createVersion(workId, body) {
     return request.post(`/redraw/works/${workId}/versions`, body)
+  },
+  getLocalization(versionId) {
+    return request.get(`/redraw/versions/${versionId}/localization`, { silentError: true })
+  },
+  saveLocalization(versionId, body) {
+    return request.put(`/redraw/versions/${versionId}/localization`, body, { silentError: true })
+  },
+  lockLocalization(versionId, body) {
+    return request.post(`/redraw/versions/${versionId}/localization/lock`, body, { silentError: true })
   },
   getCharacterPlan(versionId) {
     return request.get(`/redraw/versions/${versionId}/character-plan`)

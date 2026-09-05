@@ -168,18 +168,52 @@ function buildLocalizationSnapshot(db, input = {}) {
     localizationLevel: trim(input.localizationLevel ?? input.localization_level) || 'faithful',
   };
   const work = getOwnedWork(db, normalized);
-  const sourceVersion = db.prepare(`
-    SELECT *
-    FROM redraw_versions
-    WHERE work_id = ? AND tenant_id = ? AND user_id = ?
-      AND locale = 'source'
-      AND source_facts_json IS NOT NULL AND TRIM(source_facts_json) != ''
-      AND deleted_at IS NULL
-    ORDER BY CASE WHEN version = ? THEN 0 ELSE 1 END, version DESC, id DESC
-    LIMIT 1
-  `).get(normalized.workId, normalized.tenantId, normalized.userId, Number(work.current_version || 0));
+  const blueprintRow = tableExists(db, 'redraw_episode_blueprints')
+    ? db.prepare(`
+      SELECT *
+      FROM redraw_episode_blueprints
+      WHERE work_id = ? AND tenant_id = ? AND user_id = ?
+      ORDER BY revision DESC, id DESC
+      LIMIT 1
+    `).get(normalized.workId, normalized.tenantId, normalized.userId)
+    : null;
+  if (blueprintRow && blueprintRow.status !== 'locked') {
+    throw codedError('BLUEPRINT_NOT_LOCKED', '本地化需要先锁定母本蓝图');
+  }
+  const blueprint = blueprintRow ? parseJson(blueprintRow.blueprint_json, null) : null;
+  const blueprintHash = trim(blueprintRow?.blueprint_hash);
+  if (blueprintRow && (!blueprint
+    || blueprint.schema_version !== 'episode-blueprint-v1'
+    || !/^[a-f0-9]{64}$/.test(blueprintHash)
+    || blueprintHash !== trim(blueprint.blueprint_hash))) {
+    throw codedError('BLUEPRINT_HASH_MISMATCH', '母本蓝图哈希已变化');
+  }
+  const sourceVersion = blueprintRow
+    ? db.prepare(`
+      SELECT *
+      FROM redraw_versions
+      WHERE work_id = ? AND tenant_id = ? AND user_id = ? AND version = ?
+        AND locale = 'source'
+        AND source_facts_json IS NOT NULL AND TRIM(source_facts_json) != ''
+        AND deleted_at IS NULL
+      LIMIT 1
+    `).get(normalized.workId, normalized.tenantId, normalized.userId, Number(blueprintRow.revision))
+    : db.prepare(`
+      SELECT *
+      FROM redraw_versions
+      WHERE work_id = ? AND tenant_id = ? AND user_id = ?
+        AND locale = 'source'
+        AND source_facts_json IS NOT NULL AND TRIM(source_facts_json) != ''
+        AND deleted_at IS NULL
+      ORDER BY CASE WHEN version = ? THEN 0 ELSE 1 END, version DESC, id DESC
+      LIMIT 1
+    `).get(normalized.workId, normalized.tenantId, normalized.userId, Number(work.current_version || 0));
   if (!sourceVersion) {
-    throw codedError('REDRAW_LOCALIZATION_SOURCE_REQUIRED', '本地化需要先完成源片事实确认');
+    throw codedError(blueprintRow ? 'BLUEPRINT_HASH_MISMATCH' : 'REDRAW_LOCALIZATION_SOURCE_REQUIRED',
+      blueprintRow ? '锁定母本蓝图缺少精确修订事实' : '本地化需要先完成源片事实确认');
+  }
+  if (blueprintRow && trim(sourceVersion.blueprint_hash) !== blueprintHash) {
+    throw codedError('BLUEPRINT_HASH_MISMATCH', '母本蓝图与事实修订不匹配');
   }
   const project = db.prepare(`
     SELECT policy_version, budget_limit_credits
@@ -191,6 +225,10 @@ function buildLocalizationSnapshot(db, input = {}) {
   if (!sourceFacts || typeof sourceFacts !== 'object' || Array.isArray(sourceFacts)) {
     throw codedError('REDRAW_LOCALIZATION_SOURCE_REQUIRED', '源片事实不可读取');
   }
+  if (blueprintRow && (sourceFacts.schema_version !== '2.0'
+    || trim(sourceVersion.facts_hash) !== trim(sourceFacts.facts_hash))) {
+    throw codedError('BLUEPRINT_HASH_MISMATCH', '母本蓝图投影事实已变化');
+  }
   const localizationInput = localizationService.buildLocalizationInput(sourceFacts, {
     locale: normalized.locale,
     market: normalized.market,
@@ -200,18 +238,28 @@ function buildLocalizationSnapshot(db, input = {}) {
   localizationInput.tenantId = normalized.tenantId;
   localizationInput.userId = normalized.userId;
   localizationInput.workId = normalized.workId;
+  if (blueprintRow) {
+    localizationInput.blueprint_hash = blueprintHash;
+    localizationInput.blueprint_revision = Number(blueprintRow.revision);
+    localizationInput.blueprint = blueprint;
+  }
   return {
     input: localizationInput,
     source_version_id: Number(sourceVersion.id),
     facts_hash: sourceVersion.facts_hash || localizationInput.source_facts_hash,
     policy_version: Number(project?.policy_version || 0),
     budget_limit_credits: project?.budget_limit_credits == null ? null : Number(project.budget_limit_credits),
+    ...(blueprintRow ? {
+      blueprint,
+      blueprint_hash: blueprintHash,
+      blueprint_revision: Number(blueprintRow.revision),
+    } : {}),
   };
 }
 
-function quoteLocalization(db, input = {}) {
-  const snapshot = buildLocalizationSnapshot(db, input);
-  const blocked = analysisGateQuote(db, input);
+function quoteLocalization(db, input = {}, preparedSnapshot = null) {
+  const snapshot = preparedSnapshot || buildLocalizationSnapshot(db, input);
+  const blocked = snapshot.blueprint_hash ? null : analysisGateQuote(db, input);
   if (blocked) return blocked;
   const capability = redrawCapability.resolveVerifiedLocaleCapability(db, {
     locale: trim(input.locale),
@@ -501,17 +549,59 @@ function insertTask(db, log, input, quote, draftId, reservationId) {
 
 function createStartRecords(db, log, input, quote) {
   return db.transaction(() => {
-    const draft = localizationService.createLocalizationDraft(db, {
-      tenantId: input.tenantId,
-      userId: input.userId,
-    }, input.workId, {
-      locale: input.locale,
-      market: input.market,
-      localizationLevel: input.localizationLevel,
-      inputHash: quote.input_hash,
-      idempotencyKey: input.idempotencyKey,
-      modelSnapshot: quote.snapshot,
-    });
+    let draft;
+    if (quote.snapshot.blueprint_hash) {
+      draft = db.prepare(`
+        SELECT * FROM redraw_versions
+        WHERE id = ? AND work_id = ? AND tenant_id = ? AND user_id = ?
+          AND version = ? AND blueprint_hash = ? AND deleted_at IS NULL
+        LIMIT 1
+      `).get(
+        Number(quote.snapshot.source_version_id),
+        Number(input.workId),
+        String(input.tenantId),
+        String(input.userId),
+        Number(quote.snapshot.blueprint_revision),
+        quote.snapshot.blueprint_hash,
+      );
+      if (!draft) throw codedError('BLUEPRINT_HASH_MISMATCH', '母本蓝图修订已变化');
+      if (trim(draft.localization_task_id) || trim(draft.localization_review_json)) {
+        throw codedError('REDRAW_LOCALIZATION_ACTIVE_CONFLICT', '当前母本蓝图已有本地化任务或审核版本');
+      }
+      const claimed = db.prepare(`
+        UPDATE redraw_versions
+        SET market = ?, localization_level = ?, localization_input_hash = ?,
+            localization_idempotency_key = ?, localization_model_snapshot_json = ?, updated_at = ?
+        WHERE id = ? AND tenant_id = ? AND user_id = ? AND blueprint_hash = ?
+          AND localization_task_id IS NULL AND localization_review_json IS NULL
+      `).run(
+        input.market,
+        input.localizationLevel,
+        quote.input_hash,
+        input.idempotencyKey,
+        JSON.stringify(quote.snapshot),
+        new Date().toISOString(),
+        Number(draft.id),
+        String(input.tenantId),
+        String(input.userId),
+        quote.snapshot.blueprint_hash,
+      );
+      if (claimed.changes !== 1) {
+        throw codedError('REDRAW_LOCALIZATION_ACTIVE_CONFLICT', '当前母本蓝图已有本地化任务');
+      }
+    } else {
+      draft = localizationService.createLocalizationDraft(db, {
+        tenantId: input.tenantId,
+        userId: input.userId,
+      }, input.workId, {
+        locale: input.locale,
+        market: input.market,
+        localizationLevel: input.localizationLevel,
+        inputHash: quote.input_hash,
+        idempotencyKey: input.idempotencyKey,
+        modelSnapshot: quote.snapshot,
+      });
+    }
     const reservation = quote.credits > 0
       ? creditLedger.reserve(db, {
         tenantId: input.tenantId,
@@ -616,14 +706,43 @@ function runLocalizationJob(db, records, deps) {
       if (!providerResult || !Object.prototype.hasOwnProperty.call(providerResult, 'result')) {
         throw codedError('REDRAW_LOCALIZATION_EMPTY_RESULT', '本地化供应商返回结果为空');
       }
+      const episodeBlueprint = quote.snapshot.blueprint || null;
       const normalized = localizationService.normalizeLocalizationResult(
         providerResult.result,
-        quote.snapshot.input.source_facts,
+        episodeBlueprint || quote.snapshot.input.source_facts,
         {
           locale: quote.snapshot.input.locale,
           market: quote.snapshot.input.market,
+          ...(episodeBlueprint ? {
+            blueprintHash: quote.snapshot.blueprint_hash,
+            validateTargetText: deps.validateTargetText,
+          } : {}),
         },
       );
+      if (episodeBlueprint) {
+        const owner = {
+          tenantId: quote.snapshot.input.tenantId || records.tenantId,
+          userId: quote.snapshot.input.userId || records.userId,
+        };
+        const reviewed = db.transaction(() => {
+          const stored = localizationService.saveGeneratedLocalizationReview(
+            db,
+            owner,
+            draftVersionId,
+            normalized,
+          );
+          taskService.updateTaskResult(db, taskId, {
+            status: 'completed',
+            work_id: Number(quote.snapshot.input.workId || records.workId),
+            version_id: Number(draftVersionId),
+            blueprint_hash: quote.snapshot.blueprint_hash,
+            localization_hash: stored.localization_hash,
+          });
+          confirmReservationInTransaction(db, reservationId);
+          return stored;
+        }).immediate();
+        return { status: 'completed', version_id: reviewed.version_id, localization_hash: reviewed.localization_hash };
+      }
       const decisionInput = {
         tenantId: quote.snapshot.input.tenantId || records.tenantId,
         userId: quote.snapshot.input.userId || records.userId,
@@ -685,10 +804,14 @@ function normalizeScheduled(value) {
 
 function startLocalization(db, log, input = {}, deps = {}) {
   const normalized = normalizeStartInput(input);
+  const snapshot = buildLocalizationSnapshot(db, normalized);
   const existing = getExistingStart(db, normalized);
   if (existing) return existing;
+  if (snapshot.blueprint_hash && typeof deps.validateTargetText !== 'function') {
+    throw codedError('LOCALIZATION_LANGUAGE_GATE_REQUIRED', '缺少目标文本语言验证器');
+  }
 
-  const quote = quoteLocalization(db, normalized);
+  const quote = quoteLocalization(db, normalized, snapshot);
   if (!quote.priced) throw codedError(quote.code, '本地化模型暂不可报价', { quote });
   if (normalized.quoteHash !== quote.quote_hash) {
     throw codedError('REDRAW_LOCALIZATION_QUOTE_CHANGED', '本地化报价已变化，请重新确认', { quote });

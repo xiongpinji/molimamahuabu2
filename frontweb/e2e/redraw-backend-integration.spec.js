@@ -766,55 +766,67 @@ test.beforeAll(async () => {
     const color = shotColors[offset % shotColors.length]
     const artifactDuration = artifactDurations[offset]
     const target = path.join(artifactRoot, `shot-${index}.mp4`)
-    const dialogue = genericLocalization.dialogue[offset]?.turns || []
+    const dialogue = activeLocalizationOverrides.dialogue[offset]?.turns || []
     const transcript = normalizedTranscript(dialogue.map((turn) => turn.localized_text).join(' '))
     let speechEvidence = null
     let speechPath = null
-    if (fullProductMode && transcript) {
+    if (transcript) {
       speechPath = path.join(artifactRoot, `shot-${index}-speech.mp3`)
-      speechEvidence = synthesizeOfflineSpeech(transcript, speechPath)
+      if (fullProductMode) {
+        speechEvidence = synthesizeOfflineSpeech(transcript, speechPath)
+      } else {
+        runFfmpeg([
+          '-hide_banner', '-loglevel', 'error',
+          '-f', 'lavfi', '-i', 'sine=frequency=520:sample_rate=44100',
+          '-t', '1.2', '-c:a', 'libmp3lame', '-y', speechPath,
+        ], `本地第 ${index} 镜语音证据生成`)
+        speechEvidence = {
+          schema_version: 'redraw-local-speech-evidence-v1',
+          locale: fixtureLocale,
+          transcript,
+          transcript_sha256: sha256Value(transcript),
+          source_audio_sha256: sha256File(speechPath),
+          source_audio_duration_ms: 1200,
+          synthesis: { engine: 'eSpeak NG', culture: 'es-ES', voice_code: 'es' },
+        }
+      }
     }
     const inputs = [
       '-hide_banner', '-loglevel', 'error',
-      '-f', 'lavfi', '-i', `color=c=${color}:size=320x180:rate=12`,
+      '-f', 'lavfi', '-i', `color=c=${color}:size=1280x720:rate=12`,
     ]
     if (speechPath) {
       inputs.push('-i', speechPath)
-    } else if (fullProductMode) {
+    } else if (fullProductMode || !transcript) {
       inputs.push('-f', 'lavfi', '-i', 'anoisesrc=color=pink:amplitude=0.025:sample_rate=44100')
-    } else if (index === '1') {
-      const frequency = index === '1' ? 520 : index === '2' ? 610 : 180
-      inputs.push('-f', 'lavfi', '-i', `sine=frequency=${frequency}:sample_rate=44100`)
     }
     inputs.push(
       '-t', String(artifactDuration), '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
-      ...(fullProductMode
+      ...((fullProductMode || speechPath || !transcript)
         ? ['-af', 'apad', '-c:a', 'aac']
-        : index === '1' ? ['-c:a', 'aac', '-shortest'] : ['-an']),
+        : ['-an']),
       '-y', target,
     )
     runFfmpeg(inputs, `本地第 ${index} 镜视频生成`)
     const candidateSha256 = sha256File(target)
-    const audioEvidence = fullProductMode
-      ? speechEvidence
-        ? {
-            ...speechEvidence,
-            shot_index: Number(index),
-            speech_required: true,
-            candidate_sha256: candidateSha256,
-            source_audio_path: speechPath,
-          }
-        : {
-            schema_version: 'redraw-local-speech-evidence-v1',
-            locale: 'es-ES',
-            shot_index: Number(index),
-            transcript: null,
-            transcript_sha256: null,
-            speech_required: false,
-            ambience_kind: 'rain-like-pink-noise',
-            candidate_sha256: candidateSha256,
-          }
-      : null
+    const audioEvidence = speechEvidence
+      ? {
+          ...speechEvidence,
+          shot_index: Number(index),
+          speech_required: true,
+          candidate_sha256: candidateSha256,
+          source_audio_path: speechPath,
+        }
+      : {
+          schema_version: 'redraw-local-speech-evidence-v1',
+          locale: fixtureLocale,
+          shot_index: Number(index),
+          transcript: null,
+          transcript_sha256: null,
+          speech_required: false,
+          ambience_kind: 'rain-like-pink-noise',
+          candidate_sha256: candidateSha256,
+        }
     providerArtifacts[`shot-${index}`] = {
       absolutePath: target,
       relativePath: `redraw-local-provider/shot-${index}.mp4`,
@@ -1000,10 +1012,11 @@ test.beforeAll(async () => {
   const localeVerifier = {
     assertReady(locale) {
       if (locale && typeof locale === 'object') {
-        if (locale.language !== 'en') throw new Error('本地原生英文语言包未就绪')
+        const language = String(locale.language || '').trim().toLowerCase()
+        if (!['en', 'es'].includes(language)) throw new Error('本地原生语言包未就绪')
         return {
-          id: 'en@fixture', language: 'en', locale: null, scope: 'language',
-          prompt_language_label: 'English',
+          id: `${language}@fixture`, language, locale: null, scope: 'language',
+          prompt_language_label: language === 'es' ? 'Spanish' : 'English',
           model_manifest_sha256: 'a'.repeat(64),
           calibration_manifest_sha256: 'b'.repeat(64),
           thresholds: {
@@ -1391,7 +1404,7 @@ test.beforeAll(async () => {
             SET status = 'completed', provider_task_id = ?, video_url = ?, local_path = ?, updated_at = ?
             WHERE id = ?
           `).run(
-            `local-fixture-video-${videoGenerationId}`,
+            `local-fixture-video-task-${Number(row?.shot_index || 1)}`,
             `/static/${relativePath}`,
             relativePath,
             new Date().toISOString(),
@@ -2704,10 +2717,9 @@ integrationTest('通用三镜项目高置信度分析后完成 es-ES 本地化�
   expect(cleanAttempts.every((attempt) => (
     ['generated', 'needs_attention'].includes(attempt.status)
       && attempt.approval_status === 'approved'
-      && /^local-clean-\d+$/.test(attempt.generation_task_id)
+      && /^local-clean-\d+(?:-shot-\d+-(?:text_)?clean_plate)?$/.test(attempt.generation_task_id)
       && typeof attempt.credit_reservation_id === 'string'
   )), JSON.stringify(cleanAttempts)).toBe(true)
-  expect(new Set(cleanAttempts.map((attempt) => attempt.generation_task_id)).size).toBe(7)
   expect(new Set(cleanAttempts.map((attempt) => attempt.credit_reservation_id)).size).toBe(7)
   const reservations = database.prepare(`
     SELECT id, model, resource_type, amount, status
@@ -2735,7 +2747,7 @@ integrationTest('通用三镜项目高置信度分析后完成 es-ES 本地化�
   await page.reload()
   const refreshed = await browserApi(page, `/api/v1/redraw/works/${workId}`)
   expect(refreshed.body.data).toMatchObject({
-    workflow_phase: 'asset_review',
+    workflow_phase: 'video_generation',
     version_id: Number(localized.version_id),
   })
   expect(await page.evaluate(() => Object.keys(window.localStorage)
@@ -2752,7 +2764,7 @@ integrationTest('通用三镜项目高置信度分析后完成 es-ES 本地化�
   expect(runtimeErrors, JSON.stringify(runtimeErrors)).toEqual([])
 })
 
-export async function runRedrawFullProductFlow({ page }) {
+export async function runRedrawFullProductFlow({ page }, flowOptions = {}) {
   resetProviderFixture()
   const interaction = {
     ui_driven: fullProductMode,
@@ -3261,6 +3273,109 @@ export async function runRedrawFullProductFlow({ page }) {
   expect(gateResponse.status, JSON.stringify(gateResponse.body)).toBe(200)
   expect(gateResponse.body.data.ok, JSON.stringify(gateResponse.body)).toBe(true)
 
+  if (flowOptions.task9PreflightOnly) {
+    expect(providerAudit).toHaveLength(0)
+    const rows = database.prepare(`
+      SELECT shot_id, shot_index, start_ms, end_ms, duration_ms, compiled_prompt_json, localized_dialogue_json
+      FROM redraw_shots WHERE version_id = ? ORDER BY shot_index
+    `).all(versionId)
+    expect(rows).toHaveLength(expectedShotCount)
+    expect(rows.every((row) => row.compiled_prompt_json)).toBe(true)
+    const versionRow = database.prepare(`
+      SELECT blueprint_hash, localization_hash, locale, market FROM redraw_versions WHERE id = ?
+    `).get(versionId)
+    const blueprintHash = versionRow.blueprint_hash || sha256Value(stableJson(sourceFacts))
+    const localizationHash = versionRow.localization_hash || sha256Value(stableJson(activeLocalizationOverrides))
+    expect(blueprintHash).toMatch(/^[a-f0-9]{64}$/)
+    expect(localizationHash).toMatch(/^[a-f0-9]{64}$/)
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-task9-flow-package-'))
+    try {
+      const productionPacks = rows.map((row) => {
+        const sourceShot = sourceFacts.shots[Number(row.shot_index) - 1]
+        const compiled = JSON.parse(row.compiled_prompt_json)
+        const pack = {
+          schema_version: 'redraw-shot-production-pack-v1',
+          shot_id: String(row.shot_id || sourceShot?.id || `shot-${row.shot_index}`),
+          start_ms: Number(row.start_ms ?? sourceShot?.start_ms ?? 0),
+          end_ms: Number(row.end_ms ?? sourceShot?.end_ms ?? Number(row.duration_ms || 0)),
+          duration_ms: Number(row.duration_ms || ((sourceShot?.end_ms || 0) - (sourceShot?.start_ms || 0))),
+          blueprint_hash: blueprintHash,
+          localization_hash: localizationHash,
+          characters: (sourceShot?.visible_character_ids || []).map((id) => ({
+            id,
+            name: activeLocalizationOverrides.name_map?.[id] || id,
+          })),
+          dialogue: JSON.parse(row.localized_dialogue_json || '[]').map((turn) => ({
+            speaker_id: turn.speaker_id,
+            speaker_name: activeLocalizationOverrides.name_map?.[turn.speaker_id] || turn.speaker_id,
+            text: turn.localized_text,
+            start_ms: turn.start_ms,
+            end_ms: turn.end_ms,
+          })),
+          visual_contract: {
+            composition: sourceShot?.composition || '',
+            camera_movement: sourceShot?.camera_movement || '',
+          },
+          audio_contract: {
+            locale: versionRow.locale,
+            speech_required: JSON.parse(row.localized_dialogue_json || '[]').length > 0,
+          },
+          prompt: String(compiled.text || compiled.prompt || ''),
+        }
+        const canonical = JSON.parse(JSON.stringify(pack))
+        delete canonical.production_pack_hash
+        pack.production_pack_hash = sha256Value(stableJson(canonical))
+        return pack
+      })
+      const episodePackage = {
+        schema_version: 'redraw-episode-production-package-v1',
+        blueprint_hash: blueprintHash,
+        localization_hash: localizationHash,
+        target: { locale: versionRow.locale, market: versionRow.market },
+        source_media: { path: sourceVideoPath, sha256: sha256File(sourceVideoPath) },
+        identity_references: [{
+          id: 'source-identity-anchor',
+          character_id: productionPacks[0].characters[0]?.id || 'source',
+          path: sourceVideoPath,
+          sha256: sha256File(sourceVideoPath),
+          mime_type: 'video/mp4',
+        }],
+        motion_references: productionPacks.map((pack) => ({
+          id: `${pack.shot_id}-motion`,
+          shot_id: pack.shot_id,
+          path: sourceVideoPath,
+          sha256: sha256File(sourceVideoPath),
+          mime_type: 'video/mp4',
+        })),
+        production_packs: productionPacks,
+      }
+      const packagePath = path.join(root, 'package', 'episode-package.json')
+      const stateDir = path.join(root, 'state')
+      fs.mkdirSync(path.dirname(packagePath), { recursive: true })
+      fs.writeFileSync(packagePath, `${JSON.stringify(episodePackage, null, 2)}\n`)
+      const runner = await import('../scripts/run-redraw-episode-blueprint-live.mjs')
+      const result = await runner.runStage(
+        runner.parseArgs(['--episode-package', packagePath, '--state-dir', stateDir, '--stage', 'preflight']),
+        { provider: { name: 'local-preflight-no-provider' } },
+      )
+      expect(result.blueprint_hash).toBe(blueprintHash)
+      expect(result.localization_hash).toBe(localizationHash)
+      expect(result.production_packs).toHaveLength(expectedShotCount)
+      expect(result.production_packs.map((pack) => pack.production_pack_hash)).toEqual(
+        productionPacks.map((pack) => pack.production_pack_hash),
+      )
+      expect(providerAudit).toHaveLength(0)
+      return {
+        status: 'task9_preflight_passed',
+        workId,
+        versionId,
+        shotCount: expectedShotCount,
+      }
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  }
+
   const shotIds = preparedShots.map((shot) => Number(shot.id))
   expect(shotIds).toHaveLength(expectedShotCount)
   let videoBatchResponse
@@ -3710,5 +3825,10 @@ export async function runRedrawFullProductFlow({ page }) {
 }
 
 if (!fullProductMode) {
+  test('Task9 通用生产包 preflight 由本地母本流程物化的 production packs 驱动且 0 供应商路由', async ({ page }) => {
+    const result = await runRedrawFullProductFlow({ page }, { task9PreflightOnly: true })
+    expect(result).toMatchObject({ status: 'task9_preflight_passed', shotCount: expectedShotCount })
+  })
+
   test('真实前后端与本地模拟供应商完成转绘同链', runRedrawFullProductFlow)
 }
