@@ -30,7 +30,7 @@ const {
   parseFeituoStatusPayload,
 } = require(path.join(backendRoot, 'src', 'services', 'feituoVideoClient'))
 
-const TOAPIS_BASE_URL = 'https://toapis.xyz'
+const TOAPIS_BASE_URL = 'https://toapis.cn'
 const FEITUO_BASE_URL = 'https://feituokuajing.com'
 
 function stableStringify(value) {

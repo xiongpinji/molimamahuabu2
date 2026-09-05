@@ -616,6 +616,7 @@ const REDRAW_EPISODE_BLUEPRINT_FIRST_EVIDENCE = [
   'docs/superpowers/specs/2026-09-05-redraw-isolated-video-model-fallback-design.md',
   'docs/superpowers/plans/2026-09-05-redraw-isolated-video-model-fallback.md',
   'docs/verification/redraw/isolated-video-model-fallback-verification.md',
+  'docs/superpowers/plans/2026-09-05-toapis-cn-domain-migration.md',
 ];
 const REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_TASK_E_UNLOCK = {
   reason: '2026-08-28 一键转绘真实产品 HTTP 媒体同链回归 Task E 获批',
@@ -1112,6 +1113,18 @@ const REDRAW_ISOLATED_VIDEO_MODEL_FALLBACK_UNLOCK = {
     'frontweb/scripts/fuminEpisodeProviderAdapter.test.mjs',
     'frontweb/scripts/run-redraw-episode-blueprint-live.test.mjs',
     'frontweb/scripts/run-redraw-video-model-fallback-live.test.mjs',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
+const REDRAW_TOAPIS_CN_DOMAIN_SYNC_UNLOCK = {
+  reason: '2026-09-05 按用户确认的 .cn 入口同步 PR #217 整集隔离适配器',
+  approvedBy: 'product-owner 2026-09-05 pr217-toapis-cn-domain-sync',
+  impactTests: [
+    'frontweb/scripts/episodeVideoProviderAdapter.test.mjs',
+    'frontweb/scripts/run-redraw-video-model-fallback-live.test.mjs',
+    'backend-node/test/toapisVideoClient.test.js',
+    'backend-node/test/toapisWan3VideoClient.test.js',
     'backend-node/test/featureLockManifest.test.js',
     'backend-node/test/incrementalReleaseScope.test.js',
   ],
@@ -1750,7 +1763,7 @@ test('母本蓝图优先一键转绘锁定固定五秒整集范围并完整保�
   assert.deepEqual(feature.requiredTests, REDRAW_EPISODE_BLUEPRINT_FIRST_REQUIRED_TESTS);
   assert.deepEqual(feature.evidence, REDRAW_EPISODE_BLUEPRINT_FIRST_EVIDENCE);
   assert.equal(feature.fixCommit, null);
-  assert.deepEqual(feature.unlock, REDRAW_ISOLATED_VIDEO_MODEL_FALLBACK_UNLOCK);
+  assert.deepEqual(feature.unlock, REDRAW_TOAPIS_CN_DOMAIN_SYNC_UNLOCK);
   assert.deepEqual(feature.unlockHistory, [
     REDRAW_EPISODE_BLUEPRINT_HARDENING_UNLOCK,
     REDRAW_EPISODE_CULTURAL_ADAPTATION_UNLOCK,
@@ -1759,6 +1772,7 @@ test('母本蓝图优先一键转绘锁定固定五秒整集范围并完整保�
     FUMIN_VERIFIED_UPSTREAM_SUBMISSION_CONTRACT_UNLOCK,
     FUMIN_RESULT_URL_PARSER_UNLOCK,
     FUMIN_DIALOGUE_PRESERVING_NORMALIZATION_UNLOCK,
+    REDRAW_ISOLATED_VIDEO_MODEL_FALLBACK_UNLOCK,
   ]);
 });
 
@@ -2030,7 +2044,7 @@ test('未触及锁保留当前批准记录且所有锁保留历史证据', () =>
     } else if (feature.featureId === REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_FEATURE_ID) {
       assert.deepEqual(feature.unlock, MERGED_CURRENT_UNLOCK_BY_FEATURE[feature.featureId]);
     } else if (feature.featureId === REDRAW_EPISODE_BLUEPRINT_FIRST_FEATURE_ID) {
-      assert.deepEqual(feature.unlock, REDRAW_ISOLATED_VIDEO_MODEL_FALLBACK_UNLOCK);
+      assert.deepEqual(feature.unlock, REDRAW_TOAPIS_CN_DOMAIN_SYNC_UNLOCK);
     } else if (!Object.hasOwn(PROVIDER_TASK_LOCK_REQUIREMENTS, feature.featureId)) {
       assert.deepEqual(feature.unlock, PR177_PLATFORM_ACCEPTANCE_UNLOCK);
     }

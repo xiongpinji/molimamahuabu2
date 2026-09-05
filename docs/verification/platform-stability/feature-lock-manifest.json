@@ -2664,7 +2664,8 @@
         "docs/verification/redraw/fumin-fixed-five-second-full-episode-verification.md",
         "docs/superpowers/specs/2026-09-05-redraw-isolated-video-model-fallback-design.md",
         "docs/superpowers/plans/2026-09-05-redraw-isolated-video-model-fallback.md",
-        "docs/verification/redraw/isolated-video-model-fallback-verification.md"
+        "docs/verification/redraw/isolated-video-model-fallback-verification.md",
+        "docs/superpowers/plans/2026-09-05-toapis-cn-domain-migration.md"
       ],
       "fixCommit": null,
       "unlockHistory": [
@@ -2738,17 +2739,29 @@
             "frontweb/scripts/run-redraw-fumin-full-episode-live.test.mjs",
             "backend-node/test/featureLockManifest.test.js"
           ]
+        },
+        {
+          "reason": "2026-09-05 整集转绘隔离多视频模型回退与最多 31 次提交获批",
+          "approvedBy": "product-owner 2026-09-05 pr217-isolated-video-model-fallback",
+          "impactTests": [
+            "frontweb/scripts/episodeVideoProviderAdapter.test.mjs",
+            "frontweb/scripts/episodeVideoRouteRegistry.test.mjs",
+            "frontweb/scripts/fuminEpisodeProviderAdapter.test.mjs",
+            "frontweb/scripts/run-redraw-episode-blueprint-live.test.mjs",
+            "frontweb/scripts/run-redraw-video-model-fallback-live.test.mjs",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-05 整集转绘隔离多视频模型回退与最多 31 次提交获批",
-        "approvedBy": "product-owner 2026-09-05 pr217-isolated-video-model-fallback",
+        "reason": "2026-09-05 按用户确认的 .cn 入口同步 PR #217 整集隔离适配器",
+        "approvedBy": "product-owner 2026-09-05 pr217-toapis-cn-domain-sync",
         "impactTests": [
           "frontweb/scripts/episodeVideoProviderAdapter.test.mjs",
-          "frontweb/scripts/episodeVideoRouteRegistry.test.mjs",
-          "frontweb/scripts/fuminEpisodeProviderAdapter.test.mjs",
-          "frontweb/scripts/run-redraw-episode-blueprint-live.test.mjs",
           "frontweb/scripts/run-redraw-video-model-fallback-live.test.mjs",
+          "backend-node/test/toapisVideoClient.test.js",
+          "backend-node/test/toapisWan3VideoClient.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]

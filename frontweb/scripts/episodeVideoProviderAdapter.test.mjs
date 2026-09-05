@@ -49,6 +49,32 @@ function response(payload, status = 200) {
   }
 }
 
+for (const routeId of ['toapis-fast', 'toapis-wan3']) {
+  test(`${routeId} creates and polls the same task through the official .cn endpoint`, async () => {
+    const calls = []
+    const adapter = createEpisodeVideoProviderAdapter({
+      route: episodeVideoRoute(routeId),
+      providerApiKey: 'toapis-test-key',
+      referenceApiKey: 'fumin-test-key',
+      commonAdapter: commonAdapter(),
+      fetchImpl: async (url, options) => {
+        calls.push([options.method, url])
+        return response(options.method === 'POST'
+          ? { id: 'task-cn' }
+          : { status: 'completed', result: { data: [{ url: 'https://assets.example/result.mp4' }] } })
+      },
+    })
+    const created = await adapter.submitGeneration({ unit: unit(), uploaded_references: uploadedReferences })
+    assert.deepEqual(await adapter.pollGeneration(created), {
+      state: 'completed', video_url: 'https://assets.example/result.mp4',
+    })
+    assert.deepEqual(calls, [
+      ['POST', 'https://toapis.cn/v1/videos/generations'],
+      ['GET', 'https://toapis.cn/v1/videos/generations/task-cn'],
+    ])
+  })
+}
+
 test('ToAPIs Fast adapter submits the approved vertical five-second audio contract', async () => {
   const bodies = []
   let beforeCalls = 0

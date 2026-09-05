@@ -129,7 +129,7 @@ test('Wan 3.0 public catalog exposes the approved full capability and all paid r
   assert.equal(item.capabilities.supportsFirstFrame, true);
   assert.equal(item.capabilities.supportsLastFrame, true);
   assert.deepEqual(Object.keys(item.resolution_prices).sort(), ['1080p', '480p', '720p']);
-  assert.equal(JSON.stringify(item).includes('toapis.xyz'), false);
+  assert.equal(JSON.stringify(item).includes('toapis.cn'), false);
   assert.equal(JSON.stringify(item).includes('wan3-test-key'), false);
 
   const publicPrice = prices.listPublic(db, { evidenceRoots: evidence.roots })
