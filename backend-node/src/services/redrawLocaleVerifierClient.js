@@ -140,7 +140,11 @@ function createRedrawLocaleVerifierClient(options = {}) {
     } catch {
       throw codedError('SOURCE_AUDIO_RESULT_UNKNOWN');
     }
-    return validateSourceAudioWrapper(response, request);
+    const result = validateSourceAudioWrapper(response, request);
+    if (input.preserveSourceEvidence === true) {
+      result.rawSourceEvidence = structuredClone(response.result);
+    }
+    return result;
   }
 
   return { analyzeSourceAudio, assertReady, verify, verifyNativeAudio, verifyLocalVoice };
@@ -358,15 +362,37 @@ function validateSourceAudioWrapper(response, request) {
 }
 
 function validateSourceAudioEvidence(evidence, request) {
-  if (!sameKeys(evidence, SOURCE_AUDIO_RESULT_KEYS)
+  const hasNoSpeechEvidence = Object.hasOwn(evidence, 'no_speech_evidence');
+  const expectedKeys = hasNoSpeechEvidence
+    ? [...SOURCE_AUDIO_RESULT_KEYS, 'no_speech_evidence'].sort()
+    : SOURCE_AUDIO_RESULT_KEYS;
+  if (!sameKeys(evidence, expectedKeys)
     || containsAbsolutePath(evidence)
-    || !/^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/i.test(String(evidence.source_language || ''))
-    || !isProbability(evidence.language_probability)
     || evidence.audio_sha256 !== request.audio_sha256
     || !isSha256(evidence.transcript_sha256)) {
     throw codedError('SOURCE_AUDIO_EVIDENCE_INVALID');
   }
-  const segments = sourceAudioSegments(evidence.segments);
+  let segments;
+  if (hasNoSpeechEvidence) {
+    const vad = evidence.no_speech_evidence;
+    if (!vad || typeof vad !== 'object' || Array.isArray(vad)
+      || !sameKeys(vad, ['audio_duration_ms', 'method', 'speech_duration_ms'])
+      || vad.method !== 'faster-whisper-vad'
+      || !Number.isSafeInteger(vad.audio_duration_ms) || vad.audio_duration_ms <= 0
+      || vad.speech_duration_ms !== 0
+      || evidence.source_language !== null || evidence.language_probability !== null
+      || evidence.transcript_sha256 !== sha256Text('[]')
+      || !Array.isArray(evidence.segments) || evidence.segments.length !== 0) {
+      throw codedError('SOURCE_AUDIO_EVIDENCE_INVALID');
+    }
+    segments = [];
+  } else {
+    if (!/^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/i.test(String(evidence.source_language || ''))
+      || !isProbability(evidence.language_probability)) {
+      throw codedError('SOURCE_AUDIO_EVIDENCE_INVALID');
+    }
+    segments = sourceAudioSegments(evidence.segments);
+  }
   if (!segments) throw codedError('SOURCE_AUDIO_EVIDENCE_INVALID');
   return {
     requestId: request.request_id,
@@ -375,6 +401,7 @@ function validateSourceAudioEvidence(evidence, request) {
     audioSha256: evidence.audio_sha256,
     transcriptSha256: evidence.transcript_sha256,
     segments,
+    ...(hasNoSpeechEvidence ? { noSpeechEvidence: { ...evidence.no_speech_evidence } } : {}),
   };
 }
 

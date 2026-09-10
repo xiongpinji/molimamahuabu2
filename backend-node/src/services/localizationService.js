@@ -1,5 +1,6 @@
 const { createHash, randomUUID } = require('node:crypto');
 const { writeVersionProductionPacks } = require('./redrawShotProductionPackService');
+const { resolveBlueprintDialogueSources } = require('./redrawSourceDialogueService');
 
 const SHA256 = /^[a-f0-9]{64}$/;
 const V2_RESULT_FIELDS = new Set([
@@ -510,6 +511,45 @@ function episodeSourceDialogue(blueprintFacts) {
   return entries;
 }
 
+function resolveLocalizationSourceDialogue(db, owner, workId, blueprint, storageRoot) {
+  const sourceDialogue = resolveBlueprintDialogueSources({ db, ...normalizeOwner(owner), storageRoot }, { workId, blueprint });
+  const unresolved = sourceDialogue.find((item) => item.status !== 'resolved' && item.status !== 'not_available');
+  if (unresolved) {
+    throw codedError('LOCALIZATION_SOURCE_DIALOGUE_UNRESOLVED', '完整源对白证据未核验，请刷新后复核', {
+      dialogue_id: unresolved.dialogue_id, reason: unresolved.reason,
+    });
+  }
+  return sourceDialogue;
+}
+
+function sourceDialogueDuration(sourceDialogue, blueprint, shot, turn) {
+  const requiresAudio = blueprint.evidence_manifest?.items?.some((item) => ['asr', 'audio', 'audio_transcript', 'transcript'].includes(item.kind))
+    || episodeSourceDialogue(blueprint).some(({ turn: sourceTurn }) => sourceTurn.id?.startsWith('audio-segment-'));
+  if (sourceDialogue === undefined && !requiresAudio) return Number(turn.end_ms) - Number(turn.start_ms);
+  const matches = Array.isArray(sourceDialogue)
+    ? sourceDialogue.filter((item) => item?.shot_id === shot.id && item?.dialogue_id === turn.id) : [];
+  const source = matches[0];
+  if (!requiresAudio && matches.length === 1 && source.status === 'not_available'
+    && source.reason === 'SOURCE_DIALOGUE_EVIDENCE_NOT_AVAILABLE') {
+    return Number(turn.end_ms) - Number(turn.start_ms);
+  }
+  const evidence = blueprint.evidence_manifest?.items?.filter((item) => item.id === source?.evidence_ref) || [];
+  if (matches.length !== 1 || source.status !== 'resolved'
+    || source.source_text !== turn.source_text || source.source_language !== turn.source_language
+    || source.projection_start_ms !== turn.start_ms || source.projection_end_ms !== turn.end_ms
+    || !turn.evidence_refs?.includes(source.evidence_ref)
+    || evidence.length !== 1 || evidence[0].sha256 !== source.evidence_sha256
+    || !SHA256.test(source.evidence_sha256 || '')
+    || !Number.isSafeInteger(source.source_start_ms) || !Number.isSafeInteger(source.source_end_ms)
+    || source.source_start_ms < 0 || source.source_end_ms <= source.source_start_ms
+    || source.source_end_ms > blueprint.source?.duration_ms
+    || Math.max(source.source_start_ms, shot.start_ms) !== turn.start_ms
+    || Math.min(source.source_end_ms, shot.end_ms) !== turn.end_ms) {
+    throw codedError('LOCALIZATION_SOURCE_DIALOGUE_UNRESOLVED', '完整源对白证据与蓝图不匹配', { dialogue_id: turn.id });
+  }
+  return source.source_end_ms - source.source_start_ms;
+}
+
 function episodeProviderDialogue(rawDialogue) {
   if (!Array.isArray(rawDialogue)) throw codedError('LOCALIZATION_DIALOGUE_INVALID', 'dialogue must be an array');
   const turns = new Map();
@@ -551,7 +591,7 @@ function normalizeEpisodeDialogue(rawDialogue, blueprintFacts, locale, options) 
     if (!targetText) throw codedError('LOCALIZATION_DIALOGUE_INVALID', 'dialogue target text missing');
     assertNoSourceRemainder(targetText, turn.source_text, blueprintFacts);
     assertTargetLanguage(targetText, options, { kind: 'dialogue', id });
-    const availableMs = Number(turn.end_ms) - Number(turn.start_ms);
+    const availableMs = sourceDialogueDuration(options.sourceDialogue, blueprintFacts, shot, turn);
     const estimatedDurationMs = estimateSpeechMs(targetText, locale);
     if (!Number.isFinite(availableMs) || availableMs <= 0 || estimatedDurationMs > availableMs) {
       throw codedError('LOCALIZATION_DIALOGUE_DURATION_EXCEEDED', 'dialogue duration exceeded', { source_dialogue_id: id });
@@ -884,6 +924,7 @@ function normalizeLocalizationReviewInput(input, context, options = {}) {
     market: input.market,
     blueprintHash: context.blueprintHash,
     validateTargetText: options.validateTargetText,
+    sourceDialogue: options.sourceDialogue,
   });
   const suppliedDialogue = new Map(input.dialogue_map.map((item) => [item.source_dialogue_id, item]));
   for (const row of normalized.dialogue_map) {
@@ -919,6 +960,7 @@ function saveGeneratedLocalizationReview(db, owner, versionId, input, options = 
   if (current != null && String(current).trim()) {
     throw codedError('LOCALIZATION_CAS_CONFLICT', 'localization review already exists');
   }
+  resolveLocalizationSourceDialogue(db, context.owner, context.version.work_id, context.blueprint, options.storageRoot);
   const localization = clone(input);
   localization.review = {
     ...uncheckedReview(localization),
@@ -957,7 +999,7 @@ function expectedReviewTimestamp(input) {
   return value;
 }
 
-function saveLocalizationReview(db, owner, versionId, input = {}) {
+function saveLocalizationReview(db, owner, versionId, input = {}, deps = {}) {
   const context = episodeReviewContext(db, owner, versionId);
   const current = parseStoredLocalization(context.version);
   if (current.review?.status === 'locked' || context.version.status === 'asset_review') {
@@ -972,6 +1014,8 @@ function saveLocalizationReview(db, owner, versionId, input = {}) {
     validateTargetText: input.validateTargetText,
     expectedLocale: current.locale,
     expectedMarket: current.market,
+    sourceDialogue: resolveLocalizationSourceDialogue(db, context.owner, context.version.work_id,
+      context.blueprint, deps.storageRoot || input.storageRoot),
   });
   const now = nextLocalizationTimestamp(expected, input.now);
   localization.review.updated_at = now;
@@ -1027,6 +1071,8 @@ function lockLocalizationReview(db, owner, versionId, input = {}, deps = {}) {
       validateTargetText: input.validateTargetText,
       expectedLocale: current.locale,
       expectedMarket: current.market,
+      sourceDialogue: resolveLocalizationSourceDialogue(db, context.owner, context.version.work_id,
+        context.blueprint, deps.storageRoot || input.storageRoot),
     });
     if (!reviewComplete(normalized.review)) throw codedError('LOCALIZATION_REVIEW_REQUIRED', 'all localization items must be reviewed');
     const recalculated = episodeLocalizationHash(normalized);
@@ -1050,7 +1096,7 @@ function lockLocalizationReview(db, owner, versionId, input = {}, deps = {}) {
       context.version.localization_review_json, expectedHash, context.blueprintHash,
     );
     if (changed.changes !== 1) throw codedError('LOCALIZATION_CAS_CONFLICT', 'localization changed, refresh required');
-    writeVersionProductionPacks(db, context.owner, context.version.id, { ...deps, now });
+    writeVersionProductionPacks(db, context.owner, context.version.id, { ...deps, storageRoot: deps.storageRoot || input.storageRoot, now });
     const workChanged = db.prepare(`
       UPDATE redraw_works
       SET current_version = ?, current_step = 2, status = 'asset_review', updated_at = ?
@@ -1726,6 +1772,7 @@ function validateLocalizedDialogue(sourceTurn, localizedTurn, options = {}) {
 }
 
 module.exports = {
+  resolveLocalizationSourceDialogue,
   buildLocalizationInput,
   episodeLocalizationHash,
   normalizeLocalizationResult,

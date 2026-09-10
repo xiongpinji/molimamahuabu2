@@ -79,7 +79,7 @@ function addWork(db, { tenantId = 'tenant-1', userId = 'user-1', localPath }) {
   return asset;
 }
 
-function createSampleVideo(storageRoot) {
+function createSampleVideo(storageRoot, durationSeconds = 1) {
   const relative = path.join('uploads', 'native-source.mp4').replace(/\\/g, '/');
   const absolute = path.join(storageRoot, relative);
   fs.mkdirSync(path.dirname(absolute), { recursive: true });
@@ -88,9 +88,9 @@ function createSampleVideo(storageRoot) {
     '-loglevel', 'error',
     '-y',
     '-f', 'lavfi',
-    '-i', 'testsrc=size=320x180:rate=12:duration=1',
+    '-i', `testsrc=size=320x180:rate=12:duration=${durationSeconds}`,
     '-f', 'lavfi',
-    '-i', 'sine=frequency=440:duration=1',
+    '-i', `sine=frequency=440:duration=${durationSeconds}`,
     '-shortest',
     '-pix_fmt', 'yuv420p',
     absolute,
@@ -202,6 +202,263 @@ test('analyzeNativeSource creates contact sheets, strict facts JSON and a readab
     assert.equal(JSON.stringify(metadata.media_probe).includes(storageRoot), false);
     assert.equal(/(?:https?:\/\/|file:\/\/|[a-zA-Z]:\\|\\\\)/.test(JSON.stringify(metadata.media_probe)), false);
     assert.equal(calls[0].imageSources.every((source) => !fs.existsSync(source.localAbsPath)), true);
+  } finally {
+    db.close();
+    fs.rmSync(storageRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});
+
+test('long native analysis uses real bounded window sheets and registers only one merged asset', async () => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'native-redraw-windows-'));
+  const db = createDb();
+  try {
+    addWork(db, { localPath: createSampleVideo(storageRoot, 25) });
+    const evidence = { dialogue_mode: 'spoken', evidence_ref: 'audio-1', segments: [{
+      id: 'segment-across-window', evidence_ref: 'audio-original', start_ms: 23_500, end_ms: 24_500,
+      source_text: '原句跨过窗口，不能切断改写', speaker_cluster_id: 'speaker-cluster-1',
+    }] };
+    const originalEvidence = JSON.stringify(evidence);
+    const calls = [];
+    const sheetPaths = [];
+    const result = await nativeAnalysis.analyzeNativeSource({
+      db, log, storageRoot, assetService,
+      visionDetailed: async (payload) => {
+        calls.push(payload);
+        const index = calls.length;
+        const duration = index === 1 ? 24_000 : 1_000;
+        assert.equal(payload.imageSources.length, index === 1 ? 6 : 2);
+        assert.match(payload.userPrompt, /relative to (?:the )?current window/i);
+        assert.match(payload.userPrompt, /ASR.*absolute source time/i);
+        assert.match(payload.userPrompt, /原句跨过窗口，不能切断改写/);
+        assert.match(payload.userPrompt, /"start_ms":23500,"end_ms":24500/);
+        assert.equal(payload.options.model, 'existing-model');
+        assert.equal(payload.options.temperature, 0.1);
+        for (const source of payload.imageSources) {
+          sheetPaths.push(source.localAbsPath);
+          const metadata = await sharp(source.localAbsPath).metadata();
+          assert.equal(metadata.format, 'jpeg');
+          assert.ok(metadata.width > 900);
+        }
+        const facts = validFacts(duration);
+        facts.story = [`窗口${index}先发生`, `窗口${index}后发生`];
+        facts.episode_hook = `窗口${index}结尾`;
+        return { text: JSON.stringify({ source_facts: facts }), provider_task_id: `real-response-${index}`,
+          model: 'existing-model', usage: { total_tokens: index * 10 }, raw_hash: String(index).repeat(64) };
+      },
+    }, { workId: 1, tenantId: 'tenant-1', userId: 'user-1', taskId: 'window-25s', model: 'existing-model' }, evidence);
+    assert.equal(calls.length, 2);
+    assert.equal(JSON.stringify(evidence), originalEvidence);
+    assert.equal(result.facts.duration_ms, 25_000);
+    assert.deepEqual(result.facts.shots.map((shot) => [shot.index, shot.start_ms, shot.end_ms]), [[1, 0, 24_000], [2, 24_000, 25_000]]);
+    assert.equal(result.facts.characters.length, 2);
+    assert.notEqual(result.facts.characters[0].id, result.facts.characters[1].id);
+    assert.deepEqual(result.diagnostics.ordered_narratives.story, ['窗口1先发生', '窗口1后发生', '窗口2先发生', '窗口2后发生']);
+    assert.equal(result.facts.episode_hook, '窗口2结尾');
+    assert.equal(result.diagnostics.needs_review, true);
+    assert.equal(result.diagnostics.window_count, 2);
+    assert.equal(result.diagnostics.sheet_count, 8);
+    assert.equal(result.diagnostics.raw_hash, null);
+    assert.deepEqual(result.diagnostics.windows.map((window) => window.provider_task_id), ['real-response-1', 'real-response-2']);
+    assert.ok(sheetPaths.every((sheet) => !fs.existsSync(sheet)));
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM assets WHERE category='redraw_source_analysis'").get().count, 1);
+    const asset = db.prepare('SELECT * FROM assets WHERE id=?').get(result.result_asset_id);
+    const saved = JSON.parse(fs.readFileSync(path.join(storageRoot, asset.local_path), 'utf8'));
+    assert.equal(saved.raw_hash, null);
+    assert.equal(saved.usage, null);
+    assert.equal(saved.diagnostics.windows.length, 2);
+    assert.deepEqual(saved.diagnostics.windows.map((window) => [window.start_ms, window.end_ms]), [[0, 24_000], [24_000, 25_000]]);
+    assert.deepEqual(saved.diagnostics.windows.map((window) => window.usage.total_tokens), [10, 20]);
+    assert.ok(saved.diagnostics.windows.every((window) => window.sheets.every((sheet) => /^[a-f0-9]{64}$/.test(sheet.sha256))));
+    assert.equal(JSON.parse(asset.metadata).facts_hash, result.facts.facts_hash);
+    const { stableStringify } = require('../src/services/redrawAnalysisService');
+    const { facts_hash: hash, ...hashInput } = result.facts;
+    assert.equal(hash, crypto.createHash('sha256').update(stableStringify(hashInput)).digest('hex'));
+  } finally {
+    db.close();
+    fs.rmSync(storageRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});
+
+for (const failure of ['invalid', 'throw', 'missing_id', 'wrong_schema', 'bad_json', 'route_timeout', 'explicit_rejection', 'route_task_id']) {
+  test(`window 2 ${failure} stops all later calls without registering a partial asset`, async () => {
+    const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'native-redraw-window-fail-'));
+    const db = createDb();
+    const taskId = `window-failure-${failure}`;
+    const historyDir = path.join(storageRoot, 'redraw-analysis', taskId);
+    fs.mkdirSync(historyDir, { recursive: true });
+    fs.writeFileSync(path.join(historyDir, 'historical-evidence.json'), '{"keep":true}');
+    const historicalReceipt = path.join(historyDir, 'source-analysis-receipt-historical.json');
+    fs.writeFileSync(historicalReceipt, '{"historical_receipt":"retain"}');
+    let calls = 0;
+    const sheetPaths = [];
+    try {
+      addWork(db, { localPath: createSampleVideo(storageRoot) });
+      const evidence = { dialogue_mode: 'spoken', segments: Array.from({ length: 200 }, (_, index) => ({
+        id: `audio-${index}`, start_ms: index * 5, end_ms: index * 5 + 4, source_text: '原文',
+      })) };
+      await assert.rejects(() => nativeAnalysis.analyzeNativeSource({
+        db, log, storageRoot, assetService,
+        visionDetailed: async (payload) => {
+          calls += 1;
+          sheetPaths.push(...payload.imageSources.map((source) => source.localAbsPath));
+          if (calls === 2 && failure === 'throw') throw Object.assign(new Error('api_key SECRET C:\\private\\input.mp4'), { code: 'PROVIDER_FAILED' });
+          if (calls === 2 && failure === 'route_timeout') throw Object.assign(new Error('raw timeout SECRET'), {
+            code: 'AI_NON_STREAM_TIMEOUT', routeMeta: { phase: 'submit', requestBodySent: true, transportCode: 'ECONNRESET' },
+          });
+          if (calls === 2 && ['explicit_rejection', 'route_task_id'].includes(failure)) {
+            throw Object.assign(new Error('raw provider rejection SECRET'), { code: 'AI_PROVIDER_HTTP_ERROR',
+              routeMeta: { phase: 'submit', requestBodySent: true, explicitlyRejected: true,
+                ...(failure === 'route_task_id' ? { providerTaskId: 'received-route-task-2' } : {}) } });
+          }
+          const facts = validFacts(250);
+          if (calls === 2 && failure === 'invalid') facts.shots[0].end_ms = 249;
+          if (calls === 2 && failure === 'wrong_schema') facts.schema_version = '1.0';
+          return { text: calls === 2 && failure === 'bad_json' ? '{invalid raw response SECRET' : JSON.stringify({ source_facts: facts }),
+            provider_task_id: calls === 2 && failure === 'missing_id' ? null : `window-${calls}`,
+            model: 'existing-model', usage: { total_tokens: calls * 100, api_key: 'SECRET' }, raw_hash: String(calls).repeat(64) };
+        },
+      }, { workId: 1, tenantId: 'tenant-1', userId: 'user-1', taskId }, evidence), (error) => {
+        if (['throw', 'missing_id', 'route_timeout', 'route_task_id'].includes(failure)) {
+          assert.equal(error.code, 'REDRAW_NATIVE_WINDOW_RESULT_UNKNOWN');
+          assert.doesNotMatch(error.message, /SECRET|api_key|private|provider failed/);
+        } else {
+          assert.notEqual(error.code, 'REDRAW_NATIVE_WINDOW_RESULT_UNKNOWN');
+        }
+        return true;
+      });
+      assert.equal(calls, 2);
+      assert.equal(db.prepare("SELECT COUNT(*) AS count FROM assets WHERE category='redraw_source_analysis'").get().count, 0);
+      assert.equal(fs.existsSync(path.join(historyDir, 'source-analysis.json')), false);
+      assert.equal(fs.readFileSync(path.join(historyDir, 'historical-evidence.json'), 'utf8'), '{"keep":true}');
+      assert.equal(fs.readFileSync(historicalReceipt, 'utf8'), '{"historical_receipt":"retain"}');
+      const receiptNames = fs.readdirSync(historyDir).filter((name) => /^source-analysis-receipt-/.test(name) && name !== path.basename(historicalReceipt));
+      assert.equal(receiptNames.length, 1, 'failed run retains one unique provider receipt file');
+      const receiptText = fs.readFileSync(path.join(historyDir, receiptNames[0]), 'utf8');
+      const receipt = JSON.parse(receiptText);
+      assert.equal(receipt.status, 'failed');
+      assert.equal(receipt.windows.length, 2);
+      assert.equal(receipt.windows[0].status, 'completed');
+      assert.equal(receipt.windows[0].provider_task_id, 'window-1');
+      assert.equal(receipt.windows[0].raw_hash, '1'.repeat(64));
+      assert.deepEqual(receipt.windows[0].usage, { total_tokens: 100 });
+      assert.equal(receipt.windows[1].status, failure === 'explicit_rejection' ? 'failed'
+        : ['throw', 'missing_id', 'route_timeout', 'route_task_id'].includes(failure) ? 'unknown' : 'invalid');
+      assert.equal(receipt.windows[1].provider_task_id, failure === 'route_task_id' ? 'received-route-task-2'
+        : ['throw', 'missing_id', 'route_timeout', 'explicit_rejection'].includes(failure) ? null : 'window-2');
+      assert.match(receipt.error_code, /^[A-Z0-9_]+$/);
+      if (failure === 'throw') assert.equal(receipt.error_code, 'PROVIDER_FAILED');
+      if (failure === 'missing_id') assert.equal(receipt.error_code, 'VISION_PROVIDER_RESPONSE_ID_MISSING');
+      if (failure === 'route_timeout') assert.equal(receipt.error_code, 'AI_NON_STREAM_TIMEOUT');
+      if (['explicit_rejection', 'route_task_id'].includes(failure)) assert.equal(receipt.error_code, 'AI_PROVIDER_HTTP_ERROR');
+      assert.deepEqual(receipt.windows.map((window) => [window.start_ms, window.end_ms]), [[0, 250], [250, 500]]);
+      assert.ok(receipt.windows.every((window) => window.sheets.length === 2 && window.sheets.every((sheet) => /^[a-f0-9]{64}$/.test(sheet.sha256))));
+      assert.doesNotMatch(receiptText, /SECRET|api_key|private|invalid raw response|localAbsPath|[A-Z]:\\\\/);
+      assert.ok(sheetPaths.every((sheet) => !fs.existsSync(sheet)));
+    } finally {
+      db.close();
+      fs.rmSync(storageRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+}
+
+test('native preflights all audio windows before any vision call', async () => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'native-redraw-preflight-'));
+  const db = createDb();
+  let calls = 0;
+  try {
+    addWork(db, { localPath: createSampleVideo(storageRoot) });
+    const cases = [
+      { segments: Array.from({ length: 65 }, (_, index) => ({ id: `a${index}`, start_ms: 10, end_ms: 11, source_text: '密集重叠' })), code: 'REDRAW_NATIVE_AUDIO_PROMPT_LIMIT' },
+      { segments: [{ id: 'bad', start_ms: 999, end_ms: 1001, source_text: '越界' }], code: 'REDRAW_NATIVE_AUDIO_TIMING_INVALID' },
+      { segments: Array.from({ length: 100 }, (_, index) => ({ id: `a${index}`, start_ms: index * 10, end_ms: index * 10 + 9,
+        source_text: index === 99 ? 'api_key should never enter vision' : '正常原文' })), code: 'REDRAW_NATIVE_AUDIO_PROMPT_UNSAFE' },
+    ];
+    for (const [index, item] of cases.entries()) {
+      await assert.rejects(() => nativeAnalysis.analyzeNativeSource({ db, log, storageRoot, assetService,
+        visionDetailed: async () => { calls += 1; throw new Error('unexpected provider'); },
+      }, { workId: 1, tenantId: 'tenant-1', userId: 'user-1', taskId: `preflight-${index}` }, { dialogue_mode: 'spoken', segments: item.segments }),
+      (error) => error.code === item.code);
+    }
+    assert.equal(calls, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM assets WHERE category='redraw_source_analysis'").get().count, 0);
+  } finally {
+    db.close();
+    fs.rmSync(storageRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});
+
+test('native analysis preserves an existing result and rejects before generating again', async () => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'native-redraw-existing-result-'));
+  const db = createDb();
+  const resultPath = path.join(storageRoot, 'redraw-analysis', 'already-analyzed', 'source-analysis.json');
+  let calls = 0;
+  try {
+    addWork(db, { localPath: createSampleVideo(storageRoot) });
+    fs.mkdirSync(path.dirname(resultPath), { recursive: true });
+    fs.writeFileSync(resultPath, '{"historical":"retain"}');
+    await assert.rejects(() => nativeAnalysis.analyzeNativeSource({ db, log, storageRoot, assetService,
+      visionDetailed: async () => { calls += 1; return { text: JSON.stringify({ source_facts: validFacts() }), provider_task_id: 'new-response' }; },
+    }, { workId: 1, tenantId: 'tenant-1', userId: 'user-1', taskId: 'already-analyzed' }),
+    (error) => error.code === 'REDRAW_NATIVE_RESULT_EXISTS');
+    assert.equal(calls, 0);
+    assert.equal(fs.readFileSync(resultPath, 'utf8'), '{"historical":"retain"}');
+  } finally {
+    db.close();
+    fs.rmSync(storageRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});
+
+test('native failure never deletes a concurrently created unrelated work artifact', async () => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'native-redraw-concurrent-artifact-'));
+  const db = createDb();
+  const otherPath = path.join(storageRoot, 'redraw-analysis', 'concurrent-artifact', 'other-evidence.json');
+  try {
+    addWork(db, { localPath: createSampleVideo(storageRoot) });
+    await assert.rejects(() => nativeAnalysis.analyzeNativeSource({ db, log, storageRoot, assetService,
+      visionDetailed: async () => { fs.writeFileSync(otherPath, '{"other":"retain"}'); throw new Error('provider failed'); },
+    }, { workId: 1, tenantId: 'tenant-1', userId: 'user-1', taskId: 'concurrent-artifact' }),
+    (error) => error.code === 'REDRAW_NATIVE_WINDOW_RESULT_UNKNOWN');
+    assert.equal(fs.existsSync(otherPath), true);
+    assert.equal(fs.readFileSync(otherPath, 'utf8'), '{"other":"retain"}');
+  } finally {
+    db.close();
+    fs.rmSync(storageRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});
+
+test('short-window sheets never sample a later-window color', async () => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'native-redraw-frame-boundary-'));
+  const db = createDb();
+  try {
+    fs.mkdirSync(path.join(storageRoot, 'uploads'));
+    execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi',
+      '-i', 'color=c=blue:size=320x180:rate=20:duration=0.25', '-f', 'lavfi',
+      '-i', 'color=c=red:size=320x180:rate=20:duration=0.75', '-filter_complex',
+      '[0:v][1:v]concat=n=2:v=1:a=0,format=yuv420p', path.join(storageRoot, 'uploads', 'boundary.mp4')], { stdio: 'pipe' });
+    addWork(db, { localPath: 'uploads/boundary.mp4' });
+    let calls = 0;
+    await nativeAnalysis.analyzeNativeSource({ db, log, storageRoot, assetService,
+      visionDetailed: async (payload) => {
+        calls += 1;
+        if (calls === 1) {
+          for (const source of payload.imageSources) {
+            const { data, info } = await sharp(source.localAbsPath).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+            let redPixels = 0;
+            let bluePixels = 0;
+            for (let offset = 0; offset < data.length; offset += info.channels) {
+              if (data[offset] > 180 && data[offset + 1] < 90 && data[offset + 2] < 90) redPixels += 1;
+              if (data[offset + 2] > 180 && data[offset + 1] < 90 && data[offset] < 90) bluePixels += 1;
+            }
+            assert.equal(redPixels, 0, 'first 250ms window must not contain later red frames');
+            assert.ok(bluePixels > 1000);
+          }
+        }
+        return { text: JSON.stringify({ source_facts: validFacts(250) }), provider_task_id: `boundary-response-${calls}` };
+      },
+    }, { workId: 1, tenantId: 'tenant-1', userId: 'user-1', taskId: 'frame-boundary' }, {
+      segments: Array.from({ length: 200 }, (_, index) => ({ id: `seg-${index}`, start_ms: index * 5, end_ms: index * 5 + 4, source_text: '原文' })),
+    });
+    assert.equal(calls, 4);
   } finally {
     db.close();
     fs.rmSync(storageRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });

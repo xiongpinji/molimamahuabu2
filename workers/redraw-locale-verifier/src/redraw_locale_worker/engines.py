@@ -18,9 +18,9 @@ class FasterWhisperEngine:
     def infer_source_audio_bytes(self, audio_bytes):
         if not isinstance(audio_bytes, bytes) or not audio_bytes:
             raise ValueError("SOURCE_AUDIO_ASR_INVALID")
-        return self._transcribe(io.BytesIO(audio_bytes))
+        return self._transcribe(io.BytesIO(audio_bytes), include_source_vad=True)
 
-    def _transcribe(self, audio_input):
+    def _transcribe(self, audio_input, *, include_source_vad=False):
         segments, info = self.model.transcribe(audio_input, beam_size=5, vad_filter=True)
         evidence_segments = []
         for segment in segments:
@@ -34,12 +34,16 @@ class FasterWhisperEngine:
                     "text": text,
                 }
             )
-        return {
+        result = {
             "language": getattr(info, "language", None),
             "probability": _raw_probability(getattr(info, "language_probability", None)),
             "text": " ".join(segment["text"] for segment in evidence_segments).strip(),
             "segments": evidence_segments,
         }
+        if include_source_vad:
+            result["duration"] = getattr(info, "duration", None)
+            result["duration_after_vad"] = getattr(info, "duration_after_vad", None)
+        return result
 
 
 class CommonAccentEngine:

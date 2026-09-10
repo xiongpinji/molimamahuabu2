@@ -473,6 +473,136 @@ async function loadReviewedReferenceCoverage(rawCtx) {
   return { status: 'approved', shots: descriptors, coverage_binding: coverageBinding };
 }
 
+function motionCoverageState(ctx, input) {
+  const shot = ctx.db.prepare(`
+    SELECT s.*, w.source_asset_id, w.source_fingerprint, w.duration_ms AS source_duration_ms,
+           w.project_id
+    FROM redraw_shots s
+    JOIN redraw_versions v ON v.id = s.version_id AND v.work_id = s.work_id
+      AND v.tenant_id = s.tenant_id AND v.user_id = s.user_id AND v.deleted_at IS NULL
+    JOIN redraw_works w ON w.id = v.work_id AND w.tenant_id = v.tenant_id
+      AND w.user_id = v.user_id AND w.deleted_at IS NULL
+    JOIN redraw_projects p ON p.id = w.project_id AND p.tenant_id = w.tenant_id
+      AND p.user_id = w.user_id AND p.deleted_at IS NULL
+    JOIN tenants t ON t.id = s.tenant_id AND t.status = 'active'
+    JOIN tenant_members m ON m.tenant_id = t.id AND m.user_id = s.user_id AND m.status = 'active'
+    WHERE s.id = ? AND s.version_id = ? AND s.tenant_id = ? AND s.user_id = ? AND s.deleted_at IS NULL
+  `).get(input.shot_id, ctx.versionId, ctx.tenantId, ctx.userId);
+  if (!shot) fail(NOT_FOUND_CODE);
+  if (shot.updated_at !== input.expected_updated_at) fail(CONFLICT_CODE);
+  try {
+    normalizeShotTimeline(shot);
+  } catch (_) {
+    fail(COVERAGE_EVIDENCE_CODE);
+  }
+  const sourceAsset = ctx.db.prepare('SELECT * FROM assets WHERE id = ? AND deleted_at IS NULL').get(shot.source_asset_id);
+  const sourceMetadata = parseJson(sourceAsset?.metadata, {});
+  if (!sourceAsset || sourceAsset.type !== 'video'
+    || sourceMetadata.tenant_id !== ctx.tenantId || sourceMetadata.user_id !== ctx.userId
+    || !HEX_64.test(String(shot.source_fingerprint || ''))
+    || sourceMetadata.sha256 !== shot.source_fingerprint
+    || sha256File(ctx.storageRoot, sourceAsset, COVERAGE_EVIDENCE_CODE) !== shot.source_fingerprint) fail(COVERAGE_EVIDENCE_CODE);
+  const scope = coverageScope(ctx);
+  const rows = shotRows(ctx);
+  const indexed = coverageEvidenceRow(ctx, scope);
+  return { shot, sourceAsset, scope, rows, indexed };
+}
+
+// Server-private input only: reviewed conservative regions are not fine inpaint or identity-removal evidence.
+async function loadReviewedMotionCoverage(rawCtx, input = {}) {
+  assertPlainObject(input);
+  if (Object.keys(input).some((key) => !['shot_id', 'expected_updated_at'].includes(key))
+    || !Number.isSafeInteger(input.shot_id) || input.shot_id <= 0
+    || typeof input.expected_updated_at !== 'string' || !input.expected_updated_at.trim()) fail(INPUT_CODE);
+  const ctx = normalizeContext(rawCtx);
+  const initial = motionCoverageState(ctx, input);
+  const evidence = { ...initial.indexed, ...readCoverageManifest(ctx, initial.indexed) };
+  let manifest;
+  try {
+    manifest = await validateReviewedCoverageManifest({ evidenceRoot: evidence.evidenceRoot, manifest: evidence.manifest });
+  } catch (_) {
+    fail(COVERAGE_EVIDENCE_CODE);
+  }
+  assertCoverageMatchesVersion(initial.scope, initial.rows, manifest, evidence);
+  const timeBase = manifest.source.time_base;
+  const point = (ticks, time_base = timeBase) => ({ ticks, time_base: { ...time_base } });
+  const milliseconds = (value) => point(value, { numerator: 1, denominator: 1000 });
+  const compare = (left, right) => {
+    const difference = BigInt(left.ticks) * BigInt(left.time_base.numerator) * BigInt(right.time_base.denominator)
+      - BigInt(right.ticks) * BigInt(right.time_base.numerator) * BigInt(left.time_base.denominator);
+    return difference < 0n ? -1 : difference > 0n ? 1 : 0;
+  };
+  const shotStart = milliseconds(initial.shot.start_ms);
+  const shotEnd = milliseconds(initial.shot.end_ms);
+  const checkedFile = (file) => {
+    if (sha256File(evidence.evidenceRoot, { local_path: file.path }, COVERAGE_EVIDENCE_CODE) !== file.sha256) fail(COVERAGE_EVIDENCE_CODE);
+    return { ...file, path: resolveLocal(evidence.evidenceRoot, file.path, COVERAGE_EVIDENCE_CODE) };
+  };
+  const persons = new Map();
+  const texts = new Map();
+  const addRegion = (map, index, region) => {
+    if (!map.has(index)) map.set(index, []);
+    map.get(index).push(region);
+  };
+  for (const track of manifest.person_tracks) {
+    for (const region of track.regions) {
+      addRegion(persons, region.frame_index, {
+        track_key: track.track_key, kind: track.kind, source_character_key: track.source_character_key,
+        target_strategy: track.target_strategy,
+        visibility: track.visibility.find((range) => region.frame_index >= range.start_frame && region.frame_index <= range.end_frame)?.state,
+        ...region, mask: checkedFile(region.mask),
+      });
+    }
+  }
+  for (const track of manifest.text_tracks) {
+    for (const region of track.regions) {
+      addRegion(texts, region.frame_index, {
+        region_key: track.region_key, kind: track.kind, treatment: track.treatment,
+        target_text_key: track.target_text_key, ...region, mask: checkedFile(region.mask),
+      });
+    }
+  }
+  const allFrames = [...manifest.frames].sort((left, right) => left.frame_index - right.frame_index);
+  const frames = [];
+  for (const [index, frame] of allFrames.entries()) {
+    const checked = checkedFile(frame);
+    const start = point(frame.timestamp_ticks);
+    const end = index + 1 < allFrames.length ? point(allFrames[index + 1].timestamp_ticks) : milliseconds(manifest.source.duration_ms);
+    const clipStart = compare(start, shotStart) < 0 ? shotStart : start;
+    const clipEnd = compare(end, shotEnd) > 0 ? shotEnd : end;
+    if (compare(start, end) >= 0) fail(COVERAGE_EVIDENCE_CODE);
+    if (compare(clipStart, clipEnd) >= 0) continue;
+    frames.push({
+      ...checked, time_base: { ...timeBase }, display_interval: { start, end },
+      clip_interval: { start: clipStart, end: clipEnd },
+      person_regions: persons.get(frame.frame_index) || [], text_regions: texts.get(frame.frame_index) || [],
+    });
+  }
+  if (frames.length === 0 || compare(frames[0].clip_interval.start, shotStart) !== 0
+    || compare(frames[frames.length - 1].clip_interval.end, shotEnd) !== 0) fail(COVERAGE_EVIDENCE_CODE);
+  // No await follows this final binding/file check, so a changed approval or CAS cannot escape the read.
+  const current = motionCoverageState(ctx, input);
+  if (stableJson(current) !== stableJson(initial)) fail(CONFLICT_CODE);
+  const currentEvidence = readCoverageManifest(ctx, current.indexed);
+  if (stableJson(currentEvidence.manifest) !== stableJson(manifest)
+    || currentEvidence.evidenceRoot !== evidence.evidenceRoot) fail(COVERAGE_EVIDENCE_CODE);
+  return {
+    schema_version: 'redraw-motion-obscuration-input-v1', approval_status: 'pending',
+    owner: { tenant_id: ctx.tenantId, user_id: ctx.userId }, work_id: Number(initial.shot.work_id),
+    version_id: ctx.versionId, shot_id: Number(initial.shot.id), source_shot_id: String(initial.shot.shot_id),
+    source_asset_id: Number(initial.shot.source_asset_id), source_fingerprint: initial.scope.source_fingerprint,
+    facts_hash: initial.scope.facts_hash,
+    coverage: {
+      analysis_sha256: manifest.analysis_sha256,
+      file_sha256: parseJson(initial.indexed.row.artifact_metadata, {}).sha256,
+      approved_by: initial.indexed.row.approved_by, approved_at: initial.indexed.row.approved_at,
+    },
+    shot: { expected_updated_at: initial.shot.updated_at, start_ms: initial.shot.start_ms, end_ms: initial.shot.end_ms },
+    source: { width: manifest.source.width, height: manifest.source.height, time_base: { ...timeBase } },
+    frames,
+  };
+}
+
 function sourceKey(row) {
   const payload = parseJson(row?.source_ref_json, {});
   return String(payload.source_ref?.source_character_key || payload.source_ref?.stable_id || '').trim();
@@ -606,15 +736,101 @@ async function buildCurrentReferenceBindings(rawCtx, input = {}) {
 }
 
 async function buildTrustedReferenceBundleInput(rawCtx, input = {}) {
+  assertPlainObject(input);
+  if (Object.keys(input).some((key) => !['shot_id', 'clean_results', 'motion_reference_asset_id'].includes(key))) fail(INPUT_CODE);
+  const hasMotionId = Object.prototype.hasOwnProperty.call(input, 'motion_reference_asset_id');
+  if (hasMotionId && (!Number.isSafeInteger(input.motion_reference_asset_id) || input.motion_reference_asset_id <= 0)) fail(INPUT_CODE);
   const ctx = normalizeContext(rawCtx);
-  const bindings = await buildCurrentReferenceBindings(ctx, input);
+  const bindings = await buildCurrentReferenceBindings(ctx, {
+    shot_id: input.shot_id, clean_results: input.clean_results,
+  });
+  const motionId = hasMotionId ? input.motion_reference_asset_id : currentMotionAsset(ctx, bindings);
+  if (hasMotionId) assertMotionAssetCurrent(ctx, motionId, bindings);
   return {
     shot_id: bindings.shot_id,
-    motion_reference_asset_id: currentMotionAsset(ctx, bindings),
+    motion_reference_asset_id: motionId,
     face_tracks: bindings.face_tracks,
     text_regions: bindings.text_regions,
     coverage_review: bindings.coverage_review,
   };
+}
+
+// Internal read-only materials view. Unit dialogue is validated by its own current pack,
+// not the legacy whole-parent visible-speaker dialogue contract used by save/load below.
+async function readParentReferenceMaterials(rawCtx, input = {}) {
+  assertPlainObject(input);
+  if (Object.keys(input).some(key => !['shot_id', 'motion_reference_asset_id'].includes(key))
+    || !Number.isSafeInteger(input.shot_id) || input.shot_id <= 0
+    || !Number.isSafeInteger(input.motion_reference_asset_id) || input.motion_reference_asset_id <= 0) fail(INPUT_CODE);
+  const ctx = normalizeContext(rawCtx);
+  const { shot } = getRows(ctx, input.shot_id);
+  const snapshot = parseJson(shot.preparation_snapshot_json, {});
+  let cleanResults = snapshot.clean_results;
+  if (cleanResults === undefined) {
+    const saved = parseJson(shot.reference_bundle_json, null);
+    if (!saved || saved.schema_version !== REFERENCE_BUNDLE_SCHEMA_VERSION
+      || !shot.reference_bundle_hash || canonicalBundleHash(saved) !== shot.reference_bundle_hash
+      || !Array.isArray(saved.text_regions)) fail(NOT_FOUND_CODE);
+    cleanResults = saved.text_regions.map(region => ({ kind: 'text_clean', key: region.region_key,
+      status: 'completed', redraw_asset_id: region.text_clean_redraw_asset_id }));
+  }
+  if (!Array.isArray(cleanResults)) fail(INPUT_CODE);
+  const completed = cleanResults.filter(result => result?.status === 'completed' && result.kind === 'text_clean');
+  if (new Set(completed.map(result => result.key)).size !== completed.length) fail(TEXT_CODE);
+  const coverage = loadReviewedReferenceCoverageBinding(ctx);
+  const bindings = await buildCurrentReferenceBindings(ctx, { shot_id: input.shot_id, clean_results: cleanResults });
+  const nameMap = normalizeNameMap(parseJson(shot.name_map_json, {}));
+  const readCurrent = () => {
+    ctx.signal?.throwIfAborted();
+    const current = getRows(ctx, input.shot_id);
+    if (stableJson(current.shot) !== stableJson(shot)
+      || stableJson(loadReviewedReferenceCoverageBinding(ctx)) !== stableJson(coverage)) fail(CONFLICT_CODE);
+    for (const face of bindings.face_tracks) {
+      if (currentIdentityAsset(ctx, face.source_character_key) !== face.identity_redraw_asset_id) fail(IDENTITY_CODE);
+    }
+    const identities = verifyIdentities(ctx, current.shot, bindings.face_tracks, nameMap);
+    const textClean = verifyTexts({ ...ctx, sourceFingerprint: shot.source_fingerprint }, bindings.text_regions);
+    if (sha256(stableJson(identities)) !== bindings.identity_binding_sha256
+      || sha256(stableJson(textClean)) !== bindings.clean_binding_sha256) fail(MOTION_CODE);
+    assertMotionAssetCurrent(ctx, input.motion_reference_asset_id, bindings);
+    const indexed = coverageEvidenceRow(ctx, coverageScope(ctx));
+    const evidence = readCoverageManifest(ctx, indexed);
+    // Recheck actual coverage frame/mask files synchronously, including earlier parents,
+    // so the caller can perform the same check after its last asynchronous cleanup.
+    const artifacts = [...evidence.manifest.frames,
+      ...[...evidence.manifest.person_tracks, ...evidence.manifest.text_tracks]
+        .flatMap(track => track.regions.map(region => region.mask))];
+    const coverageArtifacts = artifacts.map(artifact => ({
+      asset_id: evidenceAsset(ctx, evidence.baseRelative, artifact.path, artifact.sha256), sha256: artifact.sha256,
+    }));
+    const approvalIds = [...new Set([...identities, ...textClean].map(item => item.redraw_asset_id))].sort((a, b) => a - b);
+    const approvals = approvalIds.map(id => ctx.db.prepare(`SELECT id, approval_status, approved_by, approved_at,
+      source_ref_json, updated_at FROM redraw_assets WHERE id = ? AND tenant_id = ? AND user_id = ?
+      AND version_id = ? AND deleted_at IS NULL`).get(id, ctx.tenantId, ctx.userId, ctx.versionId));
+    return { identities, textClean, approvals, coverageArtifacts, coverageRow: indexed.row, sourceAsset: current.sourceAsset };
+  };
+  const current = readCurrent();
+  const fingerprint = sha256(stableJson(current));
+  const assertCurrentBinding = () => {
+    if (sha256(stableJson(readCurrent())) !== fingerprint) fail(CONFLICT_CODE);
+  };
+  const motion = await verifyMotionReference({ ...ctx, shotId: input.shot_id,
+    assetId: input.motion_reference_asset_id, expected: {
+      source_asset_id: bindings.source.asset_id, source_fingerprint: bindings.source.fingerprint,
+      clip_start_ms: bindings.clip.start_ms, clip_end_ms: bindings.clip.end_ms,
+      face_coverage_sha256: bindings.face_coverage_sha256, text_coverage_sha256: bindings.text_coverage_sha256,
+    } });
+  assertCurrentBinding();
+  return { source: bindings.source, clip: bindings.clip, identities: current.identities,
+    text_clean: current.textClean, motion, fingerprints: {
+      coverage_binding_sha256: bindings.coverage_binding_sha256,
+      face_coverage_sha256: bindings.face_coverage_sha256,
+      text_coverage_sha256: bindings.text_coverage_sha256,
+      identity_binding_sha256: bindings.identity_binding_sha256,
+      clean_binding_sha256: bindings.clean_binding_sha256,
+      approval_dependencies_sha256: sha256(stableJson({ approvals: current.approvals, coverage: coverage })),
+      coverage_artifacts_sha256: sha256(stableJson(current.coverageArtifacts)),
+    }, assertCurrentBinding };
 }
 
 function getRows(ctx, shotId) {
@@ -1133,6 +1349,9 @@ async function saveReferenceBundle(rawCtx, input) {
   if (updated.changes !== 1) fail(CONFLICT_CODE);
   return {
     shot_id: built.ids.shotId,
+    version_id: Number(built.shot.version_id),
+    shot_updated_at: built.reviewedAt,
+    source_sha256: built.shot.source_fingerprint,
     reference_bundle_hash: built.hash,
     reference_bundle_updated_at: built.reviewedAt,
     bundle: built.bundle,
@@ -1203,6 +1422,9 @@ async function loadCurrentReferenceBundle(rawCtx, shotId) {
   }
   return {
     shot_id: id,
+    version_id: Number(shot.version_id),
+    shot_updated_at: shot.updated_at,
+    source_sha256: shot.source_fingerprint,
     reference_bundle_hash: shot.reference_bundle_hash,
     reference_bundle_updated_at: shot.reference_bundle_updated_at,
     bundle,
@@ -1334,9 +1556,11 @@ async function projectReferenceBundleForGeneration(rawCtx, shotId) {
 module.exports = {
   REFERENCE_BUNDLE_SCHEMA_VERSION,
   loadReviewedReferenceCoverage,
+  loadReviewedMotionCoverage,
   loadReviewedReferenceCoverageBinding,
   buildCurrentReferenceBindings,
   buildTrustedReferenceBundleInput,
+  readParentReferenceMaterials,
   saveReferenceBundle,
   loadCurrentReferenceBundle,
   projectReferenceBundleForGeneration,

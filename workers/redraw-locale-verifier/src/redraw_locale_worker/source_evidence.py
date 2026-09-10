@@ -21,8 +21,34 @@ def analyze_source_audio(audio_path=None, *, audio_bytes=None, asr, clusterer):
         raise ValueError("SOURCE_AUDIO_FORMAT_INVALID")
     waveform, sample_rate = _read_mono_pcm16_wav(audio_bytes)
     asr_result = _infer_source_audio(asr, audio_bytes)
-    segments = _normalize_segments(asr_result)
     duration_seconds = len(waveform) / sample_rate
+    if isinstance(asr_result.get("segments"), list) and not asr_result["segments"]:
+        duration = asr_result.get("duration")
+        speech_duration = asr_result.get("duration_after_vad")
+        if (
+            type(duration) not in (int, float)
+            or not math.isfinite(duration)
+            or duration <= 0
+            or abs(duration - duration_seconds) > 0.5 / sample_rate
+            or type(speech_duration) not in (int, float)
+            or speech_duration != 0
+            or asr_result.get("text", "") != ""
+            or round(duration_seconds * 1000) <= 0
+        ):
+            raise ValueError("SOURCE_AUDIO_SEGMENTS_INVALID")
+        return {
+            "source_language": None,
+            "language_probability": None,
+            "segments": [],
+            "audio_sha256": hashlib.sha256(audio_bytes).hexdigest(),
+            "transcript_sha256": hashlib.sha256(b"[]").hexdigest(),
+            "no_speech_evidence": {
+                "method": "faster-whisper-vad",
+                "audio_duration_ms": round(duration_seconds * 1000),
+                "speech_duration_ms": 0,
+            },
+        }
+    segments = _normalize_segments(asr_result)
     _validate_segment_bounds(segments, duration_seconds)
 
     embeddings = []

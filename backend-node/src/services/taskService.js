@@ -240,7 +240,7 @@ function failOrphanedAsyncTasksOnStartup(db, log) {
   reconcileOrphanedRedrawLocalizationTasks(db, log);
   rows = rows.filter((row) => {
     const kind = String(row.type || row.task_type || '');
-    return !['redraw_localization', 'redraw_asset_batch', 'redraw_dialogue'].includes(kind);
+    return !['redraw_localization', 'redraw_asset_batch', 'redraw_dialogue', 'redraw_execution_unit'].includes(kind);
   });
   try {
     const resumableVideoTaskIds = new Set(

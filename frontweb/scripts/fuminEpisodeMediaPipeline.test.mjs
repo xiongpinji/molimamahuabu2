@@ -38,7 +38,7 @@ test('normalize arguments trim from zero to the exact keep duration with the can
   })
   assert.equal(args[args.indexOf('-ss') + 1], '0.000')
   assert.equal(args[args.indexOf('-t') + 1], '1.266')
-  assert.equal(args[args.indexOf('-vf') + 1], 'scale=480:864,fps=24')
+  assert.equal(args[args.indexOf('-vf') + 1], 'scale=480:864,setsar=81/80,fps=24')
   assert.equal(args[args.indexOf('-c:v') + 1], 'libx264')
   assert.equal(args[args.indexOf('-pix_fmt') + 1], 'yuv420p')
   assert.equal(args[args.indexOf('-c:a') + 1], 'aac')
@@ -90,6 +90,8 @@ test('single-unit normalization creates a probed, hash-bound 1.266 second canoni
     assert.equal(result.sha256, crypto.createHash('sha256').update(fs.readFileSync(outputPath)).digest('hex'))
     assert.equal(result.media.width, 480)
     assert.equal(result.media.height, 864)
+    assert.equal(result.media.sample_aspect_ratio, '81:80')
+    assert.equal(result.media.display_aspect_ratio, '9:16')
     assert.equal(result.media.video_codec, 'h264')
     assert.equal(result.media.pixel_format, 'yuv420p')
     assert.equal(result.media.frame_rate, 24)
@@ -160,6 +162,30 @@ function r4Units() {
   return units
 }
 
+test('canonical display aspect must be actual 9:16 rather than only 480p dimensions', async () => {
+  const { validateNormalizedMedia, validateAssembledMedia } = await import('./fuminEpisodeMediaPipeline.mjs')
+  const media = {
+    duration_seconds: 1.25, width: 480, height: 864, video_codec: 'h264',
+    pixel_format: 'yuv420p', frame_rate: 24,
+    sample_aspect_ratio: '81:80', display_aspect_ratio: '9:16',
+    audio_codec: 'aac', audio_sample_rate: 48000, audio_channels: 2,
+    audio_duration_seconds: 1.25, audio_start_seconds: 0,
+  }
+  for (const validate of [validateNormalizedMedia, validateAssembledMedia]) {
+    assert.equal(validate(media, 1250).media_passed, true)
+    for (const aspect of [
+      { sample_aspect_ratio: '1:1', display_aspect_ratio: '5:9' },
+      { sample_aspect_ratio: '1:1', display_aspect_ratio: '9:16' },
+      { sample_aspect_ratio: undefined, display_aspect_ratio: undefined },
+      { sample_aspect_ratio: '0:0', display_aspect_ratio: '9:16' },
+    ]) {
+      assert.throws(() => validate({ ...media, ...aspect }, 1250), {
+        code: 'FUMIN_MEDIA_DISPLAY_ASPECT_INVALID',
+      })
+    }
+  }
+})
+
 test('execution units reject reordered, missing, non-contiguous parent, drifted hash, and unsafe IDs', async () => {
   const { assembleNormalizedEpisode, validateExecutionUnits, validateArtifactMapping } = await import('./fuminEpisodeMediaPipeline.mjs')
   const units = r4Units()
@@ -227,6 +253,8 @@ test('28 valid five-second raws become 28 normalized units, 24 parents, and one 
     assert.match(result.episode.sha256, /^[a-f0-9]{64}$/)
     assert.equal(result.episode.media.width, 480)
     assert.equal(result.episode.media.height, 864)
+    assert.equal(result.episode.media.sample_aspect_ratio, '81:80')
+    assert.equal(result.episode.media.display_aspect_ratio, '9:16')
     assert.equal(result.episode.media.has_audio, true)
     assert.ok(result.episode.media.audio_duration_seconds > 68.58)
     assert.ok(Math.abs(result.episode.media.duration_seconds - 68.733) <= 0.15)

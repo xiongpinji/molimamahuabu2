@@ -236,6 +236,7 @@ function reconcileLegacyHeldReservations(db, now, options, summary) {
     now,
   });
   for (const row of rows) {
+    if (row.resource_type === 'redraw_execution_unit') continue;
     if (row.evidence.providerRoutes.length) continue;
     const hasLegacyMedia = row.evidence.images.length || row.evidence.videos.length;
     const hasPropImageTask = row.evidence.tasks.some((task) => task.type === 'prop_image_generation');

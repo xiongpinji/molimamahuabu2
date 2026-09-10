@@ -561,3 +561,41 @@ test('定时对账计时器 unref 且可显式停止', (t) => {
   assert.equal(providerReconciliation.stopProviderReconciliation(), true);
   assert.equal(providerReconciliation.stopProviderReconciliation(), false);
 });
+
+test('execution-unit reservation is excluded from direct 31-minute timeout even with damaged legacy generation links', (t) => {
+  const { db } = setup(); t.after(() => db.close());
+  const billing = require('../src/services/billingReconciliationService');
+  const reservation = creditLedgerService.reserve(db, {
+    tenantId: 'tenant-a', actorUserId: 'user-a', userId: 'user-a', operationKey: 'unit-timeout-protected',
+    amount: 10, model: 'logical-image', resourceType: 'redraw_execution_unit', resourceId: '7',
+  });
+  const linked = createLegacyImageFailure(db, reservation, '71', '合成明确失败的损坏关联');
+  const before = db.prepare('SELECT * FROM tenant_credit_accounts').all();
+  const taskBefore = db.prepare('SELECT * FROM async_tasks WHERE id=?').get(linked.taskId);
+  const result = billing.refundExpiredGenerationReservation(db, { reservationId: reservation.id,
+    idempotencyKey: 'unit-direct-timeout-protected', now: '2026-08-15T10:31:00.000Z' });
+  assert.equal(result.applied, false);
+  assert.equal(creditLedgerService.getReservation(db, reservation.id).status, 'held');
+  assert.deepEqual(db.prepare('SELECT * FROM tenant_credit_accounts').all(), before);
+  assert.deepEqual(db.prepare('SELECT * FROM async_tasks WHERE id=?').get(linked.taskId), taskBefore);
+  assert.equal(db.prepare('SELECT count(*) n FROM billing_reconciliation_events WHERE reservation_id=?').get(reservation.id).n, 0);
+});
+
+test('execution-unit resource guard covers both provider timeout and legacy scan without a route shielding it', async (t) => {
+  for (const timeoutMinutes of [30, 1440]) await t.test('timeout window ' + timeoutMinutes, () => {
+    const { db } = setup();
+    try {
+      const reservation = creditLedgerService.reserve(db, { tenantId: 'tenant-a', actorUserId: 'user-a', userId: 'user-a',
+        operationKey: 'unit-provider-protected', amount: 10, model: 'logical-image', resourceType: 'redraw_execution_unit', resourceId: '8' });
+      const linked = createLegacyImageFailure(db, reservation, '72', '合成明确失败的损坏关联');
+      const before = db.prepare('SELECT * FROM tenant_credit_accounts').all();
+      const taskBefore = db.prepare('SELECT * FROM async_tasks WHERE id=?').get(linked.taskId);
+      assert.equal(db.prepare('SELECT count(*) n FROM generation_route_requests').get().n, 0);
+      const result = providerReconciliation.reconcileProviderRequests(db, log, '2026-08-15T10:31:00.000Z', { frozenCreditTimeoutMinutes: timeoutMinutes });
+      assert.equal(result.refunded, 0); assert.equal(result.needs_attention, 0);
+      assert.equal(creditLedgerService.getReservation(db, reservation.id).status, 'held');
+      assert.deepEqual(db.prepare('SELECT * FROM tenant_credit_accounts').all(), before);
+      assert.deepEqual(db.prepare('SELECT * FROM async_tasks WHERE id=?').get(linked.taskId), taskBefore);
+    } finally { db.close(); }
+  });
+});

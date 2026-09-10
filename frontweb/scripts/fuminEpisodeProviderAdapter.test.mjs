@@ -866,6 +866,7 @@ test('inspectArtifact distinguishes five-second raw media from a keep-duration c
         streams: [
           {
             codec_type: 'video', codec_name: 'h264', pix_fmt: 'yuv420p', width: 480, height: 864,
+            sample_aspect_ratio: final ? '81:80' : '1:1', display_aspect_ratio: final ? '9:16' : '5:9',
             avg_frame_rate: '24/1', duration: final ? '1.266' : '5.000', start_time: '0.000',
           },
           {
@@ -884,6 +885,8 @@ test('inspectArtifact distinguishes five-second raw media from a keep-duration c
   assert.equal(raw.media.duration_seconds, 5)
   assert.equal(final.media.duration_seconds, 1.266)
   assert.equal(final.media.pixel_format, 'yuv420p')
+  assert.equal(final.media.sample_aspect_ratio, '81:80')
+  assert.equal(final.media.display_aspect_ratio, '9:16')
   assert.equal(final.dialogue.exact_dialogue_present, true)
   assert.deepEqual(probes, ['raw', 'final'])
 })

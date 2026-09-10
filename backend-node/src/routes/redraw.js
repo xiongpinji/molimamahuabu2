@@ -4,11 +4,19 @@ const crypto = require('node:crypto');
 const os = require('os');
 const path = require('path');
 const fs = require('fs');
+const { pipeline, finished } = require('node:stream/promises');
+const { Readable } = require('node:stream');
 const multer = require('multer');
 const response = require('../response');
 const redrawService = require('../services/redrawService');
 const redrawUploadService = require('../services/redrawUploadService');
 const redrawCapabilityService = require('../services/redrawCapabilityService');
+const { previewVersionExecutionPlan } = require('../services/redrawExecutionPlanPreviewService');
+const executionPlanReviewService = require('../services/redrawExecutionPlanReviewService');
+const executionQueueService = require('../services/redrawExecutionQueueService');
+const executionRunService = require('../services/redrawExecutionRunService');
+const executionUnitReviewService = require('../services/redrawExecutionUnitReviewService');
+const unitReferenceDerivationService = require('../services/redrawUnitReferenceDerivationService');
 const redrawOrchestrator = require('../services/redrawOrchestrator');
 const redrawLocalizationOrchestrator = require('../services/redrawLocalizationOrchestrator');
 const localizationService = require('../services/localizationService');
@@ -25,6 +33,10 @@ const redrawVoiceService = require('../services/redrawVoiceService');
 const redrawCompositionService = require('../services/redrawCompositionService');
 const redrawExportService = require('../services/redrawExportService');
 const redrawSourceAudioEvidenceService = require('../services/redrawSourceAudioEvidenceService');
+const { prepareSourceVideo, prepareMotionReferenceDraft } = require('../services/redrawSourceVideoService');
+const { withMotionObscuration } = require('../services/redrawMotionObscurationService');
+const motionProcessingReport = require('../services/redrawMotionProcessingReportService');
+const { resolveBlueprintDialogueSources } = require('../services/redrawSourceDialogueService');
 const redrawNativeSourceAnalysisService = require('../services/redrawNativeSourceAnalysisService');
 const redrawEvidenceFusionService = require('../services/redrawEvidenceFusionService');
 const redrawBlueprintWorkflowService = require('../services/redrawBlueprintWorkflowService');
@@ -76,6 +88,7 @@ const MOTION_REFERENCE_ARTIFACT_FIELDS = new Set([
   'source_identity_obscured',
   'source_text_obscured',
   'motion_preserved',
+  'processing_report',
 ]);
 const REFERENCE_ARTIFACT_ERROR_MESSAGES = Object.freeze({
   REDRAW_REFERENCE_ARTIFACT_INPUT_INVALID: '参考素材导入参数无效',
@@ -89,6 +102,9 @@ const REFERENCE_ARTIFACT_ERROR_MESSAGES = Object.freeze({
   REDRAW_MOTION_REFERENCE_REVIEW_REQUIRED: '动作参考需要完成全部人工复核',
   REDRAW_MOTION_REFERENCE_BINDING_NOT_READY: '动作参考绑定前置条件未就绪',
   REDRAW_MOTION_REFERENCE_STALE: '动作参考绑定已过期',
+  REDRAW_MOTION_PROCESSING_INVALID: '动作处理报告无效',
+  REDRAW_MOTION_PROCESSING_CONFLICT: '动作处理报告绑定已过期',
+  REDRAW_MOTION_PROCESSING_TOO_LARGE: '动作处理报告超过大小限制',
 });
 const COVERAGE_REGISTRATION_FIELDS = new Set([
   'expected_version_updated_at',
@@ -654,6 +670,7 @@ function sendBlueprintError(res, error, log, context = {}) {
     return response.error(res, 404, code, '母本蓝图不存在');
   }
   if (code === 'REDRAW_BLUEPRINT_INPUT_INVALID'
+    || code === 'REDRAW_BLUEPRINT_CORRECTION_INVALID'
     || code === 'REDRAW_BLUEPRINT_FORBIDDEN_FIELD') {
     return response.error(res, 400, code, '母本蓝图请求无效');
   }
@@ -720,10 +737,10 @@ function sendReferenceArtifactError(res, error, log, context = {}) {
   }
   if (code === 'REDRAW_REFERENCE_ARTIFACT_NOT_FOUND') return response.error(res, 404, code, message);
   if (['REDRAW_REFERENCE_ARTIFACT_CONFLICT', 'REDRAW_REFERENCE_ARTIFACT_IDEMPOTENCY_CONFLICT',
-    'REDRAW_MOTION_REFERENCE_BINDING_NOT_READY', 'REDRAW_MOTION_REFERENCE_STALE'].includes(code)) {
+    'REDRAW_MOTION_REFERENCE_BINDING_NOT_READY', 'REDRAW_MOTION_REFERENCE_STALE', 'REDRAW_MOTION_PROCESSING_CONFLICT'].includes(code)) {
     return response.error(res, 409, code, message);
   }
-  if (code === 'REDRAW_REFERENCE_ARTIFACT_TOO_LARGE') return response.error(res, 413, code, message);
+  if (['REDRAW_REFERENCE_ARTIFACT_TOO_LARGE', 'REDRAW_MOTION_PROCESSING_TOO_LARGE'].includes(code)) return response.error(res, 413, code, message);
   if (code === 'REDRAW_REFERENCE_ARTIFACT_STORAGE_FAILED') {
     log?.error?.({ code, ...context }, '参考素材存储失败');
     return response.error(res, 500, code, message);
@@ -1455,6 +1472,9 @@ function sanitizeReferenceBundle(value) {
 function referenceBundleResponse(result) {
   return {
     shot_id: Number(result?.shot_id),
+    version_id: Number(result?.version_id),
+    shot_updated_at: result?.shot_updated_at || null,
+    source_sha256: result?.source_sha256 || null,
     reference_bundle_hash: result?.reference_bundle_hash || null,
     reference_bundle_updated_at: result?.reference_bundle_updated_at || null,
     bundle: sanitizeReferenceBundle(result?.bundle || {}),
@@ -1910,6 +1930,9 @@ function sendLocalizationError(res, error, fallbackMessage, log, context = {}) {
     'LOCALIZATION_LOCKED',
     'LOCALIZATION_HASH_MISMATCH',
     'LOCALIZATION_REVIEW_REQUIRED',
+    'LOCALIZATION_SOURCE_DIALOGUE_UNRESOLVED',
+    'SOURCE_DIALOGUE_EVIDENCE_INVALID',
+    'REDRAW_CROSS_SHOT_DIALOGUE_PLAN_REQUIRED',
     'BLUEPRINT_NOT_LOCKED',
     'BLUEPRINT_HASH_MISMATCH',
   ].includes(code)) {
@@ -1941,6 +1964,7 @@ function sendRedrawError(res, error, fallbackMessage, log, context = {}) {
     return response.error(res, 402, code, error.message || '积分不足', error.details);
   }
   if (['REDRAW_ASSET_REVIEW_REQUIRED', 'REDRAW_SHOT_CONFLICT', 'REDRAW_VERSION_CONFLICT',
+    'SOURCE_DIALOGUE_EVIDENCE_INVALID', 'REDRAW_CROSS_SHOT_DIALOGUE_PLAN_REQUIRED',
     'REDRAW_SHOT_EDIT_CONFLICT', 'REDRAW_RETRY_UNCERTAIN', 'REDRAW_SHOT_RETRY_REQUIRED',
     'REDRAW_SHOT_PRICING_UNCONFIGURED', 'REDRAW_NATIVE_AUDIO_REVIEW_CONFLICT',
     'REDRAW_NATIVE_AUDIO_REVIEW_UNAVAILABLE', 'REDRAW_REFERENCE_BUNDLE_CONFLICT'].includes(code)) {
@@ -2021,6 +2045,238 @@ function cleanupRegisteredSource(db, log, registered, storageRoot) {
 }
 
 module.exports = function redrawRoutes(db, log, options = {}) {
+  async function getMotionProcessing(req, res) {
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    const onClose = () => { if (!res.writableFinished) abort(); };
+    req.once('aborted', abort);
+    res.once('close', onClose);
+    try {
+      if (req.aborted || res.destroyed) abort();
+      const query = new URLSearchParams((req.originalUrl || req.url).split('?').slice(1).join('?'));
+      const expectedUpdatedAt = query.get('expected_updated_at');
+      const expectedSourceSha256 = query.get('expected_source_sha256');
+      if ([...query.keys()].length !== 2 || query.getAll('expected_updated_at').length !== 1
+        || query.getAll('expected_source_sha256').length !== 1
+        || !expectedUpdatedAt || expectedUpdatedAt.trim() !== expectedUpdatedAt || /[\x00-\x1f\x7f]/.test(expectedUpdatedAt)
+        || !/^[a-f0-9]{64}$/.test(expectedSourceSha256 || '')
+        || !/^[1-9]\d*$/.test(req.params.id) || !Number.isSafeInteger(Number(req.params.id))) {
+        throw codedRouteError('REDRAW_MOTION_PROCESSING_INPUT_INVALID');
+      }
+      const currentOwner = owner(req);
+      const shot = findOwnedShot(req.params.id, currentOwner);
+      const version = shot && findOwnedVersion(shot.version_id, currentOwner);
+      const work = version && findOwnedWork(version.work_id, currentOwner);
+      if (!work) throw codedRouteError('REDRAW_MOTION_PROCESSING_NOT_FOUND');
+      if (shot.updated_at !== expectedUpdatedAt || work.source_fingerprint !== expectedSourceSha256) {
+        throw codedRouteError('REDRAW_MOTION_PROCESSING_CONFLICT');
+      }
+      await withMotionObscuration({
+        db, ...currentOwner, versionId: version.id, storageRoot: storageRootFromConfig(options.cfg),
+        tempRoot: options.sourceVideoTempRoot, signal: controller.signal, execFile: options.motionProcessingExecFile,
+      }, { shot_id: Number(shot.id), expected_updated_at: expectedUpdatedAt }, async (result) => {
+        const header = motionProcessingReport.envelopeHeader(result);
+        await result.assertCurrentBinding();
+        const stream = result.createReadStream();
+        async function* envelope() {
+          try {
+            yield header;
+            let size = 0;
+            let tail;
+            const digest = crypto.createHash('sha256');
+            for await (const chunk of stream) {
+              size += chunk.length;
+              if (size > result.size) throw codedRouteError('REDRAW_MOTION_PROCESSING_INVALID');
+              digest.update(chunk);
+              if (tail) yield tail;
+              tail = chunk;
+            }
+            if (size !== result.size || digest.digest('hex') !== result.sha256) throw codedRouteError('REDRAW_MOTION_PROCESSING_INVALID');
+            await result.assertCurrentBinding();
+            // Do not let Content-Length complete on the client before the last binding check.
+            yield tail;
+          } finally { stream.destroy(); }
+        }
+        res.set({ 'Content-Type': motionProcessingReport.CONTENT_TYPE,
+          'Content-Length': String(header.length + result.size), 'Cache-Control': 'private, no-store',
+          'Content-Disposition': 'attachment', 'X-Content-Type-Options': 'nosniff' });
+        await pipeline(Readable.from(envelope()), res, { signal: controller.signal });
+      });
+    } catch (error) {
+      if (controller.signal.aborted || res.destroyed) return;
+      if (res.headersSent) { res.destroy(); return; }
+      const kind = /(?:INPUT_INVALID)$/.test(error?.code) ? 'INPUT_INVALID'
+        : /NOT_FOUND$/.test(error?.code) ? 'NOT_FOUND' : /TOO_LARGE$/.test(error?.code) ? 'TOO_LARGE'
+          : 'CONFLICT';
+      return response.error(res, { INPUT_INVALID: 400, NOT_FOUND: 404, TOO_LARGE: 413, CONFLICT: 409 }[kind],
+        `REDRAW_MOTION_PROCESSING_${kind}`, '动作处理未完成，请核对当前镜头与已审核覆盖');
+    } finally {
+      req.removeListener('aborted', abort);
+      res.removeListener('close', onClose);
+    }
+  }
+
+  async function getMotionReferenceCandidate(req, res, media = false) {
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    const onClose = () => { if (!res.writableFinished) abort(); };
+    req.once('aborted', abort);
+    res.once('close', onClose);
+    let candidate;
+    let stream;
+    try {
+      if (req.aborted || res.destroyed) abort();
+      const query = new URLSearchParams((req.originalUrl || req.url).split('?').slice(1).join('?'));
+      const fields = ['expected_updated_at', 'expected_source_sha256',
+        ...(media ? ['expected_import_id', 'expected_file_sha256'] : [])];
+      if ([...query.keys()].length !== fields.length || fields.some((field) => query.getAll(field).length !== 1)) {
+        throw codedRouteError('REDRAW_MOTION_CANDIDATE_INPUT_INVALID');
+      }
+      candidate = await referenceArtifactImportService.prepareMotionReferenceCandidate({
+        db, storageRoot: storageRootFromConfig(options.cfg), signal: controller.signal, media,
+      }, {
+        ...owner(req), shotId: req.params.id, expectedUpdatedAt: query.get('expected_updated_at'),
+        expectedSourceSha256: query.get('expected_source_sha256'),
+        ...(media ? { expectedImportId: query.get('expected_import_id'), expectedFileSha256: query.get('expected_file_sha256') } : {}),
+      });
+      if (media) stream = candidate.createReadStream();
+      candidate.assertCurrentBinding();
+      if (!media) return response.success(res, candidate.data);
+      const asset = candidate.data.candidate.asset;
+      res.set({
+        'Content-Type': 'video/mp4', 'Content-Length': String(asset.file_size),
+        'Content-Disposition': 'inline', 'Cache-Control': 'private, no-store',
+        'X-Content-Type-Options': 'nosniff', 'X-Content-SHA256': asset.sha256,
+      });
+      await pipeline(stream, res, { signal: controller.signal });
+    } catch (error) {
+      if (controller.signal.aborted || res.destroyed) return;
+      if (res.headersSent) { res.destroy(); return; }
+      const errors = {
+        REDRAW_MOTION_CANDIDATE_INPUT_INVALID: [400, '动作参考候选请求参数无效'],
+        REDRAW_MOTION_CANDIDATE_NOT_FOUND: [404, '动作参考候选不存在'],
+        REDRAW_MOTION_CANDIDATE_CONFLICT: [409, '镜头或候选已变更，请刷新后重试'],
+        REDRAW_MOTION_CANDIDATE_UNAVAILABLE: [409, '动作参考候选暂不可用'],
+      };
+      const code = Object.hasOwn(errors, error?.code) ? error.code : 'REDRAW_MOTION_CANDIDATE_UNAVAILABLE';
+      return response.error(res, errors[code][0], code, errors[code][1]);
+    } finally {
+      req.removeListener('aborted', abort);
+      res.removeListener('close', onClose);
+      stream?.destroy();
+      try { await candidate?.cleanup(); } catch {
+        log?.error?.({ code: 'REDRAW_MOTION_CANDIDATE_CLEANUP_FAILED' }, 'motion candidate cleanup failed');
+        if (!res.destroyed) res.destroy();
+      }
+    }
+  }
+
+  async function getMotionDraft(req, res) {
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    const onClose = () => { if (!res.writableFinished) abort(); };
+    req.once('aborted', abort);
+    res.once('close', onClose);
+    let draft;
+    let stream;
+    try {
+      if (req.aborted || res.destroyed) abort();
+      const query = new URLSearchParams((req.originalUrl || req.url).split('?').slice(1).join('?'));
+      if ([...query.keys()].length !== 2 || query.getAll('expected_updated_at').length !== 1
+        || query.getAll('expected_source_sha256').length !== 1) {
+        throw Object.assign(new Error('invalid query'), { code: 'REDRAW_MOTION_DRAFT_INPUT_INVALID' });
+      }
+      draft = await prepareMotionReferenceDraft({
+        db, storageRoot: storageRootFromConfig(options.cfg), tempRoot: options.sourceVideoTempRoot,
+        signal: controller.signal, execFile: options.motionDraftExecFile,
+      }, {
+        ...owner(req), shotId: req.params.id, expectedUpdatedAt: query.get('expected_updated_at'),
+        expectedSourceSha256: query.get('expected_source_sha256'),
+      });
+      stream = draft.createReadStream();
+      draft.assertCurrentBinding();
+      res.set({
+        'Content-Type': draft.mime, 'Content-Length': String(draft.size),
+        'Content-Disposition': 'inline', 'Cache-Control': 'private, no-store',
+        'X-Content-Type-Options': 'nosniff', 'X-Content-SHA256': draft.sha256,
+      });
+      await pipeline(stream, res, { signal: controller.signal });
+    } catch (error) {
+      if (controller.signal.aborted || res.destroyed) return;
+      if (res.headersSent) { res.destroy(); return; }
+      const errors = {
+        REDRAW_MOTION_DRAFT_INPUT_INVALID: [400, '动作草片请求参数无效'],
+        REDRAW_MOTION_DRAFT_NOT_FOUND: [404, '动作草片镜头不存在'],
+        REDRAW_MOTION_DRAFT_CONFLICT: [409, '镜头或母本已变更，请刷新后重试'],
+        REDRAW_MOTION_DRAFT_UNAVAILABLE: [409, '动作草片暂不可用'],
+      };
+      const code = Object.hasOwn(errors, error?.code) ? error.code : 'REDRAW_MOTION_DRAFT_UNAVAILABLE';
+      return response.error(res, errors[code][0], code, errors[code][1]);
+    } finally {
+      req.removeListener('aborted', abort);
+      res.removeListener('close', onClose);
+      stream?.destroy();
+      try { await draft?.cleanup(); } catch {
+        log?.error?.({ code: 'REDRAW_MOTION_DRAFT_CLEANUP_FAILED' }, 'motion draft cleanup failed');
+        if (!res.destroyed) res.destroy();
+      }
+    }
+  }
+
+  async function getSourceVideo(req, res) {
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    const onClose = () => { if (!res.writableFinished) abort(); };
+    req.once('aborted', abort);
+    res.once('close', onClose);
+    let snapshot;
+    let stream;
+    try {
+      if (req.aborted || res.destroyed) abort();
+      const query = new URLSearchParams((req.originalUrl || req.url).split('?').slice(1).join('?'));
+      const keys = [...query.keys()];
+      if (keys.length !== 2 || query.getAll('expected_source_asset_id').length !== 1
+        || query.getAll('expected_source_sha256').length !== 1) {
+        throw Object.assign(new Error('invalid query'), { code: 'REDRAW_SOURCE_VIDEO_INPUT_INVALID' });
+      }
+      snapshot = await prepareSourceVideo({
+        db, storageRoot: storageRootFromConfig(options.cfg),
+        tempRoot: options.sourceVideoTempRoot, signal: controller.signal,
+      }, {
+        ...owner(req), workId: req.params.id,
+        expectedSourceAssetId: query.get('expected_source_asset_id'),
+        expectedSourceSha256: query.get('expected_source_sha256'),
+      });
+      stream = snapshot.createReadStream();
+      snapshot.assertCurrentBinding();
+      res.set({
+        'Content-Type': snapshot.mime, 'Content-Length': String(snapshot.size),
+        'Content-Disposition': 'inline', 'Cache-Control': 'private, no-store',
+        'X-Content-Type-Options': 'nosniff', 'X-Content-SHA256': snapshot.sha256,
+      });
+      await pipeline(stream, res, { signal: controller.signal });
+    } catch (error) {
+      if (controller.signal.aborted || res.destroyed) return;
+      if (res.headersSent) { res.destroy(); return; }
+      const errors = {
+        REDRAW_SOURCE_VIDEO_INPUT_INVALID: [400, '母本视频请求参数无效'],
+        REDRAW_SOURCE_VIDEO_NOT_FOUND: [404, '母本视频不存在'],
+        REDRAW_SOURCE_VIDEO_CONFLICT: [409, '母本视频已变更，请刷新后重试'],
+        REDRAW_SOURCE_VIDEO_UNAVAILABLE: [409, '母本视频暂不可用'],
+      };
+      const code = Object.hasOwn(errors, error?.code) ? error.code : 'REDRAW_SOURCE_VIDEO_UNAVAILABLE';
+      return response.error(res, errors[code][0], code, errors[code][1]);
+    } finally {
+      req.removeListener('aborted', abort);
+      res.removeListener('close', onClose);
+      stream?.destroy();
+      try { await snapshot?.cleanup(); } catch {
+        log?.error?.({ code: 'REDRAW_SOURCE_VIDEO_CLEANUP_FAILED' }, 'source video cleanup failed');
+        if (!res.destroyed) res.destroy();
+      }
+    }
+  }
+
   const uploadService = options.uploadService || redrawUploadService;
   const capabilityService = options.capabilityService || redrawCapabilityService;
   const orchestrator = options.orchestrator || redrawOrchestrator;
@@ -2079,7 +2335,7 @@ module.exports = function redrawRoutes(db, log, options = {}) {
         callback(null, filename);
       },
     }),
-    limits: { fileSize: 200 * 1024 * 1024, files: 1, fields: 5, parts: 7 },
+    limits: { fileSize: 200 * 1024 * 1024, files: 1, fields: 6, parts: 8, fieldSize: motionProcessingReport.MAX_REPORT_BYTES },
   });
   const analysisOptions = { ...(options.analysisOptions || {}) };
   if (!analysisOptions.assetReader) {
@@ -2237,7 +2493,9 @@ module.exports = function redrawRoutes(db, log, options = {}) {
         } catch (cleanupError) {
           return sendReferenceArtifactError(res, cleanupError, log, { route: req.path });
         }
-        const code = error?.code === 'LIMIT_FILE_SIZE'
+        const code = error?.code === 'LIMIT_FIELD_VALUE' && error?.field === 'processing_report'
+          ? 'REDRAW_MOTION_PROCESSING_TOO_LARGE'
+          : error?.code === 'LIMIT_FILE_SIZE'
           ? 'REDRAW_REFERENCE_ARTIFACT_TOO_LARGE'
           : ['LIMIT_UNEXPECTED_FILE', 'LIMIT_FIELD_COUNT', 'LIMIT_PART_COUNT'].includes(error?.code)
             ? 'REDRAW_REFERENCE_ARTIFACT_FORBIDDEN_FIELD'
@@ -2343,6 +2601,7 @@ module.exports = function redrawRoutes(db, log, options = {}) {
         sourceIdentityObscured: strictMultipartBoolean(body.source_identity_obscured),
         sourceTextObscured: strictMultipartBoolean(body.source_text_obscured),
         motionPreserved: strictMultipartBoolean(body.motion_preserved),
+        processingReport: body.processing_report,
         file,
       });
     } catch (error) {
@@ -2392,6 +2651,283 @@ module.exports = function redrawRoutes(db, log, options = {}) {
         AND user_id = ?
         AND deleted_at IS NULL
     `).get(Number(id), currentOwner.tenantId, currentOwner.userId);
+  }
+
+  function getExecutionPlan(req, res) {
+    const currentOwner = owner(req);
+    const result = previewVersionExecutionPlan({ db, ...currentOwner,
+      storageRoot: uploadLimits.storageRoot, canReadArtifact }, Number(req.params.id));
+    if (result.blocking_reasons.some((reason) => reason.code === 'REDRAW_VERSION_NOT_FOUND')) {
+      return response.error(res, 404, 'REDRAW_VERSION_NOT_FOUND', '本地化版本不存在');
+    }
+    return response.success(res, result);
+  }
+
+  function executionPlanReviewResponse(req, res, save) {
+    try {
+      const ctx = { db, ...owner(req), storageRoot: uploadLimits.storageRoot, canReadArtifact };
+      const result = save
+        ? executionPlanReviewService.saveExecutionPlanReview(ctx, req.params.id, req.body)
+        : executionPlanReviewService.getExecutionPlanReview(ctx, req.params.id);
+      return response.success(res, result);
+    } catch (error) {
+      const messages = {
+        REDRAW_VERSION_NOT_FOUND: [404, '本地化版本不存在'],
+        EXECUTION_PLAN_REVIEW_INPUT_INVALID: [400, '仅接受有效的 expected_plan_hash'],
+        EXECUTION_PLAN_BLOCKED: [409, '当前计划存在阻断项，不能保存'],
+        EXECUTION_PLAN_CONFLICT: [409, '计划已变更，请刷新后重新确认'],
+        EXECUTION_PLAN_REVIEW_INVALID: [409, '计划快照校验失败，不能保存'],
+      };
+      const known = messages[error.code];
+      if (known) return response.error(res, known[0], error.code, known[1]);
+      log.error('Execution plan review failed', { code: error.code });
+      return response.internalError(res, '计划快照处理失败');
+    }
+  }
+
+  function getExecutionPlanReview(req, res) {
+    return executionPlanReviewResponse(req, res, false);
+  }
+
+  function saveExecutionPlanReview(req, res) {
+    return executionPlanReviewResponse(req, res, true);
+  }
+
+  function executionQueueResponse(req, res, prepare) {
+    try {
+      const ctx = { db, ...owner(req), storageRoot: uploadLimits.storageRoot, canReadArtifact };
+      const result = prepare
+        ? executionQueueService.prepareExecutionQueue(ctx, req.params.id, req.body)
+        : executionQueueService.getExecutionQueue(ctx, req.params.id);
+      return response.success(res, result);
+    } catch (error) {
+      const messages = {
+        REDRAW_VERSION_NOT_FOUND: [404, '本地化版本不存在'],
+        EXECUTION_QUEUE_INPUT_INVALID: [400, '仅接受有效的 expected_plan_hash'],
+        EXECUTION_PLAN_BLOCKED: [409, '当前计划存在阻断项，不能登记队列'],
+        EXECUTION_PLAN_CONFLICT: [409, '计划已变更，请刷新后重新确认'],
+        EXECUTION_PLAN_REVIEW_REQUIRED: [409, '请先保存当前计划审核'],
+        EXECUTION_PLAN_REVIEW_STALE: [409, '计划审核已过期，请重新审核'],
+        EXECUTION_PLAN_REVIEW_INVALID: [409, '计划快照校验失败，不能登记队列'],
+        EXECUTION_QUEUE_INVALID: [409, '队列完整性校验失败，不能重复登记'],
+      };
+      const known = messages[error.code];
+      if (known) return response.error(res, known[0], error.code, known[1]);
+      log.error('Execution queue failed', { code: 'INTERNAL_ERROR' });
+      return response.internalError(res, '执行队列处理失败');
+    }
+  }
+
+  function getExecutionQueue(req, res) {
+    return executionQueueResponse(req, res, false);
+  }
+
+  function prepareExecutionQueue(req, res) {
+    return executionQueueResponse(req, res, true);
+  }
+
+  function executionRunRequest(req, fields = []) {
+    const positivePath = value => typeof value === 'string' && /^[1-9]\d*$/.test(value) && Number.isSafeInteger(Number(value));
+    const query = new URLSearchParams((req.originalUrl || req.url || '').split('?').slice(1).join('?'));
+    if (!positivePath(req.params.id) || (req.params.runId !== undefined && !positivePath(req.params.runId))
+      || (req.params.unitId !== undefined && (typeof req.params.unitId !== 'string' || !req.params.unitId
+        || req.params.unitId.trim() !== req.params.unitId || /[\x00-\x1f\x7f]/.test(req.params.unitId)))
+      || [...query.keys()].some(key => !fields.includes(key) || query.getAll(key).length !== 1)
+      || (req.method === 'GET' && req.body && (Array.isArray(req.body) || Object.keys(req.body).length))) throw codedRouteError('EXECUTION_RUN_INPUT_INVALID');
+    return query;
+  }
+
+  function executionRunContext(req) {
+    const currentOwner = owner(req);
+    const version = db.prepare(`SELECT v.id FROM redraw_versions v
+      JOIN redraw_works w ON w.id=v.work_id AND w.tenant_id=v.tenant_id AND w.user_id=v.user_id AND w.deleted_at IS NULL
+      JOIN redraw_projects p ON p.id=w.project_id AND p.tenant_id=v.tenant_id AND p.user_id=v.user_id AND p.deleted_at IS NULL
+      WHERE v.id=? AND v.tenant_id=? AND v.user_id=? AND v.deleted_at IS NULL`)
+      .get(Number(req.params.id), currentOwner.tenantId, currentOwner.userId);
+    if (!version) throw codedRouteError('REDRAW_VERSION_NOT_FOUND');
+    if (options.executionRunEnv !== undefined && (!options.executionRunEnv
+      || Object.getPrototypeOf(options.executionRunEnv) !== Object.prototype)) throw codedRouteError('EXECUTION_RUN_INVALID');
+    return { db, ...currentOwner, log, storageRoot: storageRootFromConfig(cfg), canReadArtifact,
+      tempRoot: options.executionRunTempRoot || os.tmpdir(), env: options.executionRunEnv ?? process.env,
+      providerAssets: { storageRoot: storageRootFromConfig(cfg), storageBaseUrl: storageBaseUrlFromConfig(cfg),
+        signingSecret: options.providerAssetSecret, nowMs: typeof options.executionRunNowMs === 'function'
+          ? options.executionRunNowMs() : options.executionRunNowMs ?? Date.now() } };
+  }
+
+  function executionRunError(res, error) {
+    const codes = {
+      UNAUTHORIZED: 401,
+      EXECUTION_RUN_INPUT_INVALID: 400, EXECUTION_UNIT_REVIEW_INPUT_INVALID: 400,
+      REDRAW_VERSION_NOT_FOUND: 404, EXECUTION_RUN_NOT_FOUND: 404, EXECUTION_UNIT_CANDIDATE_NOT_FOUND: 404,
+      EXECUTION_RUN_CONFLICT: 409, EXECUTION_RUN_INVALID: 409, EXECUTION_UNIT_REVIEW_CONFLICT: 409,
+      EXECUTION_QUEUE_INVALID: 409, EXECUTION_PLAN_CONFLICT: 409, EXECUTION_PLAN_BLOCKED: 409,
+      EXECUTION_PLAN_REVIEW_INVALID: 409, EXECUTION_PLAN_REVIEW_STALE: 409, EXECUTION_PLAN_REVIEW_REQUIRED: 409,
+      REDRAW_UNIT_RESULT_INVALID: 409, REDRAW_PROVIDER_ASSET_PATH_INVALID: 409,
+      EXECUTION_RUN_STALE: 409, EXECUTION_RUN_STOPPED: 409, EXECUTION_RUN_PREPARATION_REQUIRED: 409,
+      EXECUTION_RUN_SELECTED_CAPABILITY_BLOCKED: 409, EXECUTION_RUN_QUOTE_BLOCKED: 409,
+      EXECUTION_RUN_APPROVAL_REQUIRED: 409, EXECUTION_RUN_NO_PENDING_UNIT: 409,
+      EXECUTION_RUN_OUTPUT_PARAMETERS_REQUIRED: 409, EXECUTION_RUN_OUTPUT_PARAMETERS_UNSUPPORTED: 409,
+      EXECUTION_RUN_PREDECESSOR_REQUIRED: 409, EXECUTION_QUEUE_NOT_FOUND: 404,
+      REDRAW_UNIT_REFERENCE_DERIVATION_STALE: 409, REDRAW_UNIT_REFERENCE_DERIVATION_INVALID: 409,
+      REDRAW_UNIT_REFERENCE_DERIVATION_OUTPUT_INVALID: 409, REDRAW_UNIT_REFERENCE_DERIVATION_MAPPING_REQUIRED: 409,
+      REDRAW_UNIT_REFERENCE_MATERIALS_STALE: 409, REDRAW_UNIT_REFERENCE_MATERIALS_INVALID: 409,
+      REDRAW_UNIT_PRODUCTION_PACK_STALE: 409, REDRAW_UNIT_PRODUCTION_PACK_INVALID: 409,
+      REDRAW_SOURCE_VIDEO_NOT_FOUND: 409, REDRAW_SOURCE_VIDEO_UNAVAILABLE: 409, REDRAW_SOURCE_VIDEO_CONFLICT: 409,
+      REDRAW_REFERENCE_BUNDLE_NOT_FOUND: 409, REDRAW_REFERENCE_BUNDLE_CONFLICT: 409,
+      REDRAW_REFERENCE_BUNDLE_FACE_COVERAGE_REQUIRED: 409, REDRAW_REFERENCE_BUNDLE_IDENTITY_PACK_REQUIRED: 409,
+      REDRAW_REFERENCE_BUNDLE_TEXT_COVERAGE_REQUIRED: 409, REDRAW_REFERENCE_BUNDLE_DIALOGUE_REQUIRED: 409,
+      REDRAW_REFERENCE_BUNDLE_COVERAGE_EVIDENCE_REQUIRED: 409, REDRAW_REFERENCE_BUNDLE_MOTION_REFERENCE_STALE: 409,
+      REDRAW_MOTION_CANDIDATE_NOT_FOUND: 409, REDRAW_MOTION_CANDIDATE_CONFLICT: 409, REDRAW_MOTION_CANDIDATE_UNAVAILABLE: 409,
+      LOCALIZATION_NOT_FOUND: 409, BLUEPRINT_HASH_MISMATCH: 409,
+      REDRAW_MOTION_PROCESSING_INVALID: 409, REDRAW_MOTION_PROCESSING_CONFLICT: 409, REDRAW_MOTION_PROCESSING_TOO_LARGE: 409,
+    };
+    const sourceIoFailure = error?.code === 'REDRAW_SOURCE_VIDEO_UNAVAILABLE' && error.cause
+      && !['ENOENT', 'ENOTDIR', 'ELOOP'].includes(error.cause.code);
+    if (!sourceIoFailure && Object.hasOwn(codes, error?.code)) return response.error(res, codes[error.code], error.code, '运行或候选状态不可用，请刷新后确认');
+    log?.error?.('Execution run request failed', { code: 'INTERNAL_ERROR' });
+    return response.internalError(res, '运行请求处理失败');
+  }
+
+  function executionRunsResponse(req, res, create) {
+    try {
+      executionRunRequest(req);
+      const ctx = executionRunContext(req);
+      const result = create ? executionRunService.createExecutionRun(ctx, Number(req.params.id), req.body)
+        : executionRunService.listExecutionRuns(ctx, Number(req.params.id));
+      return response.success(res, result);
+    } catch (error) { return executionRunError(res, error); }
+  }
+
+  async function executionRunResponse(req, res, action) {
+    try {
+      const query = executionRunRequest(req, action === 'readiness' ? ['resolution', 'aspect_ratio'] : []);
+      const ctx = executionRunContext(req), versionId = Number(req.params.id), runId = Number(req.params.runId);
+      const runtime = options.executionRunRuntime === undefined ? { fetchImpl: globalThis.fetch } : options.executionRunRuntime;
+      let result;
+      switch (action) {
+        case 'read': result = executionRunService.getExecutionRun(ctx, versionId, runId); break;
+        case 'readiness': {
+          if (query.size !== 0 && query.size !== 2) throw codedRouteError('EXECUTION_RUN_INPUT_INVALID');
+          const input = query.size ? { output_parameters: { resolution: query.get('resolution'), aspect_ratio: query.get('aspect_ratio') } } : {};
+          result = await executionRunService.inspectExecutionRunAdvanceReadiness(ctx, versionId, runId, input); break;
+        }
+        case 'pause': result = executionRunService.requestExecutionRunPause(ctx, versionId, runId, req.body); break;
+        case 'resume': result = await executionRunService.resumeExecutionRun(ctx, versionId, runId, req.body); break;
+        case 'advance': result = await executionRunService.advanceExecutionRun(ctx, versionId, runId, req.body, runtime); break;
+        case 'recover': result = await executionRunService.recoverExecutionUnitTask(ctx, versionId, runId, req.body, runtime); break;
+        case 'candidate': result = await executionUnitReviewService.getExecutionUnitCandidate(ctx, versionId, runId, req.params.unitId); break;
+        case 'review': result = await executionUnitReviewService.reviewExecutionUnitCandidate(ctx, versionId, runId, req.params.unitId, req.body); break;
+        default: throw codedRouteError('EXECUTION_RUN_INPUT_INVALID');
+      }
+      // Only GET installs this check; POST must preserve its safe receipt without a DB reread.
+      req.assertExecutionRunReadAccess?.();
+      return response.success(res, result);
+    } catch (error) { return executionRunError(res, error); }
+  }
+
+  async function getExecutionUnitCandidateMedia(req, res) {
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    const onClose = () => { if (!res.writableFinished) abort(); };
+    req.once('aborted', abort); res.once('close', onClose);
+    let media, stream;
+    try {
+      if (req.aborted || res.destroyed) abort();
+      const query = executionRunRequest(req, ['expected_candidate_hash']);
+      const expectedHash = query.get('expected_candidate_hash');
+      if (!/^[a-f0-9]{64}$/.test(expectedHash || '')) throw codedRouteError('EXECUTION_UNIT_REVIEW_INPUT_INVALID');
+      media = await executionUnitReviewService.prepareExecutionUnitCandidateMedia(executionRunContext(req),
+        Number(req.params.id), Number(req.params.runId), req.params.unitId, expectedHash);
+      controller.signal.throwIfAborted();
+      stream = media.createReadStream();
+      media.assertCurrentBinding();
+      req.assertExecutionRunReadAccess?.();
+      res.set({ 'Content-Type': media.mime, 'Content-Length': String(media.size), 'Content-Disposition': 'inline',
+        'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff', 'X-Content-SHA256': media.sha256 });
+      await pipeline(stream, res, { signal: controller.signal });
+    } catch (error) {
+      if (controller.signal.aborted || res.destroyed) return;
+      if (res.headersSent) { res.destroy(); return; }
+      return executionRunError(res, error);
+    } finally {
+      req.removeListener('aborted', abort); res.removeListener('close', onClose);
+      stream?.destroy();
+      // Wait for any borrowed-FD read to finish before its sole owner closes it.
+      if (stream) await finished(stream, { cleanup: true }).catch(() => {});
+      try { media?.cleanup(); } catch {
+        log?.error?.('Execution unit media cleanup failed', { code: 'EXECUTION_UNIT_MEDIA_CLEANUP_FAILED' });
+        if (!res.destroyed) res.destroy();
+      }
+    }
+  }
+
+  async function unitReferenceMaterialsResponse(req, res, prepare) {
+    try {
+      const fields = ['review_id', 'plan_hash', 'unit_hash', ...(prepare ? ['expected_materials_hash'] : [])];
+      const input = prepare ? req.body : req.query;
+      const positivePath = value => typeof value === 'string' && /^[1-9]\d*$/.test(value) && Number.isSafeInteger(Number(value));
+      const sha = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+      const rawQuery = new URLSearchParams((req.originalUrl || req.url || '').split('?').slice(1).join('?'));
+      if (!input || typeof input !== 'object' || Array.isArray(input)
+        || Reflect.ownKeys(input).length !== fields.length || !fields.every(key => Object.hasOwn(input, key))
+        || !positivePath(req.params.id) || !positivePath(req.params.queueId)
+        || typeof req.params.unitId !== 'string' || !req.params.unitId.trim()
+        || req.params.unitId.trim() !== req.params.unitId || /[\x00-\x1f\x7f]/.test(req.params.unitId)
+        || !(prepare ? Number.isSafeInteger(input.review_id) && input.review_id > 0 : positivePath(input.review_id))
+        || !sha(input.plan_hash) || !sha(input.unit_hash) || (prepare && !sha(input.expected_materials_hash))
+        || [...rawQuery.keys()].some(key => prepare || !fields.includes(key) || rawQuery.getAll(key).length !== 1)) {
+        return response.error(res, 400, 'REDRAW_UNIT_REFERENCE_INPUT_INVALID', '素材请求参数无效，请重新选择当前单元');
+      }
+      const currentOwner = owner(req);
+      const version = findOwnedVersion(req.params.id, currentOwner);
+      if (!version || !findOwnedWork(version.work_id, currentOwner)) {
+        return response.error(res, 404, 'REDRAW_VERSION_NOT_FOUND', '本地化版本不存在');
+      }
+      const unit = db.prepare(`SELECT u.id FROM redraw_execution_queue_units u
+        JOIN redraw_execution_queues q ON q.id = u.queue_id
+        WHERE q.id = ? AND q.version_id = ? AND q.work_id = ? AND q.tenant_id = ? AND q.user_id = ? AND u.unit_id = ?`)
+        .get(Number(req.params.queueId), version.id, version.work_id, currentOwner.tenantId, currentOwner.userId, req.params.unitId);
+      if (!unit) return response.error(res, 404, 'REDRAW_UNIT_REFERENCE_NOT_FOUND', '执行单元不存在');
+      const expected = { version_id: version.id, review_id: Number(input.review_id), queue_id: Number(req.params.queueId),
+        plan_hash: input.plan_hash, unit_id: req.params.unitId, unit_hash: input.unit_hash };
+      const ctx = { db, ...currentOwner, storageRoot: uploadLimits.storageRoot, canReadArtifact };
+      const result = prepare
+        ? await unitReferenceDerivationService.prepareUnitReferenceMaterials(ctx, { ...expected, expected_materials_hash: input.expected_materials_hash })
+        : await unitReferenceDerivationService.inspectPreparedUnitReferenceMaterials(ctx, expected);
+      return response.success(res, result);
+    } catch (error) {
+      if (error.code === 'REDRAW_SOURCE_VIDEO_UNAVAILABLE'
+        && ['EACCES', 'EPERM', 'EIO', 'ENOSPC', 'EMFILE', 'ENFILE', 'EROFS', 'EBUSY'].includes(error.cause?.code)) {
+        log.error('Unit reference source I/O failed', { code: 'INTERNAL_ERROR' });
+        return response.internalError(res, '本地素材读取失败，请稍后只读检查状态');
+      }
+      const conflicts = new Set([
+        'REDRAW_UNIT_REFERENCE_MATERIALS_INVALID', 'REDRAW_UNIT_REFERENCE_MATERIALS_STALE',
+        'REDRAW_UNIT_REFERENCE_DERIVATION_INVALID', 'REDRAW_UNIT_REFERENCE_DERIVATION_STALE',
+        'REDRAW_UNIT_REFERENCE_DERIVATION_OUTPUT_INVALID', 'REDRAW_UNIT_REFERENCE_DERIVATION_MAPPING_REQUIRED',
+        'REDRAW_UNIT_PRODUCTION_PACK_INVALID', 'REDRAW_UNIT_PRODUCTION_PACK_STALE',
+        'EXECUTION_PLAN_BLOCKED', 'EXECUTION_PLAN_CONFLICT', 'EXECUTION_PLAN_REVIEW_REQUIRED',
+        'EXECUTION_PLAN_REVIEW_STALE', 'EXECUTION_PLAN_REVIEW_INVALID', 'EXECUTION_QUEUE_INVALID',
+        'REDRAW_SOURCE_VIDEO_NOT_FOUND', 'REDRAW_SOURCE_VIDEO_UNAVAILABLE', 'REDRAW_SOURCE_VIDEO_CONFLICT',
+        'REDRAW_MOTION_PROCESSING_INVALID', 'REDRAW_MOTION_PROCESSING_CONFLICT', 'REDRAW_MOTION_PROCESSING_TOO_LARGE',
+        'REDRAW_MOTION_REFERENCE_STALE', 'REDRAW_MOTION_REFERENCE_BINDING_NOT_READY',
+        'REDRAW_REFERENCE_BUNDLE_NOT_FOUND', 'REDRAW_REFERENCE_BUNDLE_CONFLICT', 'REDRAW_REFERENCE_BUNDLE_FACE_COVERAGE_REQUIRED',
+        'REDRAW_REFERENCE_BUNDLE_IDENTITY_PACK_REQUIRED', 'REDRAW_REFERENCE_BUNDLE_TEXT_COVERAGE_REQUIRED',
+        'REDRAW_REFERENCE_BUNDLE_COVERAGE_EVIDENCE_REQUIRED', 'REDRAW_REFERENCE_BUNDLE_MOTION_REFERENCE_STALE',
+        'BLUEPRINT_HASH_MISMATCH', 'LOCALIZATION_HASH_MISMATCH',
+      ]);
+      if (conflicts.has(error.code)) return response.error(res, 409, error.code, '计划、审核或素材已失效，请刷新核对后重试');
+      log.error('Unit reference materials failed', { code: 'INTERNAL_ERROR' });
+      return response.internalError(res, '本地素材处理失败，请稍后只读检查状态');
+    }
+  }
+
+  function getUnitReferenceMaterials(req, res) {
+    return unitReferenceMaterialsResponse(req, res, false);
+  }
+
+  function prepareUnitReferenceMaterials(req, res) {
+    return unitReferenceMaterialsResponse(req, res, true);
   }
 
   async function registerFullFrameCoverage(req, res) {
@@ -2610,6 +3146,7 @@ module.exports = function redrawRoutes(db, log, options = {}) {
       tenantId: currentOwner.tenantId,
       userId: currentOwner.userId,
       versionId: Number(version.id),
+      storageRoot: storageRootFromConfig(cfg),
       canReadAudioAsset: (asset) => reader.canRead(asset),
       localeVerifier: options.localeVerifier,
     };
@@ -2754,6 +3291,28 @@ const COMPOSITION_CLIENT_CONTROL_FIELDS = new Set([
   'absolute_path',
 ]);
 
+const UNIT_COMPOSITION_HTTP_FIELDS = ['schema_version', 'run_id', 'expected_plan_hash', 'expected_run_revision', 'idempotency_key'];
+
+function isExecutionUnitCompositionRequest(body) {
+  return ['schema_version', 'version_id', 'run_id', 'expected_plan_hash', 'expected_run_revision']
+    .some(key => Object.hasOwn(Object(body), key));
+}
+
+function unitCompositionStartInput(body) {
+  if (!body || Object.getPrototypeOf(body) !== Object.prototype
+    || Reflect.ownKeys(body).length !== UNIT_COMPOSITION_HTTP_FIELDS.length
+    || !UNIT_COMPOSITION_HTTP_FIELDS.every(key => Object.hasOwn(body, key))
+    || body.schema_version !== 'redraw-execution-unit-composition-v1'
+    || !Number.isSafeInteger(body.run_id) || body.run_id <= 0
+    || !Number.isSafeInteger(body.expected_run_revision) || body.expected_run_revision < 0
+    || typeof body.expected_plan_hash !== 'string' || !/^[a-f0-9]{64}$/.test(body.expected_plan_hash)
+    || typeof body.idempotency_key !== 'string' || !body.idempotency_key || body.idempotency_key.length > 200
+    || body.idempotency_key.trim() !== body.idempotency_key || /[\x00-\x1f\x7f]/.test(body.idempotency_key)) {
+    throw codedRouteError('REDRAW_COMPOSITION_INPUT_INVALID', '单元合成参数无效');
+  }
+  return { ...body };
+}
+
 function compositionStartInput(body) {
   const input = body == null ? {} : body;
   if (typeof input !== 'object' || Array.isArray(input)) {
@@ -2886,6 +3445,14 @@ function parseManifestSafe(row) {
   return parseJSON(row?.manifest_json, {});
 }
 
+function isExecutionUnitExportManifest(manifest) {
+  return manifest?.schema_version === 'redraw-execution-unit-composition-v1'
+    || manifest?.request?.schema_version === 'redraw-execution-unit-release-v1'
+    || manifest?.episode_release?.schema_version === 'redraw-execution-unit-release-v1'
+    || Object.hasOwn(manifest?.request || {}, 'run_id')
+    || Object.hasOwn(manifest?.inputs || {}, 'run_id');
+}
+
 function reportInteger(value, minimum = 0) {
   const number = Number(value);
   return Number.isSafeInteger(number) && number >= minimum ? number : null;
@@ -2981,8 +3548,88 @@ function completedReleaseReport(row, manifest) {
   return { release_hash: releaseHash, quality_summary: qualitySummary, episode_release: episodeRelease };
 }
 
+function executionUnitExportKeySha256(row, manifest) {
+  const request = manifest.request, key = manifest.idempotency_key;
+  const keys = ['expected_plan_hash', 'expected_run_revision', 'run_id', 'schema_version', 'version_id'];
+  if (row.export_type !== 'video' || manifest.schema_version !== 'redraw-execution-unit-composition-v1'
+    || !request || Object.getPrototypeOf(request) !== Object.prototype
+    || Reflect.ownKeys(request).length !== keys.length || !keys.every(field => Object.hasOwn(request, field))
+    || request.schema_version !== 'redraw-execution-unit-release-v1'
+    || !Number.isSafeInteger(request.version_id) || request.version_id <= 0 || request.version_id !== row.version_id
+    || !Number.isSafeInteger(request.run_id) || request.run_id <= 0
+    || !Number.isSafeInteger(request.expected_run_revision) || request.expected_run_revision < 0
+    || typeof request.expected_plan_hash !== 'string' || request.expected_plan_hash.length !== 64
+    || !SHA256_PATTERN.test(request.expected_plan_hash)
+    || typeof manifest.request_hash !== 'string' || manifest.request_hash.length !== 64 || !SHA256_PATTERN.test(manifest.request_hash)
+    || typeof key !== 'string' || !key.length || key.length > 200 || key.trim() !== key || /[\x00-\x1f\x7f]/.test(key)
+    || Buffer.from(key, 'utf8').toString('utf8') !== key) return null;
+  // Hash the exact flat release request, never the composition body or key.
+  const canonicalRequest = JSON.stringify(Object.fromEntries(keys.map(field => [field, request[field]])));
+  if (crypto.createHash('sha256').update(canonicalRequest, 'utf8').digest('hex') !== manifest.request_hash) return null;
+  return crypto.createHash('sha256').update(key, 'utf8').digest('hex');
+}
+
+function executionUnitExportSummary(row, manifest) {
+  const summary = {
+    id: Number(row.id), version_id: Number(row.version_id), export_type: row.export_type,
+    version_number: Number(row.version_number), status: row.status,
+    schema_version: 'redraw-execution-unit-composition-v1',
+    asset_id: row.asset_id == null ? null : Number(row.asset_id),
+    subtitle_asset_id: row.subtitle_asset_id == null ? null : Number(row.subtitle_asset_id),
+    project_asset_id: row.project_asset_id == null ? null : Number(row.project_asset_id),
+    request_hash: reportHash(manifest.request_hash),
+    idempotency_key_sha256: executionUnitExportKeySha256(row, manifest),
+    run_id: reportInteger(manifest.request?.run_id, 1), plan_hash: reportHash(manifest.request?.expected_plan_hash),
+    audio_mode: null, input_hash: reportHash(manifest.inputs?.input_hash),
+    error_code: row.error_code || null,
+    error_message: row.error_message ? safeExportErrorMessage(row.error_message) : null,
+    created_at: row.created_at, updated_at: row.updated_at,
+  };
+  if (row.status !== 'completed' || manifest.schema_version !== summary.schema_version) return summary;
+  const release = manifest.episode_release, request = manifest.request, outputs = manifest.outputs || {};
+  const quality = parseJSON(row.quality_summary_json, null);
+  try {
+    // Validate the original exact release before projecting it. Its hash must
+    // never be advertised as the hash of the smaller public projection below.
+    redrawEpisodeReleaseService.assertReleaseHash(release, row.release_hash);
+    if (row.export_type !== 'video' || release.schema_version !== 'redraw-execution-unit-release-v1'
+      || release.version_id !== Number(row.version_id)
+      || request?.schema_version !== 'redraw-execution-unit-release-v1'
+      || request.version_id !== release.version_id || request.run_id !== release.run_id
+      || request.expected_plan_hash !== release.plan_hash || request.expected_run_revision !== release.run_revision
+      || manifest.inputs?.release_hash !== release.release_hash || manifest.inputs?.run_id !== release.run_id
+      || manifest.inputs?.plan_hash !== release.plan_hash || !summary.input_hash
+      || !quality || Object.keys(quality).length !== Object.keys(release.quality_summary).length
+      || Object.keys(release.quality_summary).some(key => quality[key] !== release.quality_summary[key])) return summary;
+    const kinds = ['mp4', 'srt', 'vtt', 'report'];
+    if (kinds.some(kind => reportInteger(outputs[`${kind}_asset_id`], 1) == null || !reportHash(outputs.hashes?.[kind]))
+      || outputs.mp4_asset_id !== Number(row.asset_id) || outputs.srt_asset_id !== Number(row.subtitle_asset_id)) return summary;
+    summary.audio_mode = release.audio_mode;
+    summary.release_hash = release.release_hash;
+    summary.quality_summary = { ...release.quality_summary };
+    summary.output_asset_ids = Object.fromEntries(kinds.map(kind => [kind, outputs[`${kind}_asset_id`]]));
+    summary.hashes = Object.fromEntries(kinds.map(kind => [kind, outputs.hashes[kind]]));
+    summary.downloads = { ...releaseDownloadUrls(row.id), report: `/api/v1/redraw/exports/${row.id}/download/report` };
+    summary.episode_release = sanitizeExportValue({
+      schema_version: release.schema_version, project_id: release.project_id, work_id: release.work_id,
+      version_id: release.version_id, locale: release.locale, market: release.market,
+      run_id: release.run_id, run_revision: release.run_revision, plan_hash: release.plan_hash,
+      source_sha256: release.source_sha256, blueprint_hash: release.blueprint_hash, localization_hash: release.localization_hash,
+      duration_ms: release.duration_ms, audio_mode: release.audio_mode, quality_summary: { ...release.quality_summary },
+      units: release.units.map(unit => ({ unit_id: unit.unit_id, ordinal: unit.ordinal, unit_hash: unit.unit_hash,
+        candidate_sha256: unit.candidate_sha256, review_hash: unit.review_hash, timeline: { ...unit.timeline },
+        output_start_ms: unit.output_start_ms, output_end_ms: unit.output_end_ms })),
+    });
+  } catch (_) {
+    // Invalid stored unit releases remain non-downloadable; do not fall back
+    // to the historical shot projection or repair the stored hash for display.
+  }
+  return summary;
+}
+
 function exportSummary(row) {
   const manifest = parseManifestSafe(row);
+  if (isExecutionUnitExportManifest(manifest)) return executionUnitExportSummary(row, manifest);
   const inputs = manifest.plan || manifest.inputs || {};
   const outputs = manifest.outputs || {};
   const summary = {
@@ -3018,6 +3665,28 @@ function exportSummary(row) {
     if (report) Object.assign(summary, report);
   }
   return summary;
+}
+
+function sendUnitCompositionError(res, error, log) {
+  const codes = {
+    UNAUTHORIZED: 401,
+    REDRAW_COMPOSITION_INPUT_INVALID: 400,
+    REDRAW_COMPOSITION_VERSION_NOT_FOUND: 404, REDRAW_VERSION_NOT_FOUND: 404,
+    EXECUTION_RUN_NOT_FOUND: 404, REDRAW_EPISODE_RELEASE_VERSION_NOT_FOUND: 404,
+    REDRAW_COMPOSITION_INPUT_DRIFT: 409, REDRAW_COMPOSITION_IDEMPOTENCY_CONFLICT: 409,
+    REDRAW_COMPOSITION_ACTIVE_CONFLICT: 409, REDRAW_COMPOSITION_APPROVED_DUB_REQUIRED: 409,
+    EXECUTION_RUN_INVALID: 409, REDRAW_EPISODE_RELEASE_INPUT_DRIFT: 409,
+    REDRAW_EPISODE_RELEASE_SUBTITLE_INVALID: 409,
+    EXECUTION_UNIT_REVIEW_CONFLICT: 409, REDRAW_UNIT_RESULT_INVALID: 409,
+    EXECUTION_UNIT_CANDIDATE_NOT_FOUND: 409, REDRAW_UNIT_REFERENCE_MATERIALS_STALE: 409,
+    REDRAW_UNIT_PRODUCTION_PACK_STALE: 409, REDRAW_UNIT_REFERENCE_DERIVATION_STALE: 409,
+    REDRAW_UNIT_REFERENCE_DERIVATION_OUTPUT_INVALID: 409,
+  };
+  if (Object.hasOwn(codes, error?.code)) {
+    return response.error(res, codes[error.code], error.code, '单元合成参数或状态不可用，请刷新后确认');
+  }
+  log?.error?.('Execution unit composition request failed', { code: 'INTERNAL_ERROR' });
+  return response.internalError(res, '提交合成任务失败');
 }
 
 function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
@@ -3485,6 +4154,21 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
     }));
   }
 
+  function listProjectWorks(req, res) {
+    const currentOwner = owner(req);
+    const projectId = numericId(req.params.id);
+    if (!projectId || !findOwnedProject(projectId, currentOwner)) {
+      return response.error(res, 404, 'REDRAW_PROJECT_NOT_FOUND', '转绘项目不存在');
+    }
+    const items = db.prepare(`
+      SELECT id, project_id, title, duration_ms, current_step, status, created_at, updated_at
+      FROM redraw_works
+      WHERE project_id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+      ORDER BY created_at ASC, id ASC
+    `).all(projectId, currentOwner.tenantId, currentOwner.userId);
+    return response.success(res, items);
+  }
+
   async function createWorks(req, res) {
     const currentOwner = owner(req);
     const projectId = numericId(req.params.id);
@@ -3933,6 +4617,8 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
       const quote = localizationOrchestrator.quoteLocalization(
         db,
         localizationQuoteInput(req.body || {}, work, currentOwner, canReadArtifact),
+        null,
+        { storageRoot: storageRootFromConfig(cfg) },
       );
       if (!quote?.priced) {
         return response.error(
@@ -3967,6 +4653,7 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
           schedule: options.localizationSchedule,
           canReadArtifact,
           validateTargetText: options.localizationLanguageGate,
+          storageRoot: storageRootFromConfig(cfg),
         },
       );
       const versionId = result.version_id ?? result.draft_version_id ?? null;
@@ -4070,6 +4757,7 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
         currentOwner,
         Number(version.id),
         { ...input, validateTargetText: options.localizationLanguageGate },
+        { storageRoot: storageRootFromConfig(cfg) },
       ));
     } catch (error) {
       return sendLocalizationError(res, error, '保存本地化审核失败', log, { versionId: version.id });
@@ -4087,6 +4775,7 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
         currentOwner,
         Number(version.id),
         { ...input, validateTargetText: options.localizationLanguageGate },
+        { storageRoot: storageRootFromConfig(cfg) },
       ));
     } catch (error) {
       return sendLocalizationError(res, error, '锁定本地化审核失败', log, { versionId: version.id });
@@ -4459,7 +5148,7 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
       rejectDialogueClientControl(req.body || {});
       const quote = dialogueOrchestrator.quoteDialogue(db, dialogueContext(version, currentOwner));
       if (quote.status !== 'ready') {
-        return response.error(res, 409, 'REDRAW_DIALOGUE_PLAN_NOT_READY', '配音计划需要重写', { quote });
+        return response.error(res, 409, 'REDRAW_DIALOGUE_PLAN_NOT_READY', quote.issues?.[0]?.message || '配音计划需要重写', { quote });
       }
       return response.success(res, quote);
     } catch (error) {
@@ -4564,18 +5253,22 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
   }
 
   async function composeVersion(req, res) {
+    const unitComposition = isExecutionUnitCompositionRequest(req.body);
     const currentOwner = owner(req);
     const version = findOwnedVersion(req.params.id, currentOwner);
     if (!version) return response.notFound(res, '本地化版本不存在');
     let input;
     try {
-      input = compositionStartInput(req.body || {});
+      input = unitComposition ? unitCompositionStartInput(req.body) : compositionStartInput(req.body || {});
     } catch (error) {
+      if (unitComposition) return sendUnitCompositionError(res, error, log);
       return sendCompositionError(res, error, '合成参数无效', log, { versionId: req.params.id });
     }
     try {
-      const ctx = compositionContext(version, currentOwner);
-      const exportRow = await compositionService.createComposition(ctx, {
+      const ctx = { ...compositionContext(version, currentOwner), ...(unitComposition ? {
+        canReadArtifact, assertUnitCompositionAccess: req.assertUnitCompositionAccess,
+      } : {}) };
+      const exportRow = await compositionService.createComposition(ctx, unitComposition ? { ...input, version_id: Number(version.id) } : {
         versionId: Number(version.id),
         idempotencyKey: input.idempotencyKey,
         audioMode: input.audioMode,
@@ -4590,6 +5283,7 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
         created: exportRow.created === true,
       });
     } catch (error) {
+      if (unitComposition) return sendUnitCompositionError(res, error, log);
       return sendCompositionError(res, error, '提交合成任务失败', log, { versionId: version.id });
     }
   }
@@ -4955,6 +5649,13 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
     return response.success(res, rows.map(exportSummary));
   }
 
+  function hasExecutionUnitExports(id, byVersion) {
+    const rows = db.prepare(`SELECT manifest_json FROM redraw_exports
+      WHERE ${byVersion ? 'version_id' : 'id'}=?`)
+      .all(Number(id));
+    return rows.some(row => isExecutionUnitExportManifest(parseManifestSafe(row)));
+  }
+
   function getExport(req, res) {
     const currentOwner = owner(req);
     const row = db.prepare(`
@@ -4964,12 +5665,76 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
       LIMIT 1
     `).get(Number(req.params.id), currentOwner.tenantId, currentOwner.userId);
     if (!row) return response.notFound(res, '转绘导出不存在');
+    if (isExecutionUnitExportManifest(parseManifestSafe(row)) && !findOwnedVersion(row.version_id, currentOwner)) {
+      return response.notFound(res, '转绘导出不存在');
+    }
     return response.success(res, exportSummary(row));
+  }
+
+  async function downloadExecutionUnitExport(req, res, currentOwner, manifest) {
+    const controller = new AbortController();
+    let artifact, stream;
+    const abort = () => { controller.abort(); stream?.destroy(); };
+    const onClose = () => { if (!res.writableFinished) abort(); };
+    req.once('aborted', abort); res.once('close', onClose);
+    try {
+      if (req.aborted || res.destroyed) abort();
+      const query = new URLSearchParams((req.originalUrl || req.url || '').split('?').slice(1).join('?'));
+      if (!/^[1-9]\d*$/.test(String(req.params.id)) || !Number.isSafeInteger(Number(req.params.id))
+        || query.size || Number(req.headers?.['content-length'] || 0) > 0 || req.headers?.['transfer-encoding']
+        || Array.isArray(req.body) || (req.body && Object.keys(req.body).length)) {
+        return response.badRequest(res, '导出下载不接受请求体或查询参数');
+      }
+      if (manifest.schema_version !== 'redraw-execution-unit-composition-v1') {
+        throw codedRouteError('REDRAW_EXPORT_RELEASE_HASH_MISMATCH');
+      }
+      artifact = await exportService.prepareExecutionUnitExportArtifact({ ...exportContext(currentOwner), canReadArtifact }, {
+        exportId: req.params.id, kind: req.params.kind,
+      });
+      controller.signal.throwIfAborted();
+      stream = artifact.createReadStream();
+      const iterator = stream[Symbol.asyncIterator]();
+      // The service rebuilds the original release on its first async read.
+      // Keep the first chunk and consume this same iterator only once.
+      const first = await iterator.next();
+      controller.signal.throwIfAborted();
+      req.assertExecutionRunReadAccess?.();
+      res.set({ 'Content-Type': artifact.mime_type, 'Content-Length': String(artifact.size),
+        'X-Content-SHA256': artifact.sha256, 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff',
+        'Content-Disposition': `attachment; filename="${String(artifact.filename).replace(/["\\]/g, '')}"` });
+      await pipeline(Readable.from((async function* () {
+        if (first.done) return;
+        yield first.value;
+        for (;;) {
+          const next = await iterator.next();
+          if (next.done) return;
+          yield next.value;
+        }
+      })()), res, { signal: controller.signal });
+    } catch (error) {
+      if (controller.signal.aborted || res.destroyed) return;
+      if (res.headersSent) { res.destroy(); return; }
+      if (error?.code === 'UNAUTHORIZED' || error?.code === 'EXECUTION_RUN_NOT_FOUND') return executionRunError(res, error);
+      return sendCompositionError(res, error, '下载导出产物失败', log, { exportId: req.params.id });
+    } finally {
+      req.removeListener('aborted', abort); res.removeListener('close', onClose);
+      stream?.destroy();
+      if (stream) await finished(stream, { cleanup: true }).catch(() => {});
+      try { artifact?.cleanup(); } catch {
+        log?.error?.('Execution unit export cleanup failed', { code: 'EXECUTION_UNIT_EXPORT_CLEANUP_FAILED' });
+        if (!res.destroyed) res.destroy();
+      }
+    }
   }
 
   async function downloadExport(req, res) {
     const currentOwner = owner(req);
     try {
+      const row = db.prepare(`SELECT manifest_json FROM redraw_exports
+        WHERE id=? AND tenant_id=? AND user_id=? AND deleted_at IS NULL`)
+        .get(Number(req.params.id), currentOwner.tenantId, currentOwner.userId);
+      const manifest = parseManifestSafe(row);
+      if (isExecutionUnitExportManifest(manifest)) return downloadExecutionUnitExport(req, res, currentOwner, manifest);
       const artifact = await exportService.resolveDownloadArtifact(exportContext(currentOwner), {
         exportId: req.params.id,
         kind: req.params.kind,
@@ -5323,6 +6088,7 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
     } catch (error) {
       if (error.code === 'REDRAW_ASSET_NOT_FOUND') return response.notFound(res, '转绘资产不存在');
       if (error.code === 'REDRAW_REVIEW_CONFLICT') return response.error(res, 409, error.code, error.message);
+      if (error.code === 'REDRAW_CHARACTER_IDENTITY_REQUIRED') return response.error(res, 409, error.code, error.message);
       if (String(error.code || '').startsWith('REDRAW_REVIEW_')) return response.badRequest(res, error.message);
       log?.error?.({ err: error, assetId: asset.id }, 'redraw asset review failed');
       return response.internalError(res, error.message || '审核转绘资产失败');
@@ -5395,6 +6161,92 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
     }
   }
 
+  function blueprintWithSourceDialogue(record, currentOwner) {
+    const publicRecord = publicBlueprintRecord(record);
+    return {
+      ...publicRecord,
+      source_dialogue: resolveBlueprintDialogueSources({
+        db, ...currentOwner, storageRoot: storageRootFromConfig(cfg),
+      }, { workId: publicRecord.work_id, blueprint: publicRecord.blueprint }),
+    };
+  }
+
+  async function getSourceAudioSeamReview(req, res) {
+    try {
+      const result = await redrawSourceAudioEvidenceService.getSourceAudioSeamReview({
+        db, ...owner(req), storageRoot: storageRootFromConfig(cfg),
+      }, { workId: req.params.id });
+      return response.success(res, result);
+    } catch (error) {
+      if (error.code === 'SOURCE_AUDIO_SEAM_REVIEW_INPUT_INVALID') {
+        return response.error(res, 400, error.code, '源音频接缝审核请求无效');
+      }
+      if (error.code === 'SOURCE_AUDIO_SEAM_REVIEW_NOT_FOUND') {
+        return response.error(res, 404, error.code, '源音频接缝审核不存在');
+      }
+      if (error.code === 'SOURCE_AUDIO_SEAM_REVIEW_STALE') {
+        return response.error(res, 409, error.code, '源音频接缝审核状态已变化或不可用');
+      }
+      log?.error?.({ err: error, workId: req.params.id }, 'redraw source audio seam review read failed');
+      return response.internalError(res, '读取源音频接缝审核失败');
+    }
+  }
+
+  async function recordSourceAudioSeamDecision(req, res) {
+    try {
+      const result = await redrawSourceAudioEvidenceService.recordSourceAudioSeamDecision({
+        db, ...owner(req), storageRoot: storageRootFromConfig(cfg),
+      }, {
+        workId: req.params.id,
+        analysisTaskId: req.body?.analysis_task_id,
+        candidateSha256: req.body?.candidate_sha256,
+        expectedWorkUpdatedAt: req.body?.expected_work_updated_at,
+        expectedTaskUpdatedAt: req.body?.expected_task_updated_at,
+        decisions: req.body?.decisions,
+      });
+      return response.success(res, result);
+    } catch (error) {
+      if (['SOURCE_AUDIO_SEAM_DECISION_INPUT_INVALID', 'SOURCE_AUDIO_SEAM_DECISION_INVALID'].includes(error.code)) {
+        return response.error(res, 400, error.code, '源音频接缝选择请求无效');
+      }
+      if (error.code === 'SOURCE_AUDIO_SEAM_REVIEW_NOT_FOUND') {
+        return response.error(res, 404, error.code, '源音频接缝审核不存在');
+      }
+      if (['SOURCE_AUDIO_SEAM_DECISION_STALE', 'SOURCE_AUDIO_SEAM_REVIEW_STALE',
+        'SOURCE_AUDIO_SEAM_LANGUAGE_CONFLICT'].includes(error.code)) {
+        return response.error(res, 409, error.code, '源音频接缝审核状态已变化或仍需人工处理');
+      }
+      log?.error?.({ err: error, workId: req.params.id }, 'redraw source audio seam decision failed');
+      return response.internalError(res, '保存源音频接缝选择失败');
+    }
+  }
+
+  async function resumeSourceAudioSeamAnalysis(req, res) {
+    try {
+      const currentOwner = owner(req);
+      const result = await orchestrator.resumeSourceAudioSeamAnalysis(db, log, {
+        workId: req.params.id,
+        analysisTaskId: req.body?.analysis_task_id,
+        candidateSha256: req.body?.candidate_sha256,
+        expectedWorkUpdatedAt: req.body?.expected_work_updated_at,
+        expectedTaskUpdatedAt: req.body?.expected_task_updated_at,
+        tenantId: currentOwner.tenantId,
+        userId: currentOwner.userId,
+        now: new Date().toISOString(),
+      }, analysisOptions);
+      return response.success(res, result);
+    } catch (error) {
+      if (error.code === 'REDRAW_SOURCE_AUDIO_RESUME_STALE') {
+        return response.error(res, 409, error.code, '源音频接缝恢复状态已变化，请刷新后重试');
+      }
+      if (error.code === 'REDRAW_BLUEPRINT_PIPELINE_DEPENDENCY_REQUIRED') {
+        return response.error(res, 503, error.code, '母本蓝图分析恢复能力未就绪');
+      }
+      log?.error?.({ err: error, workId: req.params.id }, 'redraw source audio seam resume failed');
+      return response.internalError(res, '继续母本分析失败');
+    }
+  }
+
   function getBlueprint(req, res) {
     const currentOwner = owner(req);
     const work = findOwnedWork(req.params.id, currentOwner);
@@ -5402,8 +6254,9 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
       return response.error(res, 404, 'REDRAW_BLUEPRINT_NOT_FOUND', '母本蓝图不存在');
     }
     try {
-      return response.success(res, publicBlueprintRecord(
+      return response.success(res, blueprintWithSourceDialogue(
         blueprintWorkflowService.getCurrentBlueprint({ db, ...currentOwner }, { workId: work.id }),
+        currentOwner,
       ));
     } catch (error) {
       return sendBlueprintError(res, error, log, { workId: work.id });
@@ -5418,8 +6271,9 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
     }
     try {
       const input = blueprintSaveInput(req.body);
-      return response.success(res, publicBlueprintRecord(
-        blueprintWorkflowService.saveDraft({ db, ...currentOwner }, { workId: work.id, ...input }),
+      return response.success(res, blueprintWithSourceDialogue(
+        blueprintWorkflowService.saveDraft({ db, ...currentOwner, storageRoot: storageRootFromConfig(cfg) }, { workId: work.id, ...input }),
+        currentOwner,
       ));
     } catch (error) {
       return sendBlueprintError(res, error, log, { workId: work.id });
@@ -5434,8 +6288,9 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
     }
     try {
       const input = blueprintLockInput(req.body);
-      return response.success(res, publicBlueprintRecord(
-        blueprintWorkflowService.lockBlueprint({ db, ...currentOwner }, { workId: work.id, ...input }),
+      return response.success(res, blueprintWithSourceDialogue(
+        blueprintWorkflowService.lockBlueprint({ db, ...currentOwner, storageRoot: storageRootFromConfig(cfg) }, { workId: work.id, ...input }),
+        currentOwner,
       ));
     } catch (error) {
       return sendBlueprintError(res, error, log, { workId: work.id });
@@ -5456,8 +6311,14 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
     getProject,
     updateProjectPolicy,
     listProjectEvents,
+    listProjectWorks,
     createWorks,
     getWork,
+    getSourceVideo,
+    getMotionDraft,
+    getMotionReferenceCandidate,
+    getMotionProcessing,
+    getMotionReferenceCandidateMedia: (req, res) => getMotionReferenceCandidate(req, res, true),
     updateShot,
     getReferenceBundle,
     saveReferenceBundle,
@@ -5467,6 +6328,24 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
     localizationQuote,
     createVersion,
     getLocalizationReview,
+    getExecutionPlan,
+    getExecutionPlanReview,
+    saveExecutionPlanReview,
+    getExecutionQueue,
+    prepareExecutionQueue,
+    createExecutionRun: (req, res) => executionRunsResponse(req, res, true),
+    listExecutionRuns: (req, res) => executionRunsResponse(req, res, false),
+    getExecutionUnitCandidateMedia,
+    getExecutionRun: (req, res) => executionRunResponse(req, res, 'read'),
+    getExecutionRunReadiness: (req, res) => executionRunResponse(req, res, 'readiness'),
+    pauseExecutionRun: (req, res) => executionRunResponse(req, res, 'pause'),
+    resumeExecutionRun: (req, res) => executionRunResponse(req, res, 'resume'),
+    advanceExecutionRun: (req, res) => executionRunResponse(req, res, 'advance'),
+    recoverExecutionUnit: (req, res) => executionRunResponse(req, res, 'recover'),
+    getExecutionUnitCandidate: (req, res) => executionRunResponse(req, res, 'candidate'),
+    reviewExecutionUnitCandidate: (req, res) => executionRunResponse(req, res, 'review'),
+    getUnitReferenceMaterials,
+    prepareUnitReferenceMaterials,
     saveLocalizationReview,
     lockLocalizationReview,
     registerFullFrameCoverage,
@@ -5487,7 +6366,9 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
     dialogueQuote,
     startDialogue,
     getDialogueTask,
+    isExecutionUnitCompositionRequest,
     composeVersion,
+    hasExecutionUnitExports,
     listVersionExports,
     getExport,
     downloadExport,
@@ -5505,6 +6386,9 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
     listStylePresets,
     listLocales,
     analyzeWork,
+    getSourceAudioSeamReview,
+    recordSourceAudioSeamDecision,
+    resumeSourceAudioSeamAnalysis,
     getBlueprint,
     saveBlueprint,
     lockBlueprint,

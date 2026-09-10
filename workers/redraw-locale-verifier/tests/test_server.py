@@ -9,9 +9,11 @@ import unittest
 import wave
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import redraw_locale_worker.server as server_module
+from redraw_locale_worker.engines import FasterWhisperEngine
 from redraw_locale_worker.errors import LocaleWorkerError
 from redraw_locale_worker.server import (
     LocaleUnixServer,
@@ -309,6 +311,51 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(asr.audio_bytes, source_path.read_bytes())
         self.assertEqual(clusterer.embedding_input, (8_000, 16_000))
         self.assertEqual(read_calls, [source_path])
+
+    def test_source_audio_action_keeps_vad_evidence_and_rejects_incomplete_inference(self):
+        source_path = self.root / "no-speech.wav"
+        with wave.open(str(source_path), "wb") as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(16_000)
+            handle.writeframes(b"\x00\x00" * 16_000)
+
+        class FakeModel:
+            interrupted = False
+
+            def transcribe(self, audio_input, **kwargs):
+                def segments():
+                    if self.interrupted:
+                        raise TimeoutError("incomplete ASR")
+                    yield from []
+
+                return segments(), SimpleNamespace(duration=1.0, duration_after_vad=0.0)
+
+        engine = FasterWhisperEngine.__new__(FasterWhisperEngine)
+        engine.model = FakeModel()
+        self.server = make_test_server(
+            CountingVerifier(), pack=self.pack, allowed_root=self.root,
+            asr=engine, source_audio_clusterer=object(),
+        )
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        request = {
+            "action": "analyze_source_audio", "request_id": "source-no-speech",
+            "audio_path": str(source_path), "audio_sha256": _file_sha256(source_path),
+        }
+        response = self._send_json(request)
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["result"]["no_speech_evidence"], {
+            "method": "faster-whisper-vad", "audio_duration_ms": 1000,
+            "speech_duration_ms": 0,
+        })
+        self.assertEqual(response["result"]["audio_sha256"], request["audio_sha256"])
+        self.assertEqual(response["result"]["transcript_sha256"], hashlib.sha256(b"[]").hexdigest())
+        self.assertIsNone(response["result"]["source_language"])
+        self.assertEqual(response["result"]["segments"], [])
+        engine.model.interrupted = True
+        rejected = self._send_json(request)
+        self.assertFalse(rejected["ok"])
+        self.assertNotIn("result", rejected)
 
     def test_source_audio_action_accepts_seventeen_second_pcm_wav_inside_allowed_root(self):
         source_path = self.root / "seventeen-seconds.wav"

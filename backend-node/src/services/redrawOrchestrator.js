@@ -1,9 +1,11 @@
 const fs = require('fs');
 const path = require('path');
+const { createHash } = require('crypto');
 const creditLedger = require('./creditLedgerService');
 const modelPrice = require('./modelPriceService');
 const taskService = require('./taskService');
-const { normalizeSourceFacts } = require('./redrawAnalysisService');
+const { normalizeSourceFacts, stableStringify } = require('./redrawAnalysisService');
+const { readSourceAudioSeamCandidate, validatePersistedSourceAudioV2 } = require('./redrawSourceAudioEvidenceService');
 const {
   evaluateAutomationDecision,
   requiredAnalysisConfidenceKeys,
@@ -11,6 +13,7 @@ const {
 const redrawGenerationService = require('./redrawGenerationService');
 const { appendWorkflowEvent } = require('./redrawWorkflowEventService');
 const redrawBlueprintWorkflowService = require('./redrawBlueprintWorkflowService');
+const { loadVerifiedBlueprintAudioContext } = require('./redrawSourceDialogueService');
 
 const DEFAULT_RESUME_QUERY_TIMEOUT_MS = 10_000;
 const RESUME_ERROR_SNIPPET_LIMIT = 512;
@@ -82,6 +85,102 @@ function getWork(db, workId) {
 
 function getTask(db, taskId) {
   return db.prepare('SELECT * FROM async_tasks WHERE id = ? AND deleted_at IS NULL').get(String(taskId)) || null;
+}
+
+function analysisBindingValue(value) {
+  return value == null ? null : String(value);
+}
+
+function createAnalysisTaskCurrentGuard(db, taskId, workId) {
+  const task = getTask(db, taskId);
+  const work = getWork(db, workId);
+  const taskKeys = ['id', 'type', 'resource_id', 'tenant_id', 'user_id', 'status', 'deleted_at', 'model', 'credit_reservation_id'];
+  const workKeys = ['id', 'tenant_id', 'user_id', 'status', 'task_id', 'source_asset_id', 'source_fingerprint', 'deleted_at', 'credit_reservation_id'];
+  const matches = (current, bound, keys) => current && bound
+    && keys.every((key) => analysisBindingValue(current[key]) === analysisBindingValue(bound[key]));
+  return (input) => {
+    const currentTask = getTask(db, taskId);
+    const currentWork = getWork(db, workId);
+    const expectedInput = {
+      taskId: task?.id, workId: work?.id, sourceAssetId: work?.source_asset_id,
+      tenantId: work?.tenant_id, userId: work?.user_id, model: task?.model,
+    };
+    if (!matches(currentTask, task, taskKeys) || !matches(currentWork, work, workKeys)
+      || currentTask.type !== 'redraw_analysis' || currentTask.status !== 'processing'
+      || currentWork.status !== 'analyzing' || currentWork.deleted_at != null
+      || analysisBindingValue(currentTask.resource_id) !== analysisBindingValue(currentWork.id)
+      || analysisBindingValue(currentWork.task_id) !== analysisBindingValue(currentTask.id)
+      || ['tenant_id', 'user_id', 'credit_reservation_id'].some((key) => (
+        analysisBindingValue(currentTask[key]) !== analysisBindingValue(currentWork[key])
+      ))
+      || (input && Object.keys(expectedInput).some((key) => Object.hasOwn(input, key)
+        && analysisBindingValue(input[key]) !== analysisBindingValue(expectedInput[key])))) {
+      throw codedError('REDRAW_ANALYSIS_TASK_STALE', '源片分析任务绑定已失效，迟到结果不得写入');
+    }
+  };
+}
+
+function claimSourceAudioSeamResume(db, input = {}) {
+  const stale = () => { throw codedError('REDRAW_SOURCE_AUDIO_RESUME_STALE', '源音频接缝恢复状态已变化'); };
+  if (!db || typeof db.prepare !== 'function' || typeof db.transaction !== 'function'
+    || !input || Array.isArray(input) || !Number.isSafeInteger(Number(input.workId)) || Number(input.workId) <= 0
+    || typeof input.analysisTaskId !== 'string' || !input.analysisTaskId
+    || typeof input.tenantId !== 'string' || !input.tenantId
+    || typeof input.userId !== 'string' || !input.userId
+    || !/^[a-f0-9]{64}$/.test(String(input.candidateSha256 || ''))
+    || typeof input.expectedWorkUpdatedAt !== 'string' || !Number.isFinite(Date.parse(input.expectedWorkUpdatedAt))
+    || typeof input.expectedTaskUpdatedAt !== 'string' || !Number.isFinite(Date.parse(input.expectedTaskUpdatedAt))
+    || typeof input.now !== 'string' || !Number.isFinite(Date.parse(input.now))) stale();
+  try {
+    return db.transaction(() => {
+      const work = db.prepare(`SELECT * FROM redraw_works
+        WHERE id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL`)
+        .get(Number(input.workId), input.tenantId, input.userId);
+      const task = work?.task_id ? db.prepare(`SELECT * FROM async_tasks
+        WHERE id = ? AND tenant_id = ? AND user_id = ? AND type = 'redraw_analysis'
+          AND resource_id = ? AND deleted_at IS NULL`)
+        .get(input.analysisTaskId, input.tenantId, input.userId, String(input.workId)) : null;
+      let payload;
+      try { payload = JSON.parse(task?.result || 'null'); } catch { payload = null; }
+      const evidence = payload?.status === 'resume_pending' ? payload.source_audio_evidence : null;
+      if (!work || !task || work.status !== 'needs_attention' || task.status !== 'needs_attention'
+        || work.task_id !== input.analysisTaskId || task.id !== input.analysisTaskId
+        || work.updated_at !== input.expectedWorkUpdatedAt || task.updated_at !== input.expectedTaskUpdatedAt
+        || task.completed_at || task.provider_task_id
+        || work.credit_reservation_id !== task.credit_reservation_id
+        || evidence?.manual_seam_review?.candidate_sha256 !== input.candidateSha256
+        || Number(evidence?.work_id) !== Number(input.workId) || evidence?.tenant_id !== input.tenantId
+        || evidence?.user_id !== input.userId) stale();
+      const { evidence_sha256: evidenceSha256, result_asset_id: resultAssetId, ...evidenceCore } = evidence || {};
+      if (!/^[a-f0-9]{64}$/.test(String(evidenceSha256 || ''))
+        || !Number.isSafeInteger(Number(resultAssetId)) || Number(resultAssetId) <= 0) stale();
+      const validated = { ...validatePersistedSourceAudioV2(evidenceCore),
+        evidence_sha256: evidenceSha256, result_asset_id: Number(resultAssetId) };
+      if (work.credit_reservation_id) {
+        const reservation = db.prepare(`SELECT * FROM tenant_usage_reservations
+          WHERE id = ? AND tenant_id = ? AND actor_user_id = ?
+            AND resource_type = 'redraw_analysis' AND resource_id = ?`)
+          .get(work.credit_reservation_id, input.tenantId, input.userId, String(input.workId));
+        if (!reservation || reservation.status !== 'held' || reservation.model !== task.model) stale();
+      }
+      const taskUpdate = db.prepare(`UPDATE async_tasks
+        SET status = 'processing', progress = 60, message = ?, error = NULL, updated_at = ?
+        WHERE id = ? AND status = 'needs_attention' AND updated_at = ? AND result = ?`)
+        .run('源音频接缝已确认，继续母本分析', input.now, task.id, input.expectedTaskUpdatedAt, task.result);
+      const workUpdate = db.prepare(`UPDATE redraw_works
+        SET status = 'analyzing', error_msg = NULL, updated_at = ?
+        WHERE id = ? AND status = 'needs_attention' AND updated_at = ? AND task_id = ?`)
+        .run(input.now, work.id, input.expectedWorkUpdatedAt, task.id);
+      if (taskUpdate.changes !== 1 || workUpdate.changes !== 1) stale();
+      const claimedTask = getTask(db, task.id);
+      const claimedWork = getWork(db, work.id);
+      return { status: 'processing', task: claimedTask, work: claimedWork,
+        audioEvidence: validated, assertAnalysisTaskCurrent: createAnalysisTaskCurrentGuard(db, task.id, work.id) };
+    }).immediate();
+  } catch (error) {
+    if (error.code === 'REDRAW_SOURCE_AUDIO_RESUME_STALE') throw error;
+    stale();
+  }
 }
 
 function getAsset(db, assetId) {
@@ -198,14 +297,16 @@ function evidenceAsset(result, kind, idPrefix, tool) {
   };
 }
 
-async function runBlueprintPipeline(db, log, pipeline, request, options) {
-  const context = { ...(options.analysisContext || {}), db, log };
-  const audioEvidence = await pipeline.sourceAudioEvidenceService.analyzeSourceAudio(context, {
-    sourceAssetId: Number(request.sourceAssetId),
-    tenantId: String(request.tenantId || ''),
-    userId: String(request.userId || ''),
-    workId: Number(request.workId),
-  });
+async function runBlueprintPipeline(db, log, pipeline, request, options, assertAnalysisTaskCurrent, preparedAudioEvidence = null) {
+  const context = { ...(options.analysisContext || {}), db, log, assertAnalysisTaskCurrent };
+  assertAnalysisTaskCurrent();
+  const audioEvidence = preparedAudioEvidence || await pipeline.sourceAudioEvidenceService.analyzeSourceAudio(context, {
+      sourceAssetId: Number(request.sourceAssetId),
+      tenantId: String(request.tenantId || ''),
+      userId: String(request.userId || ''),
+      workId: Number(request.workId),
+    });
+  assertAnalysisTaskCurrent();
   const visualEvidence = await pipeline.nativeSourceAnalysisService.analyzeNativeSource(context, {
     taskId: request.taskId,
     workId: request.workId,
@@ -216,6 +317,7 @@ async function runBlueprintPipeline(db, log, pipeline, request, options) {
     ffmpegTimeoutMs: options.nativeAnalysisFfmpegTimeoutMs,
     maxTokens: options.nativeAnalysisMaxTokens,
   }, audioEvidence);
+  assertAnalysisTaskCurrent();
   if (visualEvidence?.status !== 'completed') {
     throw codedError('REDRAW_BLUEPRINT_VISUAL_ANALYSIS_INCOMPLETE', '视觉证据分析未完成');
   }
@@ -235,26 +337,102 @@ async function runBlueprintPipeline(db, log, pipeline, request, options) {
   const boundAudioEvidence = audioAsset
     ? { ...audioEvidence, evidence_ref: audioAsset.id }
     : audioEvidence;
+  let visualFacts = visualEvidence.facts || visualEvidence.visualFacts;
+  const preserveNarrativeOrder = Number(visualEvidence.diagnostics?.window_count) > 1;
+  if (preserveNarrativeOrder) {
+    const ordered = visualEvidence.diagnostics.ordered_narratives;
+    if (!ordered || createHash('sha256').update(stableStringify(ordered)).digest('hex')
+      !== visualEvidence.diagnostics.narrative_order_hash) {
+      throw codedError('REDRAW_NATIVE_NARRATIVE_ORDER_INVALID', '分窗叙事顺序证据不完整或已变化');
+    }
+    const { facts_hash: ignoredCanonicalHash, ...canonical } = visualFacts;
+    visualFacts = { ...canonical, ...ordered };
+  }
   const boundVisualFacts = visualAsset
     ? {
-        ...(visualEvidence.facts || visualEvidence.visualFacts),
+        ...visualFacts,
         result_asset_id: visualEvidence.result_asset_id ?? visualAsset.asset_id,
         sha256: visualEvidence.evidence_sha256 || visualEvidence.sha256 || visualAsset.sha256,
         evidence_ref: visualAsset.id,
       }
-    : visualEvidence.facts || visualEvidence.visualFacts;
+    : visualFacts;
+  const source = visualEvidence.source || audioEvidence?.source;
+  const audioContext = audioEvidence?.schema_version === 'redraw-source-audio-evidence-v2'
+    ? loadVerifiedBlueprintAudioContext({ ...context, tenantId: request.tenantId, userId: request.userId }, {
+      workId: request.workId, blueprint: { source, evidence_manifest: { items: evidenceAssets } },
+    }) : undefined;
   const blueprint = await pipeline.evidenceFusionService.fuseEpisodeEvidence({
-    source: visualEvidence.source || audioEvidence?.source,
+    source,
     visualFacts: boundVisualFacts,
     audioEvidence: boundAudioEvidence,
     evidenceAssets,
-  });
+    preserveNarrativeOrder,
+  }, audioContext);
+  assertAnalysisTaskCurrent();
   return {
     status: 'completed',
     provider_task_id: visualEvidence.provider_task_id,
     result_asset_id: visualEvidence.result_asset_id || null,
     blueprint,
   };
+}
+
+async function resumeSourceAudioSeamAnalysis(db, log, input = {}, options = {}) {
+  const pipeline = resolveBlueprintPipeline(options);
+  if (!pipeline) {
+    throw codedError('REDRAW_BLUEPRINT_PIPELINE_DEPENDENCY_REQUIRED', '母本蓝图分析恢复缺少完整流水线服务');
+  }
+  const claimed = claimSourceAudioSeamResume(db, input);
+  const request = {
+    taskId: claimed.task.id,
+    reservationId: claimed.task.credit_reservation_id || claimed.work.credit_reservation_id,
+    workId: claimed.work.id,
+    tenantId: claimed.work.tenant_id,
+    userId: claimed.work.user_id,
+    model: claimed.task.model,
+    work: claimed.work,
+    sourceAssetId: claimed.work.source_asset_id,
+    analysisSettings: parseJson(claimed.task.metadata, {}),
+    operationKey: `redraw_analysis:${claimed.work.id}:${claimed.work.source_asset_id}`,
+  };
+  try {
+    const pipelineResult = await runBlueprintPipeline(
+      db,
+      log,
+      pipeline,
+      request,
+      options,
+      claimed.assertAnalysisTaskCurrent,
+      claimed.audioEvidence,
+    );
+    const completion = finalizeBlueprintAnalysis(
+      db,
+      getTask(db, claimed.task.id),
+      getWork(db, claimed.work.id),
+      pipelineResult,
+      claimed.assertAnalysisTaskCurrent,
+      options.analysisContext,
+    );
+    return {
+      ...completion,
+      work_id: claimed.work.id,
+      analysis_task_id: claimed.task.id,
+      provider_task_id: pipelineResult.provider_task_id || null,
+      result_asset_id: pipelineResult.result_asset_id || null,
+    };
+  } catch (error) {
+    const currentTask = getTask(db, claimed.task.id);
+    const currentWork = getWork(db, claimed.work.id);
+    const handleError = () => {
+      claimed.assertAnalysisTaskCurrent();
+      const unknown = error.code === 'REDRAW_NATIVE_WINDOW_RESULT_UNKNOWN'
+        || error.code === 'SOURCE_AUDIO_RESULT_UNKNOWN';
+      if (unknown) markNeedsAttention(db, currentTask, currentWork, error.message);
+      else markFailure(db, log, currentTask, currentWork, error.message);
+    };
+    db.transaction(handleError)();
+    throw error;
+  }
 }
 
 function assertNeedsReviewBlueprint(blueprint) {
@@ -269,7 +447,7 @@ function assertNeedsReviewBlueprint(blueprint) {
   return blueprint;
 }
 
-function writeBlueprintOnce(db, work, blueprint) {
+function writeBlueprintOnce(db, work, blueprint, analysisContext) {
   const now = new Date().toISOString();
   const existingDraft = db.prepare(`
     SELECT id
@@ -281,6 +459,7 @@ function writeBlueprintOnce(db, work, blueprint) {
     db,
     tenantId: work.tenant_id,
     userId: work.user_id,
+    storageRoot: analysisContext?.storageRoot,
   }, { workId: work.id, blueprint });
   const changed = !existingDraft;
   let version = db.prepare(`
@@ -325,10 +504,11 @@ function writeBlueprintOnce(db, work, blueprint) {
   return { version, draft, changed };
 }
 
-function finalizeBlueprintAnalysis(db, task, work, pipelineResult) {
+function finalizeBlueprintAnalysis(db, task, work, pipelineResult, assertAnalysisTaskCurrent, analysisContext) {
   const blueprint = assertNeedsReviewBlueprint(pipelineResult.blueprint);
   return atomicFinalize(db, () => {
-    const { version, draft, changed } = writeBlueprintOnce(db, work, blueprint);
+    assertAnalysisTaskCurrent();
+    const { version, draft, changed } = writeBlueprintOnce(db, work, blueprint, analysisContext);
     const project = readProjectPolicy(db, work);
     if (changed && project) {
       appendWorkflowEvent(db, {
@@ -492,7 +672,22 @@ async function startAnalysis(db, log, input, options = {}) {
   const metadata = JSON.stringify({ redraw_analysis: analysisSettings });
 
   const now = new Date().toISOString();
+  let assertAnalysisTaskCurrent;
   const created = db.transaction(() => {
+    const currentWork = getWork(db, work.id);
+    if (!currentWork || currentWork.deleted_at != null
+      || ['id', 'tenant_id', 'user_id', 'source_asset_id', 'source_fingerprint'].some((key) => (
+        analysisBindingValue(currentWork[key]) !== analysisBindingValue(work[key])
+      ))
+      || analysisBindingValue(currentWork.user_id) !== analysisBindingValue(userId)
+      || analysisBindingValue(currentWork.tenant_id) !== analysisBindingValue(tenantId)
+      || (blueprintPipeline && analysisBindingValue(currentWork.source_asset_id) !== analysisBindingValue(sourceAssetId))) {
+      throw codedError('REDRAW_ANALYSIS_TASK_STALE', '源片分析作品绑定已变化，不能提交');
+    }
+    const currentTask = currentWork?.task_id ? getTask(db, currentWork.task_id) : null;
+    if (currentTask?.type === 'redraw_analysis' && currentTask.status === 'needs_attention') {
+      throw codedError('REDRAW_ANALYSIS_RESULT_UNKNOWN', '上次源片分析结果未知，请先核对，不能重复提交');
+    }
     const reservation = price > 0
       ? creditLedger.reserve(db, {
         userId,
@@ -525,6 +720,8 @@ async function startAnalysis(db, log, input, options = {}) {
            credit_reservation_id = ?, updated_at = ?
        WHERE id = ?`
     ).run(sourceAssetId, task.id, reservation?.id || null, now, work.id);
+    assertAnalysisTaskCurrent = createAnalysisTaskCurrentGuard(db, task.id, work.id);
+    assertAnalysisTaskCurrent();
     return {
       task_id: task.id,
       reservation_id: reservation?.id || null,
@@ -532,6 +729,25 @@ async function startAnalysis(db, log, input, options = {}) {
       billing: { charged: 0, held: reservation?.amount || 0, released: 0 },
     };
   })();
+
+  function failCurrentAnalysis(error, unknown = false) {
+    if (error.code === 'REDRAW_ANALYSIS_TASK_STALE') throw error;
+    db.transaction(() => {
+      assertAnalysisTaskCurrent();
+      const diagnostic = error.code === 'SOURCE_AUDIO_SEAM_REVIEW_REQUIRED'
+        ? readSourceAudioSeamCandidate(error, { workId: Number(work.id), sourceAssetId: Number(sourceAssetId),
+          tenantId: String(tenantId || ''), userId })
+        : null;
+      if (diagnostic) {
+        const candidate = { ...diagnostic, analysis_task_id: created.task_id };
+        candidate.candidate_sha256 = createHash('sha256').update(stableStringify(candidate)).digest('hex');
+        markNeedsAttention(db, getTask(db, created.task_id), getWork(db, work.id), error.message);
+        db.prepare('UPDATE async_tasks SET result = ?, completed_at = NULL WHERE id = ?')
+          .run(JSON.stringify({ status: 'needs_review', source_audio_seam_review: candidate }), created.task_id);
+      } else if (unknown) markNeedsAttention(db, getTask(db, created.task_id), getWork(db, work.id), error.message);
+      else markFailure(db, log, getTask(db, created.task_id), getWork(db, work.id), error.message);
+    })();
+  }
 
   let providerResult;
   try {
@@ -549,25 +765,30 @@ async function startAnalysis(db, log, input, options = {}) {
         operationKey: `redraw_analysis:${work.id}:${sourceAssetId}`,
       };
     providerResult = blueprintPipeline
-      ? await runBlueprintPipeline(db, log, blueprintPipeline, request, options)
+      ? await runBlueprintPipeline(db, log, blueprintPipeline, request, options, assertAnalysisTaskCurrent)
       : options.provider?.startAnalysis
         ? await options.provider.startAnalysis(request)
       : {};
+    assertAnalysisTaskCurrent();
   } catch (error) {
-    markFailure(db, log, getTask(db, created.task_id), getWork(db, work.id), error.message);
+    failCurrentAnalysis(error, error.code === 'REDRAW_NATIVE_WINDOW_RESULT_UNKNOWN'
+      || error.code === 'SOURCE_AUDIO_RESULT_UNKNOWN');
     throw error;
   }
   const providerTaskId = providerResult?.provider_task_id || providerResult?.task_id || '';
   if (!providerTaskId) {
     const error = codedError('PROVIDER_TASK_ID_REQUIRED', '源片分析启动失败：缺少厂商任务 ID');
-    markFailure(db, log, getTask(db, created.task_id), getWork(db, work.id), error.message);
+    failCurrentAnalysis(error);
     throw error;
   }
   if (providerTaskId) {
-    db.prepare('UPDATE async_tasks SET provider_task_id = ?, updated_at = ? WHERE id = ?')
-      .run(String(providerTaskId), new Date().toISOString(), created.task_id);
-    db.prepare('UPDATE redraw_works SET provider_task_id = ?, updated_at = ? WHERE id = ?')
-      .run(String(providerTaskId), new Date().toISOString(), work.id);
+    db.transaction(() => {
+      assertAnalysisTaskCurrent();
+      db.prepare('UPDATE async_tasks SET provider_task_id = ?, updated_at = ? WHERE id = ?')
+        .run(String(providerTaskId), new Date().toISOString(), created.task_id);
+      db.prepare('UPDATE redraw_works SET provider_task_id = ?, updated_at = ? WHERE id = ?')
+        .run(String(providerTaskId), new Date().toISOString(), work.id);
+    })();
   }
   if (blueprintPipeline) {
     try {
@@ -576,6 +797,8 @@ async function startAnalysis(db, log, input, options = {}) {
         getTask(db, created.task_id),
         getWork(db, work.id),
         providerResult,
+        assertAnalysisTaskCurrent,
+        options.analysisContext,
       );
       return {
         ...created,
@@ -586,15 +809,16 @@ async function startAnalysis(db, log, input, options = {}) {
         billing: { charged: price, held: 0, released: 0 },
       };
     } catch (error) {
-      markFailure(db, log, getTask(db, created.task_id), getWork(db, work.id), error.message);
+      failCurrentAnalysis(error);
       throw error;
     }
   }
   const normalizedResult = normalizeProviderResult(providerResult);
   if (normalizedResult.status === 'failed') {
     const message = normalizedResult.error || '供应商源片分析失败';
-    markFailure(db, log, getTask(db, created.task_id), getWork(db, work.id), message);
-    throw codedError('REDRAW_ANALYSIS_PROVIDER_FAILED', message);
+    const error = codedError('REDRAW_ANALYSIS_PROVIDER_FAILED', message);
+    failCurrentAnalysis(error);
+    throw error;
   }
   if (normalizedResult.status === 'completed') {
     const completion = finalizeCompletedAnalysis(
@@ -604,6 +828,7 @@ async function startAnalysis(db, log, input, options = {}) {
       getWork(db, work.id),
       normalizedResult,
       options,
+      assertAnalysisTaskCurrent,
     );
     if (completion.status !== 'completed') {
       const error = codedError(
@@ -1008,7 +1233,7 @@ function existingSourceFactsVersion(db, work) {
   ).get(work.id, Number(work.current_version || 0));
 }
 
-function finalizeCompletedAnalysis(db, log, task, work, result, options = {}) {
+function finalizeCompletedAnalysis(db, log, task, work, result, options = {}, assertAnalysisTaskCurrent) {
   try {
     assertAssetReadable(db, options.assetReader, work.source_asset_id, '源片');
     const resultAssetId = result.result_asset_id || result.result_asset?.id;
@@ -1031,6 +1256,7 @@ function finalizeCompletedAnalysis(db, log, task, work, result, options = {}) {
         && !reservationIsHeld(db, task.credit_reservation_id || work.credit_reservation_id);
       if (!alreadyComplete && decision) {
         atomicFinalize(db, () => {
+          assertAnalysisTaskCurrent?.();
           taskService.updateTaskResult(
             db,
             task.id,
@@ -1048,6 +1274,7 @@ function finalizeCompletedAnalysis(db, log, task, work, result, options = {}) {
       };
     }
     const committed = atomicFinalize(db, () => {
+      assertAnalysisTaskCurrent?.();
       const outcome = automationOutcome(db, work, normalized);
       const { version } = writeFactsOnce(db, work, normalized, outcome);
       if (task.status !== 'completed') {
@@ -1068,16 +1295,21 @@ function finalizeCompletedAnalysis(db, log, task, work, result, options = {}) {
       automation_decision: committed.decision,
     };
   } catch (error) {
-    if (error.code === 'SOURCE_FACTS_HASH_CONFLICT') {
-      markNeedsAttention(db, task, work, error.message);
-      return { status: 'needs_attention', error: error.message };
-    }
-    if (error.atomic_finalize_failed) {
-      log?.warn?.('redraw analysis atomic finalize failed', { task_id: task.id, work_id: work.id, message: error.message });
+    const handleError = () => {
+      assertAnalysisTaskCurrent?.();
+      if (error.code === 'REDRAW_ANALYSIS_TASK_STALE') throw error;
+      if (error.code === 'SOURCE_FACTS_HASH_CONFLICT') {
+        markNeedsAttention(db, task, work, error.message);
+        return { status: 'needs_attention', error: error.message };
+      }
+      if (error.atomic_finalize_failed) {
+        log?.warn?.('redraw analysis atomic finalize failed', { task_id: task.id, work_id: work.id, message: error.message });
+        return { status: 'failed', error: error.message };
+      }
+      markFailure(db, log, task, work, error.message);
       return { status: 'failed', error: error.message };
-    }
-    markFailure(db, log, task, work, error.message);
-    return { status: 'failed', error: error.message };
+    };
+    return assertAnalysisTaskCurrent ? db.transaction(handleError)() : handleError();
   }
 }
 
@@ -1156,6 +1388,8 @@ async function resumeRedrawTasks(db, log, options = {}) {
 
 module.exports = {
   startAnalysis,
+  claimSourceAudioSeamResume,
+  resumeSourceAudioSeamAnalysis,
   runAnalyzeTask,
   resumeRedrawTasks,
   generateShot(db, log, input, options = {}) {

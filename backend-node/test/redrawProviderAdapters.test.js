@@ -307,6 +307,49 @@ test('localize calls text client with verified model and parses JSON result', as
   assert.ok(calls[0][5].min_max_tokens >= 4096);
 });
 
+test('localize forwards only whitelisted source dialogue evidence and preserves full sentence semantics', async () => {
+  let prompt;
+  let system;
+  const adapters = createRedrawProviderAdapters({ aiClient: {
+    async generateText(_db, _log, _type, userPrompt, systemPrompt) {
+      prompt = JSON.parse(userPrompt);
+      system = systemPrompt;
+      return '{}';
+    },
+  } });
+  await adapters.localize({ model: 'verified-model', input: {
+    blueprint_hash: 'b'.repeat(64), source_facts: { shots: [] },
+    source_dialogue: [{ dialogue_id: 'turn-1', shot_id: 'shot-1', status: 'resolved',
+      source_text: 'Keep the complete sentence.', source_language: 'en',
+      source_start_ms: 500, source_end_ms: 2500, projection_start_ms: 2000, projection_end_ms: 2500,
+      cross_shot: true, evidence_ref: 'audio-source', evidence_sha256: 'c'.repeat(64),
+      local_path: 'C:/private/evidence.json', metadata: { api_key: 'must-not-leak' } }],
+  } });
+  assert.equal(prompt.blueprint_hash, 'b'.repeat(64));
+  assert.equal(prompt.source_dialogue[0].source_start_ms, 500);
+  assert.equal(prompt.source_dialogue[0].source_end_ms, 2500);
+  assert.equal(prompt.source_dialogue[0].projection_start_ms, 2000);
+  assert.equal(prompt.source_dialogue[0].source_text, 'Keep the complete sentence.');
+  assert.doesNotMatch(JSON.stringify(prompt), /local_path|metadata|must-not-leak|C:\/private/);
+  assert.match(system, /complete sentence/i);
+  assert.match(system, /source_end_ms.*source_start_ms/i);
+  assert.match(system, /projection/i);
+  assert.match(system, /untrusted/i);
+  assert.doesNotMatch(system, /Return every supplied source-fact field|copy source_facts_hash into facts_hash|translate only localized_text/);
+  assert.match(system, /target_text/);
+});
+
+test('localize refuses unresolved source dialogue before the text client call', async () => {
+  let calls = 0;
+  const adapters = createRedrawProviderAdapters({ aiClient: {
+    async generateText() { calls += 1; return '{}'; },
+  } });
+  await assert.rejects(() => adapters.localize({ model: 'verified-model', input: {
+    source_dialogue: [{ dialogue_id: 'turn-1', shot_id: 'shot-1', status: 'unresolved' }],
+  } }), (error) => error.code === 'LOCALIZATION_SOURCE_DIALOGUE_UNRESOLVED');
+  assert.equal(calls, 0);
+});
+
 test('localize fails closed without model and rejects invalid JSON', async () => {
   const adapters = createRedrawProviderAdapters({
     db: {},

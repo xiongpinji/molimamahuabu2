@@ -25,6 +25,41 @@
       show-icon
     />
 
+    <section class="motion-material" aria-label="动作素材">
+      <h4>动作素材</h4>
+      <p>可预览静音草稿并手工处理 MP4，或制作待审动作参考。自动处理仅对已审核局部人物和文字做保守降细节，不是精细修补或自动合格；仍须逐帧人工审核，不会自动上传、准备或生成。</p>
+      <el-alert title="仅裁片静音、人物和文字未遮除" type="warning" :closable="false" />
+      <div class="motion-actions">
+        <el-button data-testid="motion-draft-preview" :disabled="motionState.processingLoading" :loading="motionState.draftLoading" @click="$emit('motion-draft')">预览裁片静音草稿</el-button>
+        <el-button data-testid="motion-process" :disabled="motionState.locked || motionState.processingLoading" :loading="motionState.processingLoading" @click="requestMotionProcessing">制作待审动作参考</el-button>
+        <el-button data-testid="motion-refresh" :disabled="motionState.processingLoading" :loading="motionState.loading" @click="$emit('motion-refresh')">刷新动作素材</el-button>
+      </div>
+      <video v-if="motionState.draftUrl" :src="motionState.draftUrl" data-testid="motion-draft-video" controls playsinline />
+      <a v-if="motionState.draftUrl" :href="motionState.draftUrl" download="motion-draft.mp4">下载草稿供本地处理</a>
+      <p data-testid="motion-status">{{ motionState.error || motionStatus }}</p>
+      <video v-if="motionState.candidateUrl" :src="motionState.candidateUrl" data-testid="motion-candidate-video" controls playsinline />
+      <label>选择已处理 MP4（不超过 200 MiB）
+        <input ref="motionInput" data-testid="motion-processed-file" type="file" accept=".mp4,video/mp4" :disabled="motionState.locked" @change="selectMotionFile" />
+      </label>
+      <p v-if="motionFile">{{ motionFile.name }} · {{ motionFile.size }} 字节</p>
+      <p v-if="motionProcessingReport" data-testid="motion-processing-review">处理报告仅为待审技术附件，不是来源证明或人工质量批准。请检查身份、文字、动作和背景；不满足要求请拒绝结果。</p>
+      <video v-if="motionLocalUrl" :key="motionLocalUrl" :src="motionLocalUrl" data-testid="motion-local-video" controls playsinline
+        @loadeddata="motionPreviewLoaded" @error="motionPreviewFailed" />
+      <p v-if="motionFileError" role="alert">{{ motionFileError }}</p>
+      <label v-for="item in motionChecks" :key="item.key" class="motion-confirmation">
+        <input v-model="motionConfirmations[item.key]" type="checkbox" :data-testid="`motion-confirm-${item.key.replaceAll('_', '-')}`"
+          :disabled="!motionFile || motionState.locked" />{{ item.label }}
+      </label>
+      <div class="motion-actions">
+        <el-button data-testid="motion-cancel" :disabled="motionState.locked" @click="cancelMotionSelection">取消处理 / 选择</el-button>
+        <el-button v-if="motionProcessingReport" data-testid="motion-reject" :disabled="motionState.locked" @click="cancelMotionSelection">拒绝待审结果</el-button>
+        <el-button data-testid="motion-upload" type="primary" :disabled="!canUploadMotion" :loading="motionState.uploading" @click="submitMotion">上传已处理动作素材</el-button>
+      </div>
+      <small>上传本身不扣积分。素材可读取不等于参考包 ready；未知上传需人工核对，本页不会自动重发。</small>
+    </section>
+
+    <details>
+      <summary>高级参考包绑定</summary>
     <el-form-item label="无原音运动参考资产 ID">
       <el-input-number v-model="form.motion_reference_asset_id" :min="1" controls-position="right" />
     </el-form-item>
@@ -51,17 +86,114 @@
       <small>保存后仍须重新 GET 并验证完整证据，PUT 响应不会直接标记 ready。</small>
       <el-button type="primary" :loading="saving" @click="save">保存参考包绑定</el-button>
     </div>
+    </details>
   </section>
 </template>
 
 <script setup>
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 
 const props = defineProps({
   state: { type: Object, default: () => ({ ready: false, evidence: {}, response: null, error: '' }) },
   saving: Boolean,
+  motionScope: { type: String, default: '' },
+  motionState: { type: Object, default: () => ({}) },
 })
-const emit = defineEmits(['save'])
+const emit = defineEmits(['save', 'motion-selection', 'motion-upload', 'motion-draft', 'motion-refresh', 'motion-process', 'motion-cancel'])
+const motionInput = ref(null)
+const motionFile = ref(null)
+const motionLocalUrl = ref('')
+const motionFileError = ref('')
+const motionReadable = ref(false)
+const motionProcessingReport = ref(null)
+const motionChecks = [
+  { key: 'full_frame_reviewed', label: '我已逐帧检查整个片段' },
+  { key: 'source_identity_obscured', label: '原人物身份已遮除' },
+  { key: 'source_text_obscured', label: '原字幕和画面文字已遮除' },
+  { key: 'motion_preserved', label: '动作与镜头运动已保留' },
+]
+const motionConfirmations = reactive(Object.fromEntries(motionChecks.map(item => [item.key, false])))
+let motionFileEpoch = 0
+const motionStatus = computed(() => props.motionState.locked ? '动作素材尚未完成核对，生成已冻结'
+  : props.motionState.status === 'available' ? '动作素材可读取；仍须完整参考包复核'
+    : props.motionState.status === 'unavailable' ? '最新动作素材不可读取，请核对；不会回退旧素材' : '尚未上传已处理动作素材')
+const canUploadMotion = computed(() => Boolean(motionFile.value && motionReadable.value && !motionFileError.value
+  && !props.motionState.locked && motionChecks.every(item => motionConfirmations[item.key] === true)))
+
+function clearMotionSelection() {
+  motionFileEpoch += 1
+  if (motionLocalUrl.value) URL.revokeObjectURL(motionLocalUrl.value)
+  motionLocalUrl.value = ''
+  motionFile.value = null
+  motionProcessingReport.value = null
+  motionReadable.value = false
+  motionFileError.value = ''
+  if (motionInput.value) motionInput.value.value = ''
+  for (const item of motionChecks) motionConfirmations[item.key] = false
+}
+function cancelMotionSelection() {
+  clearMotionSelection()
+  emit('motion-cancel')
+  emit('motion-selection', { scope: props.motionScope, file: null, readable: false })
+}
+function requestMotionProcessing() {
+  if (props.motionState.locked || props.motionState.processingLoading) return
+  clearMotionSelection()
+  emit('motion-process')
+}
+
+async function selectMotionFile(event) {
+  if (props.motionState.locked) return
+  const file = event?.target?.files?.[0]
+  clearMotionSelection()
+  emit('motion-selection', { scope: props.motionScope, file: null, readable: false })
+  if (!file) return
+  motionFile.value = file
+  emit('motion-selection', { scope: props.motionScope, file, readable: false })
+  if (!/\.mp4$/i.test(file.name || '') || file.type !== 'video/mp4' || file.size <= 0 || file.size > 200 * 1024 * 1024) {
+    motionFileError.value = '请选择非空 MP4，文件不得超过 200 MiB'
+    return
+  }
+  const epoch = motionFileEpoch
+  try {
+    await file.slice(0, 32).arrayBuffer()
+    if (epoch !== motionFileEpoch) return
+    motionLocalUrl.value = URL.createObjectURL(file)
+  } catch (_) {
+    if (epoch === motionFileEpoch) motionFileError.value = '本地文件不可读取，请重新选择'
+  }
+}
+function motionPreviewLoaded(event) {
+  if (!motionLocalUrl.value || (event?.target && event.target.getAttribute('src') !== motionLocalUrl.value)) return
+  if (event?.target && (event.target.readyState < 2 || event.target.videoWidth <= 0 || event.target.videoHeight <= 0)) return
+  motionReadable.value = true
+  emit('motion-selection', { scope: props.motionScope, file: motionFile.value, readable: true,
+    ...(motionProcessingReport.value === null ? {} : { processing_report: motionProcessingReport.value }) })
+}
+function motionPreviewFailed(event) {
+  if (event?.target && event.target.getAttribute('src') !== motionLocalUrl.value) return
+  motionReadable.value = false
+  motionFileError.value = '浏览器无法读取所选视频；未发送上传'
+  emit('motion-selection', { scope: props.motionScope, file: motionFile.value, readable: false,
+    ...(motionProcessingReport.value === null ? {} : { processing_report: motionProcessingReport.value }) })
+}
+function submitMotion() {
+  if (!canUploadMotion.value) return
+  emit('motion-upload', { scope: props.motionScope, file: motionFile.value, confirmations: { ...motionConfirmations },
+    ...(motionProcessingReport.value === null ? {} : { processing_report: motionProcessingReport.value }) })
+}
+watch(() => props.motionState.processingResult, result => {
+  if (!result) { if (motionProcessingReport.value !== null) clearMotionSelection(); return }
+  if (result.scope !== props.motionScope || props.motionState.locked) return
+  clearMotionSelection()
+  motionFile.value = result.file
+  motionProcessingReport.value = result.processingReport
+  motionLocalUrl.value = URL.createObjectURL(result.file)
+  emit('motion-selection', { scope: props.motionScope, file: result.file, readable: false, processing_report: result.processingReport })
+}, { flush: 'sync' })
+watch(() => props.motionScope, clearMotionSelection, { flush: 'sync' })
+watch(() => props.motionState.resetSelection, clearMotionSelection)
+onBeforeUnmount(clearMotionSelection)
 
 const countFields = [
   { key: 'recognizable_face_count', label: '可识别人脸数' },
@@ -170,6 +302,13 @@ h4 { margin: 0; }
 :deep(.el-input-number), :deep(.el-select) { width: 100%; }
 .panel-actions { align-items: center; }
 .panel-actions small { color: #bca79d; }
+.motion-material { display: grid; gap: 10px; min-width: 0; }
+.motion-material p { margin: 0; overflow-wrap: anywhere; }
+.motion-material video { width: 100%; max-height: 280px; background: #000; }
+.motion-material input[type="file"] { display: block; width: 100%; margin-top: 8px; }
+.motion-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.motion-confirmation { display: flex; gap: 8px; align-items: center; }
+summary { cursor: pointer; padding: 10px 0; color: #d8c2b7; }
 @media (max-width: 900px) { .evidence-grid, .coverage-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 600px) { header, .panel-actions { flex-direction: column; } .evidence-grid, .json-grid, .coverage-grid { grid-template-columns: 1fr; } }
 </style>

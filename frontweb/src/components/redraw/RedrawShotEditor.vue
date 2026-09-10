@@ -89,7 +89,15 @@
       v-if="referenceBundleRequired"
       :state="referenceBundleState"
       :saving="referenceBundleSaving"
+      :motion-scope="motionScope"
+      :motion-state="motionState"
       @save="$emit('save-reference-bundle', $event)"
+      @motion-selection="$emit('motion-selection', $event)"
+      @motion-upload="$emit('motion-upload', $event)"
+      @motion-draft="$emit('motion-draft')"
+      @motion-process="$emit('motion-process')"
+      @motion-cancel="$emit('motion-cancel')"
+      @motion-refresh="$emit('motion-refresh')"
     />
 
     <div class="generation-grid">
@@ -171,8 +179,11 @@ const props = defineProps({
   referenceBundleRequired: Boolean,
   referenceBundleState: { type: Object, default: () => ({ ready: false }) },
   referenceBundleSaving: Boolean,
+  motionScope: { type: String, default: '' },
+  motionState: { type: Object, default: () => ({}) },
+  motionGenerationBlocked: Boolean,
 })
-const emit = defineEmits(['save', 'generate', 'save-reference-bundle'])
+const emit = defineEmits(['save', 'generate', 'save-reference-bundle', 'motion-selection', 'motion-upload', 'motion-draft', 'motion-refresh', 'motion-process', 'motion-cancel'])
 const referenceQuery = ref('')
 const referenceIds = ref([])
 const form = reactive({
@@ -209,7 +220,7 @@ const localizedDialogueEdit = computed(() => mergeLocalizedDialogueText(
 ))
 const dialogueEditError = computed(() => localizedDialogueEdit.value.reason)
 const saveDisabled = computed(() => !editable.value || !localizedDialogueEdit.value.ok)
-const generationDisabled = computed(() => !availability.value.ok
+const generationDisabled = computed(() => props.motionGenerationBlocked || !availability.value.ok
   || !durationInRange.value
   || !localizedDialogueEdit.value.ok
   || (props.referenceBundleRequired
@@ -283,7 +294,7 @@ function save() {
 }
 
 function generate(retry) {
-  if (!localizedDialogueEdit.value.ok) return
+  if (generationDisabled.value) return
   emit('generate', { update: payload(), retry })
 }
 

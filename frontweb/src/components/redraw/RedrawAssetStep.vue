@@ -18,6 +18,7 @@
         <strong v-else>积分待管理员配置</strong>
       </div>
       <el-alert v-if="batchQuoteError" :title="batchQuoteError" type="warning" :closable="false" show-icon />
+      <el-alert v-if="identityUploadsBlocked" title="身份图片正在上传或待核对，批量生成暂时冻结" type="warning" :closable="false" show-icon />
       <div v-if="activeBatch" class="asset-batch-progress">
         <el-progress :percentage="batchProgress.percent" />
         <span>{{ batchProgress.successCount }} 成功 / {{ batchProgress.failedCount }} 失败 / {{ batchProgress.totalCount }} 总数</span>
@@ -26,7 +27,7 @@
         <el-button type="primary" :loading="batchSubmitting" :disabled="!batchReady" @click="startAssetBatch()">
           一键批量生成全部资产
         </el-button>
-        <el-button v-if="canRetryFailedAssets" :loading="batchSubmitting" :disabled="!failedIds.length" @click="retryFailedAssets">
+        <el-button v-if="canRetryFailedAssets" :loading="batchSubmitting" :disabled="!failedIds.length || identityUploadsBlocked" @click="retryFailedAssets">
           一键重试失败项
         </el-button>
       </div>
@@ -46,11 +47,14 @@
         v-for="asset in visibleAssets"
         :key="asset.id"
         :asset="asset"
+        :version-id="resolvedVersionId"
+        :identity-upload-blocked="pendingIdentityUploads.has(String(asset.id))"
         :quote="asset.quote_credits || quote"
         :wardrobe-reference-assets="wardrobeReferenceAssets"
         @generate="generate"
         @review="review"
         @identity-saved="handleIdentitySaved"
+        @identity-upload-state="handleIdentityUploadState"
       />
       <p v-if="!visibleAssets.length" class="empty-state">当前类型暂无资产</p>
     </div>
@@ -225,7 +229,11 @@ const pendingQuoteContext = ref('')
 const batchQuoteApplicable = ref(null)
 const batchQuoteError = ref('')
 const loadError = ref('')
+const pendingIdentityUploads = ref(new Set())
+const identityUploadsBlocked = computed(() => pendingIdentityUploads.value.size > 0)
 let pollTimer = null
+let identityRefreshEpoch = 0
+let assetRefreshEpoch = 0
 const resolvedVersionId = computed(() => props.versionId || props.work?.version_id || props.work?.current_version_id)
 const visibleAssets = computed(() => groupAssets(assets.value, activeKind.value))
 const characterAssets = computed(() => groupAssets(assets.value, 'character'))
@@ -236,7 +244,7 @@ const wardrobeReferenceAssets = computed(() => assets.value.filter((asset) => {
 const activeBatch = computed(() => batchWork.value || props.work?.asset_batch || null)
 const batchCredits = computed(() => assetBatchCredits(batchQuote.value))
 const batchProgress = computed(() => assetBatchProgress(activeBatch.value))
-const batchReady = computed(() => canStartAssetBatch(batchQuote.value, activeBatch.value) && !batchSubmitting.value)
+const batchReady = computed(() => canStartAssetBatch(batchQuote.value, activeBatch.value) && !batchSubmitting.value && !identityUploadsBlocked.value)
 const failedIds = computed(() => failedAssetIds({ items: assets.value }))
 const canRetryFailedAssets = computed(() => activeBatch.value?.status === 'partial_failed')
 const previewController = createVoicePreviewController({
@@ -283,13 +291,14 @@ async function loadProductionVoices(versionId = resolvedVersionId.value) {
 async function loadAssetBatchQuote(assetIds = null) {
   if (!resolvedVersionId.value) return null
   const versionId = resolvedVersionId.value
+  const epoch = assetRefreshEpoch
   const ids = Array.isArray(assetIds) ? assetIds : []
   const context = quoteContext(versionId, ids)
   pendingQuoteContext.value = context
   const result = ids.length
     ? await redrawAPI.quoteAssetBatch(versionId, { asset_ids: ids })
     : await redrawAPI.quoteAssetBatch(versionId, {})
-  if (!isCurrentVersion(versionId) || pendingQuoteContext.value !== context) return null
+  if (epoch !== assetRefreshEpoch || !isCurrentVersion(versionId) || pendingQuoteContext.value !== context) return null
   batchQuote.value = result || null
   return batchQuote.value
 }
@@ -297,6 +306,8 @@ async function loadAssetBatchQuote(assetIds = null) {
 async function refresh(options = {}) {
   if (!resolvedVersionId.value) return
   const versionId = resolvedVersionId.value
+  const epoch = ++assetRefreshEpoch
+  const isCurrent = () => epoch === assetRefreshEpoch && isCurrentVersion(versionId)
   const quoteBatch = options.quoteBatch !== false
   loading.value = true
   try {
@@ -305,11 +316,11 @@ async function refresh(options = {}) {
       redrawAPI.getGenerationGate(versionId),
       redrawAPI.getCharacterPlan(versionId),
     ])
-    if (!isCurrentVersion(versionId)) return
+    if (!isCurrent()) return
     const nextAssets = Array.isArray(items) ? items : []
     const quoted = await Promise.all(nextAssets.map(async (asset) => {
       const nextQuote = await redrawAPI.getAssetQuote(asset.id)
-      if (!isCurrentVersion(versionId)) return null
+      if (!isCurrent()) return null
       return {
         ...asset,
         quote_credits: nextQuote?.credits || null,
@@ -317,15 +328,15 @@ async function refresh(options = {}) {
       }
     }))
     if (quoted.some((asset) => !asset)) return
-    if (!isCurrentVersion(versionId)) return
+    if (!isCurrent()) return
     assets.value = quoted
     characterPlan.value = nextCharacterPlan || null
     gate.value = nextGate || { ok: false, missing: [] }
     emit('gate-updated', gate.value)
-    if (!isCurrentVersion(versionId)) return
+    if (!isCurrent()) return
     if (quoteBatch) {
       const quoteState = await resolveAssetBatchQuoteForRefresh(quoted, () => loadAssetBatchQuote())
-      if (!isCurrentVersion(versionId)) return
+      if (!isCurrent()) return
       batchQuoteApplicable.value = quoteState.applicable
       batchQuote.value = quoteState.quote
       batchQuoteError.value = quoteState.error
@@ -341,7 +352,7 @@ async function refresh(options = {}) {
     if (activeKind.value === 'voice') await loadProductionVoices(versionId)
     loadError.value = ''
   } finally {
-    loading.value = false
+    if (isCurrent()) loading.value = false
   }
 }
 
@@ -354,8 +365,13 @@ async function refreshSafely(options = {}) {
 }
 
 async function generate(asset) {
+  const epoch = assetRefreshEpoch, versionId = resolvedVersionId.value
+  const isCurrent = () => epoch === assetRefreshEpoch && isCurrentVersion(versionId)
+    && !pendingIdentityUploads.value.has(String(asset.id))
+  if (!isCurrent()) return
   try {
     const quoteResult = await redrawAPI.getAssetQuote(asset.id)
+    if (!isCurrent()) return
     if (!quoteResult?.priced) {
       ElMessage.warning('积分待管理员配置')
       return
@@ -372,6 +388,7 @@ async function generate(asset) {
       prompt: asset.prompt,
       quote_hash: confirmation.quoteHash,
     })
+    if (!isCurrent()) return
     await refresh()
     const notice = singleAssetGenerationNotice(result)
     if (notice.type === 'warning') ElMessage.warning(notice.message)
@@ -399,7 +416,51 @@ async function review(asset, action) {
   } catch (error) { ElMessage.error(error.message || '审核失败') }
 }
 
-async function handleIdentitySaved() {
+function handleIdentityUploadState({ assetId, versionId, blocked } = {}) {
+  if (String(versionId) !== String(resolvedVersionId.value)) return
+  if (blocked) {
+    pendingIdentityUploads.value.add(String(assetId))
+    assetRefreshEpoch += 1
+    pendingQuoteContext.value = ''
+  } else pendingIdentityUploads.value.delete(String(assetId))
+}
+
+async function handleIdentitySaved(request) {
+  if (request?.complete && request?.isCurrent) {
+    const epoch = identityRefreshEpoch, versionId = resolvedVersionId.value, workId = props.work?.id
+    const isScopeCurrent = () => epoch === identityRefreshEpoch && isCurrentVersion(versionId)
+      && String(request.versionId) === String(versionId) && props.work?.id === workId && request.isCurrent()
+    if (!isScopeCurrent()) return
+    const refreshEpoch = ++assetRefreshEpoch
+    pendingQuoteContext.value = ''
+    try {
+      const [items, nextGate, nextCharacterPlan, nextWork] = await redrawAPI.getIdentityReferenceState(versionId, workId)
+      if (!isScopeCurrent()) return
+      if (refreshEpoch !== assetRefreshEpoch) {
+        await request.complete({ error: new Error('本次核对已被其他刷新取代，请重新核对当前角色') })
+        return
+      }
+      const nextAsset = Array.isArray(items) ? items.find(item => Number(item.id) === Number(request.assetId)) : null
+      if (!nextAsset || String(nextAsset.version_id) !== String(versionId) || !nextGate || !nextWork
+        || Number(nextWork.id) !== Number(workId)) throw new Error('角色刷新结果不完整')
+      assets.value = items.map(item => ({ ...item, quote_credits: assets.value.find(old => old.id === item.id)?.quote_credits || null, quote_hash: null }))
+      characterPlan.value = nextCharacterPlan || null
+      gate.value = nextGate
+      batchQuote.value = null
+      batchIdempotencyKey.value = null
+      pendingQuoteContext.value = ''
+      batchQuoteApplicable.value = assetBatchQuoteApplicable(items)
+      batchQuoteError.value = ''
+      loadError.value = ''
+      loading.value = false
+      emit('gate-updated', nextGate)
+      emit('work-updated', nextWork)
+      await request.complete({ asset: nextAsset })
+    } catch (error) {
+      if (isScopeCurrent()) request.complete({ error })
+    }
+    return
+  }
   try {
     await refresh()
     if (props.work?.id) {
@@ -442,31 +503,33 @@ function stopBatchPolling() {
 }
 
 async function startAssetBatch(assetIds = null) {
-  if (batchSubmitting.value || !resolvedVersionId.value) return
+  if (batchSubmitting.value || !resolvedVersionId.value || identityUploadsBlocked.value) return
+  const versionId = resolvedVersionId.value, epoch = assetRefreshEpoch
+  const isCurrent = () => epoch === assetRefreshEpoch && isCurrentVersion(versionId) && !identityUploadsBlocked.value
   const ids = Array.isArray(assetIds) ? assetIds : []
   const previousHash = quoteHash(batchQuote.value)
   batchSubmitting.value = true
   try {
     const nextQuote = await loadAssetBatchQuote(ids)
+    if (!isCurrent()) return
     const nextHash = quoteHash(nextQuote)
     const gateBatch = ids.length ? null : activeBatch.value
     if (!previousHash || !nextHash || nextHash !== previousHash || !canStartAssetBatch(nextQuote, gateBatch)) {
       ElMessage.warning('批量报价已更新，请再次确认')
       return
     }
-    const versionId = resolvedVersionId.value
     const body = {
       quote_hash: nextHash,
       idempotency_key: nextIdempotencyKey(),
     }
     if (ids.length) body.asset_ids = ids
     const result = await redrawAPI.createAssetBatch(versionId, body)
-    if (!isCurrentVersion(versionId)) return
+    if (!isCurrent()) return
     batchWork.value = normalizeBatch(result)
     startBatchPolling()
     ElMessage.success('资产批量生成任务已创建')
   } catch (error) {
-    ElMessage.error(error.message || '资产批量生成失败')
+    if (isCurrent()) ElMessage.error(error.message || '资产批量生成失败')
   } finally {
     batchSubmitting.value = false
   }
@@ -515,9 +578,16 @@ onMounted(async () => {
   if (['pending', 'processing'].includes(String(activeBatch.value?.status || ''))) startBatchPolling()
 })
 onUnmounted(() => {
+  identityRefreshEpoch += 1
+  assetRefreshEpoch += 1
   stopBatchPolling()
   previewController.dispose()
 })
+watch([resolvedVersionId, () => props.work?.id], () => {
+  identityRefreshEpoch += 1
+  assetRefreshEpoch += 1
+  pendingIdentityUploads.value.clear()
+}, { flush: 'sync' })
 watch(resolvedVersionId, async () => {
   stopBatchPolling()
   stopVoicePreview()

@@ -208,6 +208,8 @@ export function probeMediaWithFfprobe(filePath, adapters = {}) {
     duration_seconds: Number(payload.format?.duration),
     width: Number(video.width),
     height: Number(video.height),
+    sample_aspect_ratio: String(video.sample_aspect_ratio || ''),
+    display_aspect_ratio: String(video.display_aspect_ratio || ''),
     video_codec: String(video.codec_name || ''),
     pixel_format: String(video.pix_fmt || ''),
     frame_rate: (() => {

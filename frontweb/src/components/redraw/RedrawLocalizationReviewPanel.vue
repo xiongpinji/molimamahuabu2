@@ -162,25 +162,34 @@
         </div>
       </footer>
     </template>
+    <RedrawExecutionPlanReviewPanel :record="record" :project-policy="projectPolicy" :blocked="blocked || dirty || saving || locking"
+      @unit-delivery-requested="$emit('unit-delivery-requested', $event)" />
   </section>
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { redrawAPI } from '@/api/redraw'
+import RedrawExecutionPlanReviewPanel from '@/components/redraw/RedrawExecutionPlanReviewPanel.vue'
 
 const props = defineProps({
   record: { type: Object, required: true },
   blueprint: { type: Object, default: null },
+  blocked: { type: Boolean, default: false },
+  projectPolicy: Object,
 })
 
-const emit = defineEmits(['updated', 'locked', 'refresh-requested'])
+const emit = defineEmits(['updated', 'locked', 'refresh-requested', 'unit-delivery-requested'])
 const draft = ref(null)
 const baseline = ref('')
 const saving = ref(false)
 const locking = ref(false)
 const conflictMessage = ref('')
+let alive = true
+onUnmounted(() => { alive = false })
+const recordToken = () => JSON.stringify([props.record, props.blocked, props.projectPolicy])
+const isCurrentRecord = (token) => alive && recordToken() === token
 
 function clone(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value))
@@ -251,8 +260,8 @@ const reviewComplete = computed(() => {
   return ['character_name_map', 'dialogue_map', 'text_region_map', 'cultural_adaptations', 'glossary', 'locked_terms']
     .every((key) => Object.values(review[key] || {}).every((value) => value === true))
 })
-const canSave = computed(() => !locked.value && !saving.value && !locking.value && dirty.value && !validationMessage.value)
-const canLock = computed(() => !locked.value && !saving.value && !locking.value
+const canSave = computed(() => !props.blocked && !locked.value && !saving.value && !locking.value && dirty.value && !validationMessage.value)
+const canLock = computed(() => !props.blocked && !locked.value && !saving.value && !locking.value
   && !dirty.value && !validationMessage.value && reviewComplete.value)
 
 function timecode(milliseconds) {
@@ -274,6 +283,8 @@ function handleConflict(error, fallback) {
 
 async function save() {
   if (!canSave.value) return
+  const token = recordToken()
+  const submittedDraft = JSON.stringify(draft.value)
   saving.value = true
   conflictMessage.value = ''
   try {
@@ -281,11 +292,16 @@ async function save() {
       expected_updated_at: props.record.updated_at,
       localization: clone(draft.value),
     })
+    if (!isCurrentRecord(token)) return
+    if (JSON.stringify(draft.value) !== submittedDraft) {
+      conflictMessage.value = '保存期间本地化又有修改，已保留当前草稿；请核对并刷新已保存记录'
+      return
+    }
     syncRecord(next)
     emit('updated', next)
     ElMessage.success('本地化审核已保存')
   } catch (error) {
-    handleConflict(error, '保存本地化审核失败')
+    if (isCurrentRecord(token)) handleConflict(error, '保存本地化审核失败')
   } finally {
     saving.value = false
   }
@@ -293,6 +309,8 @@ async function save() {
 
 async function lock() {
   if (!canLock.value) return
+  const token = recordToken()
+  const submittedDraft = JSON.stringify(draft.value)
   locking.value = true
   conflictMessage.value = ''
   try {
@@ -301,11 +319,16 @@ async function lock() {
       expected_localization_hash: props.record.localization_hash,
       expected_updated_at: props.record.updated_at,
     })
+    if (!isCurrentRecord(token)) return
+    if (JSON.stringify(draft.value) !== submittedDraft) {
+      conflictMessage.value = '锁定期间本地化又有修改，已保留当前草稿；请刷新确认服务端状态'
+      return
+    }
     syncRecord(next)
     emit('locked', next)
     ElMessage.success('全剧本地化已锁定')
   } catch (error) {
-    handleConflict(error, '锁定本地化失败')
+    if (isCurrentRecord(token)) handleConflict(error, '锁定本地化失败')
   } finally {
     locking.value = false
   }

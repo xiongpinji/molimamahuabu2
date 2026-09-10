@@ -7,6 +7,7 @@ const { execFile } = require('child_process');
 const realAssetService = require('./assetService');
 const aiClient = require('./aiClient');
 const { normalizeSourceFacts } = require('./redrawAnalysisService');
+const { planAnalysisWindows, mergeWindowFacts } = require('./redrawAnalysisWindowService');
 
 function codedError(code, message) {
   return Object.assign(new Error(message), { code });
@@ -103,25 +104,7 @@ async function ffprobeVideo(sourcePath, timeoutMs) {
 }
 
 const SHEET_COLUMNS = 4;
-const SHEET_FRAMES = 12;
 const DEFAULT_FONT_CANDIDATES = process.platform === 'win32' ? ['/Windows/Fonts/arial.ttf'] : [];
-
-function sheetPlan(durationMs, mode) {
-  const sampleRate = mode === 'lower_third' ? 2 : 1;
-  const windowSeconds = SHEET_FRAMES / sampleRate;
-  const durationSeconds = durationMs / 1000;
-  const pages = [];
-  for (let startSeconds = 0; startSeconds < durationSeconds; startSeconds += windowSeconds) {
-    const pageDurationSeconds = Math.min(windowSeconds, durationSeconds - startSeconds);
-    pages.push({
-      startSeconds,
-      durationSeconds: pageDurationSeconds,
-      sampleRate,
-      frameCount: Math.max(1, Math.ceil(pageDurationSeconds * sampleRate)),
-    });
-  }
-  return pages;
-}
 
 function filterPath(filePath) {
   return String(filePath).replace(/\\/g, '/');
@@ -143,8 +126,8 @@ function sheetFilter(mode, page, options = {}) {
   const offset = page.startSeconds.toFixed(3);
   const fontFile = selectFontFile(options.fontCandidates);
   const fontOption = fontFile ? `fontfile=${filterPath(fontFile)}:` : '';
-  const timestamp = `drawtext=${fontOption}text='page+${offset}s %{pts\\:hms}':x=4:y=4:fontsize=12:fontcolor=white:box=1:boxcolor=black@0.75`;
-  return `${prefix}fps=${page.sampleRate},scale=240:-1,${timestamp},tile=${SHEET_COLUMNS}x${rows}:nb_frames=${page.frameCount}:padding=4:margin=4:color=black`;
+  const timestamp = `drawtext=${fontOption}text='source %{pts\\:hms\\:${offset}}':x=4:y=4:fontsize=12:fontcolor=white:box=1:boxcolor=black@0.75`;
+  return `${prefix}fps=${page.sampleRate}:round=up,scale=240:-1,${timestamp},tile=${SHEET_COLUMNS}x${rows}:nb_frames=${page.frameCount}:padding=4:margin=4:color=black`;
 }
 
 async function createSheet(sourcePath, outputPath, mode, page, timeoutMs) {
@@ -153,8 +136,8 @@ async function createSheet(sourcePath, outputPath, mode, page, timeoutMs) {
     '-loglevel', 'error',
     '-y',
     '-ss', page.startSeconds.toFixed(3),
-    '-i', sourcePath,
     '-t', page.durationSeconds.toFixed(3),
+    '-i', sourcePath,
     '-vf', sheetFilter(mode, page),
     '-frames:v', '1',
     outputPath,
@@ -177,10 +160,36 @@ function sha256File(filePath) {
   return hash.digest('hex');
 }
 
-function atomicWriteJson(filePath, payload) {
-  const tempPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
-  fs.writeFileSync(tempPath, JSON.stringify(payload, null, 2), 'utf8');
-  fs.renameSync(tempPath, filePath);
+function atomicWriteJson(filePath, payload, replaceOwned = false) {
+  const tempPath = `${filePath}.tmp-${crypto.randomUUID()}`;
+  fs.writeFileSync(tempPath, JSON.stringify(payload, null, 2), { encoding: 'utf8', flag: 'wx' });
+  try {
+    if (replaceOwned) fs.renameSync(tempPath, filePath);
+    // An exclusive link publishes complete bytes without overwriting a historical/concurrent result.
+    else fs.linkSync(tempPath, filePath);
+  } finally {
+    fs.rmSync(tempPath, { force: true });
+  }
+}
+
+function safeReceiptText(value) {
+  if (typeof value !== 'string' || !value.trim() || value.length > 512
+    || /(?:https?:\/\/|file:\/\/|[a-zA-Z]:[\\/]|\\|^\/|api[_-]?key|bearer\s+)/i.test(value)) return null;
+  return value;
+}
+
+function safeReceiptUsage(value, depth = 0) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || depth > 2) return null;
+  const usage = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (!/^[a-z_]*(?:tokens|details)$/.test(key)) continue;
+    if (Number.isFinite(item) && item >= 0) usage[key] = item;
+    else if (item && typeof item === 'object') {
+      const nested = safeReceiptUsage(item, depth + 1);
+      if (nested) usage[key] = nested;
+    }
+  }
+  return Object.keys(usage).length ? usage : null;
 }
 
 function parseJsonObject(text) {
@@ -225,7 +234,7 @@ const MAX_PROMPT_TRANSCRIPT_BYTES = 16 * 1024;
 
 function promptId(value) {
   if (Number.isSafeInteger(value) && value > 0) return value;
-  return typeof value === 'string' ? value.slice(0, 96) : null;
+  return typeof value === 'string' ? value : null;
 }
 
 function promptAudioSummary(audioEvidence) {
@@ -269,7 +278,9 @@ function buildPrompt(probe, audioEvidence) {
     'You are analyzing a short-drama source video for strict 1:1 redraw facts v2.',
     'Return ONLY JSON with one top-level key named source_facts.',
     'source_facts.schema_version MUST be "2.0". Do not add explanations or any keys outside the schema.',
-    'The images cover the full source in chronological pages. Every tile is labeled with its page offset and relative timestamp.',
+    'The images cover the current source window in chronological pages. Every tile is labeled with absolute source time.',
+    `Source window: start_ms=${probe.window_start_ms || 0}, end_ms=${probe.window_end_ms ?? probe.duration_ms}; all output times are relative to the current window.`,
+    'ASR timestamps are absolute source time; visual output times MUST be relative to the current window: 0..duration_ms. Never shift, trim, or rewrite ASR evidence.',
     'Do not invent characters, scenes, props, reversals, dialogue, or timing that is not visible.',
     'Do not rewrite transcript text. Transcript text is immutable audio evidence and will be attached by a deterministic fusion step.',
     'Return dialogue as an empty array and audio_contract.dialogue_mode as "silent" for every visual shot.',
@@ -291,7 +302,7 @@ function buildPrompt(probe, audioEvidence) {
 }
 
 function assertStrictNativeFacts(facts, probe) {
-  if (Math.abs(Number(facts.duration_ms) - Number(probe.duration_ms)) > 250) {
+  if (Number(facts.duration_ms) !== Number(probe.duration_ms)) {
     throw codedError('REDRAW_NATIVE_DURATION_MISMATCH', '视觉分析时长与 ffprobe 实测时长不一致');
   }
   let previousShotEnd = 0;
@@ -361,6 +372,11 @@ function applyVisualEvidencePolicy(rawFacts) {
 async function analyzeNativeSource(ctx = {}, input = {}, audioEvidence) {
   const db = ctx.db;
   if (!db) throw codedError('REDRAW_NATIVE_DB_REQUIRED', '缺少数据库');
+  const assertCurrent = () => ctx.assertAnalysisTaskCurrent?.({
+    taskId: input.taskId ?? input.task_id, workId: input.workId ?? input.work_id,
+    tenantId: input.tenantId ?? input.tenant_id, userId: input.userId ?? input.user_id, model: input.model,
+  });
+  assertCurrent();
   const log = ctx.log || { info() {}, warn() {}, error() {} };
   const assetService = ctx.assetService || realAssetService;
   const visionDetailed = ctx.visionDetailed || ((payload) => aiClient.generateTextWithVisionDetailed(
@@ -375,45 +391,88 @@ async function analyzeNativeSource(ctx = {}, input = {}, audioEvidence) {
   const storageRoot = resolveStorageRoot(ctx.storageRoot);
   const taskId = safeSegment(input.taskId || input.task_id, 'taskId');
   const workDir = path.join(storageRoot, 'redraw-analysis', taskId);
+  const resultPath = path.join(workDir, 'source-analysis.json');
   const sheetDir = fs.mkdtempSync(path.join(os.tmpdir(), `redraw-native-${taskId}-`));
   const createdWorkDir = !fs.existsSync(workDir);
   const createdPaths = [];
+  let receiptPath;
+  let receiptState;
+  let receiptCreated = false;
+  let currentReceipt;
+  function persistReceipt() {
+    atomicWriteJson(receiptPath, receiptState, receiptCreated);
+    receiptCreated = true;
+  }
 
   try {
     const work = getWork(db, input);
     const sourceAsset = getAsset(db, work.source_asset_id);
     const source = resolveSourcePath(storageRoot, sourceAsset.local_path);
+    if (fs.existsSync(resultPath)) throw codedError('REDRAW_NATIVE_RESULT_EXISTS', '源片分析工件已存在，不允许覆盖');
     ensureDir(workDir);
     const probe = await ffprobeVideo(source.absolute, Number(input.probeTimeoutMs || 15000));
+    assertCurrent();
+    const windows = planAnalysisWindows(probe, audioEvidence, buildPrompt);
+    const completedWindows = [];
+    const receipts = [];
+    receiptPath = path.join(workDir, `source-analysis-receipt-${crypto.randomUUID()}.json`);
+    receiptState = { schema_version: '2.0', status: 'analyzing', work_id: Number(work.id),
+      source_asset_id: Number(sourceAsset.id), duration_ms: probe.duration_ms, windows: receipts };
+    persistReceipt();
     const sheets = [];
-    for (const mode of ['full', 'lower_third']) {
-      const pages = sheetPlan(probe.duration_ms, mode);
-      for (const [index, page] of pages.entries()) {
-        const sheetPath = path.join(sheetDir, `contact-sheet-${mode}-${index + 1}.jpg`);
-        await createSheet(
-          source.absolute,
-          sheetPath,
-          mode,
-          page,
-          Number(input.ffmpegTimeoutMs || 30000),
-        );
-        sheets.push({ mode, path: sheetPath, sha256: sha256File(sheetPath) });
+    let vision;
+    for (const [windowIndex, window] of windows.entries()) {
+      assertCurrent();
+      const windowSheets = [];
+      currentReceipt = { start_ms: window.start_ms, end_ms: window.end_ms, status: 'preparing',
+        provider_task_id: null, model: null, usage: null, raw_hash: null, sheets: [] };
+      receipts.push(currentReceipt);
+      for (const [index, page] of window.sheets.entries()) {
+        const sheetPath = path.join(sheetDir, `contact-sheet-w${windowIndex + 1}-${page.mode}-${index + 1}.jpg`);
+        await createSheet(source.absolute, sheetPath, page.mode, page, Number(input.ffmpegTimeoutMs || 30000));
+        assertCurrent();
+        windowSheets.push({ mode: page.mode, path: sheetPath, sha256: sha256File(sheetPath),
+          start_ms: Math.round(page.startSeconds * 1000), duration_ms: Math.round(page.durationSeconds * 1000) });
       }
+      currentReceipt.sheets = windowSheets.map(({ path: ignoredPath, ...sheet }) => sheet);
+      currentReceipt.status = 'submitting';
+      persistReceipt();
+      assertCurrent();
+      vision = await visionDetailed({
+        userPrompt: window.prompt,
+        systemPrompt: 'Return strict JSON only for short-drama source analysis.',
+        imageSources: windowSheets.map((sheet) => ({ localAbsPath: sheet.path })),
+        options: { model: input.model || undefined, max_tokens: Number(input.maxTokens || 8000), temperature: 0.1 },
+        source: { work_id: Number(work.id), source_asset_id: Number(sourceAsset.id) },
+      });
+      Object.assign(currentReceipt, { status: 'received', provider_task_id: safeReceiptText(vision?.provider_task_id),
+        model: safeReceiptText(vision?.model || input.model), usage: safeReceiptUsage(vision?.usage),
+        raw_hash: typeof vision?.raw_hash === 'string' && /^[a-f0-9]{64}$/i.test(vision.raw_hash) ? vision.raw_hash : null });
+      // Persist returned identifiers before parsing any model facts; invalid output must not erase provider evidence.
+      persistReceipt();
+      assertCurrent();
+      if (typeof vision?.provider_task_id !== 'string' || !vision.provider_task_id.trim()) {
+        throw codedError('VISION_PROVIDER_RESPONSE_ID_MISSING', '视觉分析缺少真实 provider response id');
+      }
+      const parsed = parseJsonObject(vision.text);
+      const visualFacts = applyVisualEvidencePolicy(parsed.source_facts || parsed);
+      if (visualFacts.schema_version !== '2.0') {
+        throw codedError('REDRAW_NATIVE_SCHEMA_INVALID', '视觉分析结果必须使用 source_facts 2.0');
+      }
+      const facts = normalizeSourceFacts(visualFacts);
+      assertStrictNativeFacts(facts, { duration_ms: window.end_ms - window.start_ms });
+      completedWindows.push({ start_ms: window.start_ms, end_ms: window.end_ms,
+        facts: windows.length === 1 ? facts : visualFacts });
+      currentReceipt.status = 'completed';
+      persistReceipt();
+      sheets.push(...currentReceipt.sheets);
+      for (const sheet of windowSheets) fs.rmSync(sheet.path, { force: true });
     }
-
-    const vision = await visionDetailed({
-      userPrompt: buildPrompt(probe, audioEvidence),
-      systemPrompt: 'Return strict JSON only for short-drama source analysis.',
-      imageSources: sheets.map((sheet) => ({ localAbsPath: sheet.path })),
-      options: { model: input.model || undefined, max_tokens: Number(input.maxTokens || 8000), temperature: 0.1 },
-      source: { work_id: Number(work.id), source_asset_id: Number(sourceAsset.id) },
-    });
-    if (!vision?.provider_task_id) {
-      throw codedError('VISION_PROVIDER_RESPONSE_ID_MISSING', '视觉分析缺少真实 provider response id');
-    }
-    const parsed = parseJsonObject(vision.text);
-    const facts = normalizeSourceFacts(applyVisualEvidencePolicy(parsed.source_facts || parsed));
+    const merged = mergeWindowFacts(completedWindows, probe.duration_ms);
+    const facts = merged.facts;
     assertStrictNativeFacts(facts, probe);
+    receiptState.status = 'validated';
+    persistReceipt();
     const mediaProbe = safeMediaProbeMetadata(probe, sheets.length);
     const sourceMetadata = {
       asset_id: Number(sourceAsset.id),
@@ -434,10 +493,13 @@ async function analyzeNativeSource(ctx = {}, input = {}, audioEvidence) {
       source: sourceMetadata,
       provider_task_id: String(vision.provider_task_id),
       model: vision.model || input.model || null,
-      usage: vision.usage || null,
-      raw_hash: vision.raw_hash || null,
+      usage: windows.length === 1 ? vision.usage || null : null,
+      raw_hash: windows.length === 1 ? vision.raw_hash || null : null,
       facts,
       diagnostics: {
+        ...merged.diagnostics,
+        window_count: windows.length,
+        windows: receipts,
         source: {
           relative_path_hash: crypto.createHash('sha256').update(source.relative).digest('hex'),
           duration_ms: probe.duration_ms,
@@ -445,33 +507,47 @@ async function analyzeNativeSource(ctx = {}, input = {}, audioEvidence) {
           height: probe.height,
           codec: probe.codec,
         },
-        sheets: sheets.map((sheet) => ({ mode: sheet.mode, sha256: sheet.sha256 })),
+        sheets,
       },
     };
-    const resultPath = path.join(workDir, 'source-analysis.json');
-    atomicWriteJson(resultPath, output);
-    createdPaths.push(resultPath);
-    const resultHash = sha256File(resultPath);
-    const stats = fs.statSync(resultPath);
-    const resultAsset = assetService.create(db, log, {
-      name: `转绘源片分析 ${work.id}`,
-      type: 'json',
-      category: 'redraw_source_analysis',
-      local_path: relativeToStorage(storageRoot, resultPath),
-      file_size: stats.size,
-      mime_type: 'application/json',
-      metadata: {
-        tenant_id: String(input.tenantId ?? input.tenant_id),
-        user_id: String(input.userId ?? input.user_id),
-        work_id: Number(work.id),
-        source_asset_id: Number(sourceAsset.id),
-        provider_task_id: String(vision.provider_task_id),
-        schema_version: '2.0',
-        media_probe: mediaProbe,
-        sha256: resultHash,
-        facts_hash: facts.facts_hash,
-      },
-    });
+    let resultHash;
+    const persistResult = () => {
+      assertCurrent();
+      atomicWriteJson(resultPath, output);
+      createdPaths.push(resultPath);
+      resultHash = sha256File(resultPath);
+      const stats = fs.statSync(resultPath);
+      assertCurrent();
+      return assetService.create(db, log, {
+        name: `转绘源片分析 ${work.id}`,
+        type: 'json',
+        category: 'redraw_source_analysis',
+        local_path: relativeToStorage(storageRoot, resultPath),
+        file_size: stats.size,
+        mime_type: 'application/json',
+        metadata: {
+          tenant_id: String(input.tenantId ?? input.tenant_id),
+          user_id: String(input.userId ?? input.user_id),
+          work_id: Number(work.id),
+          source_asset_id: Number(sourceAsset.id),
+          provider_task_id: String(vision.provider_task_id),
+          schema_version: '2.0',
+          media_probe: mediaProbe,
+          sha256: resultHash,
+          facts_hash: facts.facts_hash,
+          window_count: windows.length,
+          provider_task_ids: receipts.map((receipt) => receipt.provider_task_id),
+        },
+      });
+    };
+    const resultAsset = ctx.assertAnalysisTaskCurrent
+      ? db.transaction(persistResult).immediate() : persistResult();
+    receiptState.status = 'completed';
+    try {
+      persistReceipt();
+    } catch (receiptError) {
+      log.warn('Native analysis final receipt update failed', { code: receiptError.code });
+    }
     return {
       status: 'completed',
       provider_task_id: String(vision.provider_task_id),
@@ -480,20 +556,61 @@ async function analyzeNativeSource(ctx = {}, input = {}, audioEvidence) {
       facts,
       sha256: resultHash,
       diagnostics: {
+        ...merged.diagnostics,
+        window_count: windows.length,
+        windows: receipts,
         duration_ms: probe.duration_ms,
         width: probe.width,
         height: probe.height,
         sheet_count: sheets.length,
-        raw_hash: vision.raw_hash || null,
+        raw_hash: windows.length === 1 ? vision.raw_hash || null : null,
       },
     };
   } catch (error) {
-    if (createdWorkDir) {
-      fs.rmSync(workDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
-    } else {
-      for (const createdPath of createdPaths.reverse()) {
-        fs.rmSync(createdPath, { force: true, maxRetries: 5, retryDelay: 50 });
+    const providerError = error;
+    try {
+      assertCurrent();
+    } catch (bindingError) {
+      error = bindingError;
+    }
+    const stale = error.code === 'REDRAW_ANALYSIS_TASK_STALE';
+    let resultUnknown = false;
+    if (receiptCreated) {
+      const errorCode = typeof error.code === 'string' && /^[A-Z][A-Z0-9_]{0,95}$/.test(error.code)
+        ? error.code : 'REDRAW_NATIVE_ANALYSIS_FAILED';
+      receiptState.status = 'failed';
+      receiptState.error_code = errorCode;
+      if (currentReceipt && currentReceipt.status !== 'completed') {
+        const exceptionTaskId = providerError.routeMeta?.providerTaskId || providerError.providerTaskId;
+        if (exceptionTaskId) currentReceipt.provider_task_id = safeReceiptText(exceptionTaskId);
+        const explicitRejection = currentReceipt.status === 'submitting'
+          && providerError.routeMeta?.explicitlyRejected === true && !exceptionTaskId && !currentReceipt.provider_task_id;
+        resultUnknown = !stale && ((currentReceipt.status === 'submitting' && !explicitRejection)
+          || (currentReceipt.status === 'received' && !currentReceipt.provider_task_id));
+        currentReceipt.status = stale ? 'failed' : resultUnknown ? 'unknown'
+          : currentReceipt.status === 'received' ? 'invalid' : 'failed';
+        currentReceipt.error_code = errorCode;
       }
+      try {
+        persistReceipt();
+      } catch (receiptError) {
+        log.warn('Native analysis failure receipt update failed', { code: receiptError.code });
+      }
+    }
+    for (const createdPath of createdPaths.reverse()) {
+      fs.rmSync(createdPath, { force: true, maxRetries: 5, retryDelay: 50 });
+    }
+    if (createdWorkDir) {
+      try {
+        fs.rmdirSync(workDir);
+      } catch (cleanupError) {
+        if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes(cleanupError.code)) {
+          log.warn('Native analysis empty directory cleanup failed', { code: cleanupError.code });
+        }
+      }
+    }
+    if (resultUnknown) {
+      throw codedError('REDRAW_NATIVE_WINDOW_RESULT_UNKNOWN', '视觉分析窗口结果未知，需核对供应商凭据');
     }
     throw error;
   } finally {

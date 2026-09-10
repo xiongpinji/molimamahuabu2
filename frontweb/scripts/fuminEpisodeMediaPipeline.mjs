@@ -29,7 +29,7 @@ export function buildNormalizeUnitArgs({ inputPath, outputPath, keepDurationMs, 
     '-ss', (startOffsetMs / 1000).toFixed(3), '-i', inputPath,
     '-t', (keepDurationMs / 1000).toFixed(3),
     '-map', '0:v:0', '-map', '0:a:0',
-    '-vf', 'scale=480:864,fps=24',
+    '-vf', 'scale=480:864,setsar=81/80,fps=24',
     '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p',
     '-c:a', 'aac', '-ar', '48000', '-ac', '2',
     '-movflags', '+faststart', outputPath,
@@ -107,7 +107,7 @@ function run(command, args, code) {
 }
 
 function ratio(value) {
-  const [numerator, denominator = '1'] = String(value || '').split('/')
+  const [numerator, denominator = '1'] = String(value || '').split(/[/:]/)
   return Number(numerator) / Number(denominator)
 }
 
@@ -129,6 +129,8 @@ export function probeNormalizedMedia(filePath, { ffprobePath = process.env.FFPRO
     duration_seconds: Number(payload.format?.duration),
     width: Number(video.width),
     height: Number(video.height),
+    sample_aspect_ratio: String(video.sample_aspect_ratio || ''),
+    display_aspect_ratio: String(video.display_aspect_ratio || ''),
     video_codec: String(video.codec_name || ''),
     pixel_format: String(video.pix_fmt || ''),
     frame_rate: ratio(video.avg_frame_rate || video.r_frame_rate),
@@ -153,6 +155,13 @@ function validateCanonicalMedia(media, expectedDurationMs, toleranceSeconds) {
   if (media.width !== 480 || media.height !== 864 || media.video_codec !== 'h264'
     || media.pixel_format !== 'yuv420p' || Math.abs(media.frame_rate - 24) > 0.001) {
     fail('FUMIN_MEDIA_VIDEO_PROFILE_INVALID')
+  }
+  const displayAspect = ratio(media.display_aspect_ratio)
+  const derivedAspect = media.width * ratio(media.sample_aspect_ratio) / media.height
+  if (!Number.isFinite(displayAspect) || !Number.isFinite(derivedAspect)
+    || Math.abs(displayAspect - 9 / 16) > 0.000001
+    || Math.abs(derivedAspect - displayAspect) > 0.000001) {
+    fail('FUMIN_MEDIA_DISPLAY_ASPECT_INVALID')
   }
   if (media.audio_codec !== 'aac' || media.audio_sample_rate !== 48000 || media.audio_channels !== 2) {
     fail('FUMIN_MEDIA_AUDIO_PROFILE_INVALID')
@@ -364,7 +373,7 @@ function concatArtifacts({
       '-f', 'concat', '-safe', '0', '-i', listPath,
       '-t', (expectedDurationMs / 1000).toFixed(3),
       '-map', '0:v:0', '-map', '0:a:0',
-      '-vf', 'scale=480:864,fps=24',
+      '-vf', 'scale=480:864,setsar=81/80,fps=24',
       '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p',
       '-c:a', 'aac', '-ar', '48000', '-ac', '2',
       '-movflags', '+faststart', stagingPath,

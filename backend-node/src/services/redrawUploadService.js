@@ -143,7 +143,7 @@ async function validateSourceFile(file, limits = {}, probeVideo) {
 function safeZipEntry(entry) {
   const rawName = typeof entry === 'string' ? entry : entry?.entryName;
   const name = String(rawName || '').replace(/\\/g, '/');
-  if (!name || name.startsWith('/') || /^[A-Za-z]:/.test(name)) {
+  if (!name || name.includes('\0') || name.startsWith('/') || /^[A-Za-z]:/.test(name)) {
     throw uploadError('REDRAW_ZIP_UNSAFE_PATH', 'ZIP 条目路径不安全');
   }
   const parts = name.split('/');
@@ -251,10 +251,13 @@ async function expandZipUpload(file, limits, probeVideo) {
   const tempRoot = limits.tempRoot || os.tmpdir();
   const extractDir = fs.mkdtempSync(path.join(tempRoot, 'redraw-upload-'));
   try {
-    const items = [];
-    for (const entry of entries) {
+    const staged = [];
+    for (const [index, entry] of entries.entries()) {
       const entryName = safeZipEntry(entry);
-      const targetPath = path.join(extractDir, entryName);
+      const targetPath = path.join(
+        extractDir,
+        `${String(index).padStart(2, '0')}${path.extname(entryName).toLowerCase()}`,
+      );
       const resolved = path.resolve(targetPath);
       const root = path.resolve(extractDir);
       if (!resolved.startsWith(root + path.sep)) {
@@ -271,7 +274,7 @@ async function expandZipUpload(file, limits, probeVideo) {
       const facts = await validateSourceFile(
         {
           path: resolved,
-          originalname: path.basename(entryName),
+          originalname: entryName,
           mimetype: path.extname(entryName).toLowerCase() === '.mov' ? 'video/quicktime' : 'video/mp4',
           size: fs.statSync(resolved).size,
         },
@@ -282,6 +285,10 @@ async function expandZipUpload(file, limits, probeVideo) {
         },
         probeVideo,
       );
+      staged.push({ entryName, resolved, facts });
+    }
+    const items = [];
+    for (const { entryName, resolved, facts } of staged) {
       const persisted = persistSourceFile(resolved, facts, limits);
       items.push(toUploadItem(entryName, facts, limits.assetUrlPrefix, persisted));
     }

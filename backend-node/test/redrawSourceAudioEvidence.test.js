@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
+const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
 const { test } = require('node:test');
@@ -9,6 +10,7 @@ const Database = require('better-sqlite3');
 const assetService = require('../src/services/assetService');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const sourceAudioEvidenceService = require('../src/services/redrawSourceAudioEvidenceService');
+const { createRedrawLocaleVerifierClient } = require('../src/services/redrawLocaleVerifierClient');
 
 test('source audio evidence service exposes analyzeSourceAudio', () => {
   assert.equal(typeof sourceAudioEvidenceService?.analyzeSourceAudio, 'function');
@@ -25,7 +27,9 @@ function sha256(value) {
 function createHarness(t, overrides = {}) {
   const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'source-audio-storage-'));
   const privateAudioRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'source-audio-private-'));
-  const db = new Database(':memory:');
+  const db = new Database(':memory:', {
+    nativeBinding: path.resolve(__dirname, '../node_modules/better-sqlite3/build/Release/better_sqlite3.node'),
+  });
   runMigrationsAndEnsure(db);
   t.after(() => {
     db.close();
@@ -141,6 +145,7 @@ test('analyzeSourceAudio extracts private PCM WAV and atomically registers bound
   assert.equal(harness.workerCalls[0].privateAudioRoot, fs.realpathSync.native(harness.privateAudioRoot));
 
   assert.equal(result.schema_version, 'redraw-source-audio-evidence-v1');
+  assert.equal(Object.hasOwn(result, 'windows'), false, 'an under-limit source retains the existing v1 contract');
   assert.equal(result.dialogue_mode, 'spoken');
   assert.equal(result.segments[0].speaker_cluster_id, 'speaker-cluster-1');
   assert.match(result.audio_sha256, /^[0-9a-f]{64}$/);
@@ -197,6 +202,7 @@ test('analyzeSourceAudio persists explicit silent evidence when ffmpeg proves no
   assert.equal(result.dialogue_mode, 'silent');
   assert.deepEqual(result.segments, []);
   assert.equal(result.audio_sha256, null);
+  assert.equal(Object.hasOwn(result, 'no_speech_evidence'), false);
   assert.equal(result.transcript_sha256, sha256('[]'));
   assert.match(result.source_video_sha256, /^[0-9a-f]{64}$/);
   const asset = harness.db.prepare('SELECT * FROM assets WHERE id = ?').get(result.result_asset_id);
@@ -205,6 +211,162 @@ test('analyzeSourceAudio persists explicit silent evidence when ffmpeg proves no
   assert.deepEqual(saved.segments, []);
   assert.equal(saved.source_asset_id, harness.sourceAsset.id);
   assert.deepEqual(fs.readdirSync(harness.privateAudioRoot), []);
+});
+
+test('analyzeSourceAudio persists validated client VAD evidence while retaining the actual audio hash', async (t) => {
+  const noSpeech = { method: 'faster-whisper-vad', audio_duration_ms: 3000, speech_duration_ms: 0 };
+  let requests = 0;
+  const server = net.createServer((socket) => {
+    let body = '';
+    socket.on('data', (chunk) => {
+      body += chunk.toString('utf8');
+      if (!body.includes('\n')) return;
+      requests += 1;
+      const request = JSON.parse(body.trim());
+      socket.end(`${JSON.stringify({ ok: true, result: {
+        source_language: null, language_probability: null, segments: [],
+        audio_sha256: request.audio_sha256, transcript_sha256: sha256('[]'),
+        no_speech_evidence: noSpeech,
+      } })}\n`);
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const harness = createHarness(t, {
+    workerClient: createRedrawLocaleVerifierClient({
+      socketPath: { port: server.address().port, host: '127.0.0.1' },
+      registry: { assertReady() { throw new Error('source analysis does not select a locale'); } },
+    }),
+  });
+
+  const result = await analyzeSourceAudio(harness.ctx, validInput(harness.sourceAsset.id));
+  assert.equal(requests, 1);
+  assert.equal(result.dialogue_mode, 'silent');
+  assert.equal(result.source_language, null);
+  assert.equal(result.language_probability, null);
+  assert.deepEqual(result.segments, []);
+  assert.equal(result.audio_sha256, sha256(AUDIO_BYTES));
+  assert.equal(result.transcript_sha256, sha256('[]'));
+  assert.deepEqual(result.no_speech_evidence, noSpeech);
+  const asset = harness.db.prepare('SELECT * FROM assets WHERE id = ?').get(result.result_asset_id);
+  const saved = JSON.parse(fs.readFileSync(path.join(harness.storageRoot, asset.local_path), 'utf8'));
+  assert.deepEqual(saved.no_speech_evidence, noSpeech);
+  assert.equal(saved.dialogue_mode, 'silent');
+  assert.deepEqual(saved.segments, []);
+  assert.deepEqual(fs.readdirSync(harness.privateAudioRoot), []);
+});
+
+test('analyzeSourceAudio rejects invalid long-track PCM headers before any Worker call or asset registration', async (t) => {
+  const longSize = 44 + 3600000 * 32;
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0);
+  header.writeUInt32LE(longSize - 8, 4);
+  header.write('WAVEfmt ', 8);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(16000, 24);
+  header.writeUInt32LE(32000, 28);
+  header.writeUInt16LE(2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write('data', 36);
+  header.writeUInt32LE(longSize - 44, 40);
+  const invalidAudio = [
+    ['wrong RIFF size', bytes => bytes.writeUInt32LE(longSize - 9, 4)],
+    ['wrong container', bytes => bytes.write('RIFX', 0)],
+    ['compressed format', bytes => bytes.writeUInt16LE(3, 20)],
+    ['stereo', bytes => bytes.writeUInt16LE(2, 22)],
+    ['wrong sample rate', bytes => bytes.writeUInt32LE(8000, 24)],
+    ['wrong byte rate', bytes => bytes.writeUInt32LE(16000, 28)],
+    ['wrong block alignment', bytes => bytes.writeUInt16LE(4, 32)],
+    ['wrong bit depth', bytes => bytes.writeUInt16LE(8, 34)],
+    ['data outside file', bytes => bytes.writeUInt32LE(longSize, 40)],
+    ['partial PCM sample', bytes => bytes.writeUInt32LE(longSize - 45, 40)],
+  ];
+  for (const [name, mutate] of invalidAudio) {
+    await t.test(name, async (child) => {
+      const harness = createHarness(child);
+      const bytes = Buffer.from(header); mutate(bytes);
+      let wavPath;
+      const fsApi = Object.create(fs);
+      for (const operation of ['readFileSync', 'createReadStream']) {
+        fsApi[operation] = (target, ...args) => {
+          assert.notEqual(typeof target === 'string' ? path.resolve(target) : target, wavPath,
+            'an invalid long-track header is rejected before reading or hashing its PCM payload');
+          return fs[operation](target, ...args);
+        };
+      }
+      const ctx = {
+        ...harness.ctx,
+        fs: fsApi,
+        execFile: async (_command, args) => {
+          wavPath = path.resolve(args.at(-1));
+          fs.writeFileSync(wavPath, bytes);
+          fs.truncateSync(wavPath, longSize);
+          assert.ok(fs.statSync(wavPath).size > 64 * 1024 * 1024,
+            'the case must enter the actual long-track branch, never the legacy single-window path');
+        },
+      };
+      await assert.rejects(() => analyzeSourceAudio(ctx, validInput(harness.sourceAsset.id)),
+        { code: 'SOURCE_AUDIO_EVIDENCE_INVALID' });
+      assert.equal(harness.workerCalls.length, 0, 'invalid PCM never reaches Worker validation');
+      assert.equal(harness.db.prepare("SELECT COUNT(*) AS count FROM assets WHERE category = 'redraw_source_audio_evidence'").get().count, 0);
+      assert.deepEqual(fs.readdirSync(harness.privateAudioRoot), []);
+    });
+  }
+});
+
+test('analyzeSourceAudio persists nothing for malformed or unbound no-speech transport evidence', async (t) => {
+  const noSpeech = { method: 'faster-whisper-vad', audio_duration_ms: 3000, speech_duration_ms: 0 };
+  const cases = [
+    { no_speech_evidence: undefined }, { no_speech_evidence: null },
+    { no_speech_evidence: [] }, { no_speech_evidence: { ...noSpeech, extra: true } },
+    { no_speech_evidence: { ...noSpeech, method: 'manual' } },
+    ...[true, '3000', 0, -1, 0.5, Number.NaN, Number.POSITIVE_INFINITY].map((value) => ({
+      no_speech_evidence: { ...noSpeech, audio_duration_ms: value },
+    })),
+    ...[true, false, '0', 1, -1, null].map((value) => ({
+      no_speech_evidence: { ...noSpeech, speech_duration_ms: value },
+    })),
+    { request_id: 'other-request' }, { audio_sha256: 'a'.repeat(64) },
+    { transcript_sha256: 'b'.repeat(64) }, { source_language: 'en' },
+    { language_probability: 0.9 }, { extra: true },
+    { segments: [{ start: 0, end: 0.5, text: 'speech', speaker_cluster_id: 'speaker-cluster-1' }] },
+  ];
+  let currentOverrides;
+  let requests = 0;
+  const server = net.createServer((socket) => {
+    let body = '';
+    socket.on('data', (chunk) => {
+      body += chunk.toString('utf8');
+      if (!body.includes('\n')) return;
+      requests += 1;
+      const request = JSON.parse(body.trim());
+      socket.end(`${JSON.stringify({ ok: true, result: {
+        audio_sha256: request.audio_sha256, transcript_sha256: sha256('[]'),
+        source_language: null, language_probability: null, segments: [],
+        no_speech_evidence: noSpeech, ...currentOverrides,
+      } })}\n`);
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const harness = createHarness(t, {
+    idFactory: crypto.randomUUID,
+    workerClient: createRedrawLocaleVerifierClient({
+      socketPath: { port: server.address().port, host: '127.0.0.1' },
+      registry: { assertReady() { throw new Error('source analysis does not select a locale'); } },
+    }),
+  });
+  for (const overrides of cases) {
+    currentOverrides = overrides;
+    await assert.rejects(() => analyzeSourceAudio(harness.ctx, validInput(harness.sourceAsset.id)), {
+      code: 'SOURCE_AUDIO_ANALYSIS_FAILED',
+    });
+    assert.equal(harness.db.prepare("SELECT COUNT(*) AS count FROM assets WHERE category = 'redraw_source_audio_evidence'").get().count, 0);
+    assert.deepEqual(fs.readdirSync(harness.privateAudioRoot), []);
+  }
+  assert.equal(requests, cases.length);
 });
 
 test('analyzeSourceAudio maps timeout to unknown once and leaves no evidence or temp audio', async (t) => {
@@ -550,6 +712,89 @@ test('analyzeSourceAudio removes the evidence file when asset registration fails
   assert.equal(fs.existsSync(path.join(evidenceRoot, 'task-7fdca1', 'audio-evidence.json')), false);
   assert.equal(harness.db.prepare("SELECT COUNT(*) AS count FROM assets WHERE category = 'redraw_source_audio_evidence'").get().count, 0);
   assert.deepEqual(fs.readdirSync(harness.privateAudioRoot), []);
+});
+
+test('analyzeSourceAudio removes only its v2 JSON when real SQLite COMMIT fails after the asset INSERT succeeds', async (t) => {
+  const harness = createHarness(t);
+  const durationMs = 2160000;
+  const longSize = 44 + durationMs * 32;
+  harness.db.prepare('UPDATE redraw_works SET duration_ms = ? WHERE id = 1').run(durationMs);
+  harness.db.pragma('foreign_keys = ON');
+  harness.db.exec(`
+    CREATE TABLE g2_commit_parent (id INTEGER PRIMARY KEY);
+    CREATE TABLE g2_commit_child (
+      parent_id INTEGER NOT NULL REFERENCES g2_commit_parent(id) DEFERRABLE INITIALLY DEFERRED
+    );
+  `);
+  const evidenceRoot = path.join(harness.storageRoot, 'redraw-source-audio-evidence');
+  const evidencePath = path.join(evidenceRoot, 'task-7fdca1', 'audio-evidence.json');
+  const keepPath = path.join(evidenceRoot, 'other-task-keep', 'keep.json');
+  fs.mkdirSync(path.dirname(keepPath), { recursive: true });
+  fs.writeFileSync(keepPath, 'untouched sibling');
+  const nativeTransaction = harness.db.transaction.bind(harness.db);
+  let reachedCommit = false, registeredInside = 0, jsonExistedInside = false, workerCalls = 0;
+  harness.db.transaction = callback => nativeTransaction((...args) => {
+    const result = callback(...args);
+    registeredInside = harness.db.prepare("SELECT COUNT(*) AS n FROM assets WHERE category = 'redraw_source_audio_evidence'").get().n;
+    jsonExistedInside = fs.existsSync(evidencePath);
+    assert.equal(registeredInside, 1, 'the real product INSERT must finish before injecting commit failure');
+    assert.equal(jsonExistedInside, true, 'the real JSON must already exist when COMMIT is about to run');
+    assert.ok(Number.isSafeInteger(result.result_asset_id));
+    // This INSERT succeeds inside the transaction. Native SQLite COMMIT then rejects
+    // the unresolved deferred foreign key; better-sqlite3 performs the real rollback.
+    harness.db.prepare('INSERT INTO g2_commit_child (parent_id) VALUES (999)').run();
+    reachedCommit = true;
+    return result;
+  });
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0); header.writeUInt32LE(longSize - 8, 4); header.write('WAVEfmt ', 8);
+  header.writeUInt32LE(16, 16); header.writeUInt16LE(1, 20); header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(16000, 24); header.writeUInt32LE(32000, 28);
+  header.writeUInt16LE(2, 32); header.writeUInt16LE(16, 34);
+  header.write('data', 36); header.writeUInt32LE(longSize - 44, 40);
+  const ctx = {
+    ...harness.ctx,
+    execFile: async (_command, args) => {
+      fs.writeFileSync(args.at(-1), header);
+      fs.truncateSync(args.at(-1), longSize);
+      assert.ok(fs.statSync(args.at(-1)).size > 67108864);
+    },
+    workerClient: {
+      async analyzeSourceAudio(input) {
+        workerCalls += 1;
+        assert.equal(input.preserveSourceEvidence, true);
+        assert.ok(fs.statSync(input.audioPath).size < 67108864);
+        const noSpeech = {
+          method: 'faster-whisper-vad',
+          audio_duration_ms: (fs.statSync(input.audioPath).size - 44) / 32,
+          speech_duration_ms: 0,
+        };
+        return {
+          requestId: input.requestId, audioSha256: input.audioSha256, transcriptSha256: sha256('[]'),
+          sourceLanguage: null, languageProbability: null, segments: [], noSpeechEvidence: { ...noSpeech },
+          rawSourceEvidence: {
+            audio_sha256: input.audioSha256, transcript_sha256: sha256('[]'),
+            source_language: null, language_probability: null, segments: [], no_speech_evidence: { ...noSpeech },
+          },
+        };
+      },
+    },
+  };
+  let failure;
+  try { await analyzeSourceAudio(ctx, validInput(harness.sourceAsset.id)); }
+  catch (error) { failure = error; }
+  assert.ok(failure, 'a failed native COMMIT must never return a successful evidence asset');
+  assert.equal(workerCalls, 2);
+  assert.equal(reachedCommit, true);
+  assert.equal(registeredInside, 1);
+  assert.equal(jsonExistedInside, true);
+  assert.equal(harness.db.inTransaction, false);
+  assert.equal(harness.db.prepare("SELECT COUNT(*) AS n FROM assets WHERE category = 'redraw_source_audio_evidence'").get().n, 0);
+  assert.equal(harness.db.prepare('SELECT COUNT(*) AS n FROM g2_commit_child').get().n, 0);
+  assert.equal(fs.existsSync(evidencePath), false, 'remove the current task JSON after the real COMMIT rollback');
+  assert.equal(fs.readFileSync(keepPath, 'utf8'), 'untouched sibling');
+  assert.deepEqual(fs.readdirSync(harness.privateAudioRoot), []);
+  assert.equal(failure.code, 'SOURCE_AUDIO_PERSISTENCE_FAILED');
 });
 
 test('analyzeSourceAudio feeds ffmpeg an immutable private snapshot when the registered source path changes', async (t) => {

@@ -8,6 +8,7 @@ const { promisify } = require('node:util');
 const sharp = require('sharp');
 
 const assetService = require('./assetService');
+const motionProcessingReport = require('./redrawMotionProcessingReportService');
 const { getFfprobePath } = require('../utils/ffmpegPath');
 const {
   invalidateCharacterDependents,
@@ -51,6 +52,7 @@ const MOTION_INPUT_FIELDS = new Set([
   'sourceIdentityObscured',
   'sourceTextObscured',
   'motionPreserved',
+  'processingReport',
   'file',
 ]);
 const IMAGE_TYPES = Object.freeze({
@@ -510,7 +512,8 @@ async function cleanupCreatedFile(ctx, stored) {
 }
 
 function isReferenceArtifactError(error) {
-  return typeof error?.code === 'string' && error.code.startsWith('REDRAW_REFERENCE_ARTIFACT_');
+  return typeof error?.code === 'string' && (error.code.startsWith('REDRAW_REFERENCE_ARTIFACT_')
+    || error.code.startsWith('REDRAW_MOTION_PROCESSING_'));
 }
 
 function isUniqueConstraintError(error) {
@@ -548,6 +551,7 @@ function normalizeMotionInput(rawInput) {
     sourceIdentityObscured: rawInput.sourceIdentityObscured,
     sourceTextObscured: rawInput.sourceTextObscured,
     motionPreserved: rawInput.motionPreserved,
+    processingReport: rawInput.processingReport,
     file: rawInput.file,
   };
 }
@@ -689,7 +693,7 @@ function assertMotionProbe(probe, scope) {
   };
 }
 
-async function inspectMotionMedia(ctx, media, scope) {
+async function inspectMotionMedia(ctx, media, scope, processingAttachment = null) {
   const directory = path.join(ctx.storageRoot, 'redraw-conditioning');
   try {
     await fs.promises.mkdir(directory, { recursive: true });
@@ -711,6 +715,7 @@ async function inspectMotionMedia(ctx, media, scope) {
       ? ctx.motionProbeRunner
       : defaultMotionProbe;
     const probe = await runner(probePath);
+    await motionProcessingReport.verifyProcessingUpload(probePath, processingAttachment);
     return { ...media, ...assertMotionProbe(probe, scope) };
   } catch (error) {
     if (isReferenceArtifactError(error)) throw error;
@@ -754,6 +759,7 @@ function motionRequestHash(ctx, input, scope, fileSha256) {
     source_text_obscured: input.sourceTextObscured,
     motion_preserved: input.motionPreserved,
     file_sha256: fileSha256,
+    ...(input.processingReportSha256 ? { processing_report_sha256: input.processingReportSha256 } : {}),
   }));
 }
 
@@ -1012,15 +1018,22 @@ async function importCharacterReferenceArtifact(rawCtx, rawInput) {
         ? nextTimestamp(ctx, currentCharacter.updated_at)
         : currentTimestamp(ctx);
       if (input.purpose === 'identity') {
+        const sourcePayload = parseJson(currentCharacter.source_ref_json);
+        let sourceRefJson = currentCharacter.source_ref_json;
+        if (Object.hasOwn(sourcePayload, 'identity_pack')) {
+          delete sourcePayload.identity_pack;
+          sourceRefJson = JSON.stringify(sourcePayload);
+        }
         const updated = ctx.db.prepare(`
           UPDATE redraw_assets
-          SET asset_id = ?, status = 'generated', approval_status = 'pending',
+          SET asset_id = ?, source_ref_json = ?, status = 'generated', approval_status = 'pending',
               approved_by = NULL, approved_at = NULL,
               error_code = NULL, error_message = NULL, updated_at = ?
           WHERE id = ? AND tenant_id = ? AND user_id = ? AND version_id = ?
             AND kind = 'character' AND updated_at = ? AND deleted_at IS NULL
         `).run(
           asset.id,
+          sourceRefJson,
           completedAt,
           input.assetId,
           ctx.tenantId,
@@ -1091,11 +1104,25 @@ async function importMotionReferenceArtifact(rawCtx, rawInput) {
     fail(CONFLICT_CODE, '动作参考镜头已被其他操作更新');
   }
   const header = inspectMotionHeader(input.file);
+  const parsedReport = motionProcessingReport.parseProcessingReport(input.processingReport);
+  if (parsedReport) input.processingReportSha256 = parsedReport.report_sha256;
   const idempotencyHash = sha256(input.idempotencyKey);
   const currentRequestHash = motionRequestHash(ctx, input, scope, header.fileSha256);
   const existing = findMotionImportRecord(ctx, input, idempotencyHash);
   if (existing) {
     assertMatchingImportRecord(existing, currentRequestHash, header.fileSha256);
+    if (parsedReport) {
+      const attachment = await motionProcessingReport.verifyProcessingReport(ctx,
+        { shot_id: input.shotId, expected_updated_at: input.expectedUpdatedAt }, parsedReport, header);
+      await inspectMotionMedia(ctx, header, scope, attachment);
+      const storedMetadata = parseJson(ctx.db.prepare('SELECT metadata FROM assets WHERE id = ? AND deleted_at IS NULL')
+        .get(Number(existing.stored_asset_id))?.metadata);
+      if (stableJson(storedMetadata.redraw_motion_processing) !== stableJson(attachment)) {
+        fail(CONFLICT_CODE, '动作参考处理附件已漂移');
+      }
+      await motionProcessingReport.verifyProcessingReport(ctx,
+        { shot_id: input.shotId, expected_updated_at: input.expectedUpdatedAt }, parsedReport, header);
+    }
     const existingAsset = ctx.db.prepare('SELECT * FROM assets WHERE id = ? AND deleted_at IS NULL')
       .get(Number(existing.stored_asset_id));
     const motion = parseJson(existingAsset?.metadata).redraw_motion_import;
@@ -1108,9 +1135,14 @@ async function importMotionReferenceArtifact(rawCtx, rawInput) {
     return replayMotionResult(ctx, input, replayMedia, existing, scope);
   }
 
-  const media = await inspectMotionMedia(ctx, header, scope);
+  const processingAttachment = await motionProcessingReport.verifyProcessingReport(ctx,
+    { shot_id: input.shotId, expected_updated_at: input.expectedUpdatedAt }, parsedReport, header);
+  const media = await inspectMotionMedia(ctx, header, scope, processingAttachment);
   const stored = await storeMotion(ctx, media);
   try {
+    // The final trusted read is immediately followed by the synchronous transaction: no async gap before insert.
+    if (processingAttachment) await motionProcessingReport.verifyProcessingReport(ctx,
+      { shot_id: input.shotId, expected_updated_at: input.expectedUpdatedAt }, parsedReport, header);
     const transaction = ctx.db.transaction(() => {
       const concurrentImport = findMotionImportRecord(ctx, input, idempotencyHash);
       if (concurrentImport) {
@@ -1124,6 +1156,7 @@ async function importMotionReferenceArtifact(rawCtx, rawInput) {
       }
       const completedAt = currentTimestamp(ctx);
       const metadata = motionMetadata(ctx, input, currentScope, media, completedAt);
+      if (processingAttachment) metadata.redraw_motion_processing = processingAttachment;
       const asset = assetService.create(ctx.db, ctx.log, {
         name: media.originalname,
         type: 'video',
@@ -1398,8 +1431,21 @@ async function bindReadyMotionReference(rawCtx, rawInput) {
   } catch (_) {
     motionBindingError(MOTION_STALE_CODE, '动作参考文件已漂移');
   }
+  const assertProcessingMaterial = async () => {
+    if (!Object.hasOwn(metadata, 'redraw_motion_processing')) return;
+    try {
+      await motionProcessingReport.assertStoredProcessingMaterial(ctx,
+        { shot_id: input.shotId, expected_updated_at: scope.updated_at }, metadata.redraw_motion_processing, pending);
+      const latest = currentPendingMotionCandidate(ctx, input.shotId);
+      if (latest?.id !== candidate.id || latest.metadata !== originalMetadata) throw new Error('candidate changed');
+    } catch (_) {
+      motionBindingError(MOTION_STALE_CODE, '动作处理材料已漂移');
+    }
+  };
+  await assertProcessingMaterial();
   const bindings = await currentBindingsOrNotReady(ctx, input);
   assertPendingMatchesCurrentBindings(pending, bindings);
+  await assertProcessingMaterial();
   if (!readyMotionMatches(metadata, ctx, input, bindings)) {
     const boundAt = currentTimestamp(ctx);
     metadata.redraw_motion_reference = {
@@ -1440,8 +1486,215 @@ async function bindReadyMotionReference(rawCtx, rawInput) {
   };
 }
 
+function motionCandidateError(kind = 'UNAVAILABLE') {
+  return codedError(`REDRAW_MOTION_CANDIDATE_${kind}`, '动作参考候选不可用');
+}
+
+function normalizeMotionCandidateInput(ctx, input) {
+  const positiveId = (value) => /^[1-9]\d*$/.test(String(value)) && Number.isSafeInteger(Number(value));
+  if (!ctx?.db || !path.isAbsolute(String(ctx.storageRoot || ''))
+    || !input?.tenantId || !input?.userId || !positiveId(input.shotId)
+    || typeof input.expectedUpdatedAt !== 'string' || !input.expectedUpdatedAt
+    || input.expectedUpdatedAt.trim() !== input.expectedUpdatedAt || /[\x00-\x1f\x7f]/.test(input.expectedUpdatedAt)
+    || typeof input.expectedSourceSha256 !== 'string' || !SHA256_PATTERN.test(input.expectedSourceSha256)
+    || (ctx.media && (!positiveId(input.expectedImportId)
+      || typeof input.expectedFileSha256 !== 'string' || !SHA256_PATTERN.test(input.expectedFileSha256)))) {
+    throw motionCandidateError('INPUT_INVALID');
+  }
+}
+
+function motionCandidateScope(db, input) {
+  const row = db.prepare(`SELECT s.id, s.work_id AS shot_work_id, s.version_id,
+      s.start_ms, s.end_ms, s.duration_ms, s.updated_at,
+      v.updated_at AS version_updated_at, w.id AS source_work_id, w.updated_at AS work_updated_at,
+      w.source_asset_id, w.source_fingerprint, w.duration_ms AS source_duration_ms,
+      a.width AS source_width, a.height AS source_height, a.metadata AS source_metadata,
+      a.local_path AS source_local_path, a.updated_at AS source_updated_at
+    FROM redraw_shots s JOIN redraw_versions v ON v.id = s.version_id
+      AND v.tenant_id = s.tenant_id AND v.user_id = s.user_id AND v.deleted_at IS NULL
+    JOIN redraw_works w ON w.id = v.work_id
+      AND w.tenant_id = s.tenant_id AND w.user_id = s.user_id AND w.deleted_at IS NULL
+    JOIN assets a ON a.id = w.source_asset_id AND a.type = 'video' AND a.deleted_at IS NULL
+    JOIN tenant_members m ON m.tenant_id = s.tenant_id AND m.user_id = s.user_id AND m.status = 'active'
+    JOIN tenants t ON t.id = m.tenant_id AND t.status = 'active'
+    WHERE s.id = ? AND s.tenant_id = ? AND s.user_id = ? AND s.deleted_at IS NULL`)
+    .get(Number(input.shotId), input.tenantId, input.userId);
+  if (!row || (row.shot_work_id !== '' && (
+    typeof row.shot_work_id !== 'string' || row.shot_work_id.trim() !== row.shot_work_id
+    || !/^[1-9]\d*(?:\.0)?$/.test(row.shot_work_id)
+    || !Number.isSafeInteger(Number(row.shot_work_id))
+    || Number(row.shot_work_id) !== row.source_work_id))) {
+    throw motionCandidateError('NOT_FOUND');
+  }
+  const metadata = parseJson(row.source_metadata);
+  if (metadata.tenant_id !== input.tenantId || metadata.user_id !== input.userId) throw motionCandidateError('NOT_FOUND');
+  if (row.updated_at !== input.expectedUpdatedAt || row.source_fingerprint !== input.expectedSourceSha256) {
+    throw motionCandidateError('CONFLICT');
+  }
+  if (![row.source_width, row.source_height, row.source_duration_ms, row.duration_ms].every((value) => Number.isSafeInteger(value) && value > 0)
+    || !Number.isSafeInteger(row.start_ms) || row.start_ms < 0
+    || !Number.isSafeInteger(row.end_ms) || row.end_ms > row.source_duration_ms
+    || row.end_ms - row.start_ms !== row.duration_ms
+    || (metadata.sha256 != null && metadata.sha256 !== row.source_fingerprint)
+    || (metadata.source_fingerprint != null && metadata.source_fingerprint !== row.source_fingerprint)) {
+    throw motionCandidateError();
+  }
+  return row;
+}
+
+// Unlike binding's legacy selector, a deleted latest completed import must not reveal an older file.
+function latestMotionCandidate(db, input, scope) {
+  return db.prepare(`SELECT i.id AS import_id, i.file_sha256 AS import_file_sha256,
+      i.stored_asset_id, a.*
+    FROM redraw_reference_artifact_imports i LEFT JOIN assets a ON a.id = i.stored_asset_id
+    WHERE i.tenant_id = ? AND i.user_id = ? AND i.version_id = ?
+      AND i.scope_type = 'shot' AND i.scope_id = ? AND i.purpose = 'motion' AND i.status = 'completed'
+    ORDER BY i.id DESC LIMIT 1`).get(input.tenantId, input.userId, scope.version_id, Number(input.shotId));
+}
+
+function validateMotionCandidate(input, scope, asset) {
+  const metadata = parseJson(asset.metadata);
+  const motion = metadata.redraw_motion_import;
+  if (!asset.id || asset.deleted_at != null || asset.id !== asset.stored_asset_id
+    || !SHA256_PATTERN.test(String(asset.import_file_sha256 || ''))
+    || metadata.source !== 'redraw_motion_reference_import'
+    || metadata.tenant_id !== input.tenantId || metadata.user_id !== input.userId
+    || metadata.version_id !== scope.version_id || metadata.scope_type !== 'shot'
+    || metadata.scope_id !== Number(input.shotId) || metadata.purpose !== 'motion'
+    || !motion || motion.schema_version !== 'redraw-motion-import-v1'
+    || motion.tenant_id !== input.tenantId || motion.user_id !== input.userId
+    || motion.version_id !== scope.version_id || motion.shot_id !== Number(input.shotId)
+    || motion.source_work_id !== scope.source_work_id || motion.source_asset_id !== scope.source_asset_id
+    || motion.source_fingerprint !== scope.source_fingerprint
+    || motion.clip_start_ms !== scope.start_ms || motion.clip_end_ms !== scope.end_ms
+    || metadata.sha256 !== asset.import_file_sha256 || motion.file_sha256 !== asset.import_file_sha256
+    || motion.width !== scope.source_width || motion.height !== scope.source_height
+    || asset.width !== motion.width || asset.height !== motion.height
+    || !Number.isSafeInteger(motion.duration_ms) || motion.duration_ms <= 0
+    || Math.abs(motion.duration_ms - scope.duration_ms) > MOTION_DURATION_TOLERANCE_MS
+    || !Number.isFinite(asset.duration) || asset.duration <= 0
+    || Math.abs(asset.duration * 1000 - motion.duration_ms) > MOTION_DURATION_TOLERANCE_MS
+    || !Number.isSafeInteger(asset.file_size) || asset.file_size <= 0 || asset.file_size > MAX_MOTION_BYTES
+    || asset.type !== 'video' || asset.category !== 'redraw' || asset.mime_type !== 'video/mp4'
+    || motion.mime_type !== 'video/mp4' || motion.video_codec !== 'h264' || motion.audio_stream_count !== 0
+    || motion.reviewed_by !== input.userId || typeof motion.reviewed_at !== 'string'
+    || !motion.reviewed_at.trim() || !Number.isFinite(Date.parse(motion.reviewed_at))
+    || motion.review?.full_frame_reviewed !== true || motion.review?.source_identity_obscured !== true
+    || motion.review?.source_text_obscured !== true || motion.review?.motion_preserved !== true
+    || asset.local_path !== motionRelativePath(asset.import_file_sha256)) throw motionCandidateError();
+  return motion;
+}
+
+function checkedMotionCandidatePath(filename) {
+  const resolved = path.resolve(filename);
+  let current = path.parse(resolved).root;
+  const parts = resolved.slice(current.length).split(path.sep).filter(Boolean);
+  let stat = fs.lstatSync(current, { bigint: true });
+  if (stat.isSymbolicLink() || !stat.isDirectory()) throw motionCandidateError();
+  for (let index = 0; index < parts.length; index += 1) {
+    current = path.join(current, parts[index]);
+    stat = fs.lstatSync(current, { bigint: true });
+    if (stat.isSymbolicLink() || (index < parts.length - 1 ? !stat.isDirectory() : !stat.isFile())) throw motionCandidateError();
+  }
+  const real = fs.realpathSync.native(resolved);
+  if (process.platform === 'win32' ? real.toLowerCase() !== resolved.toLowerCase() : real !== resolved) throw motionCandidateError();
+  return stat;
+}
+
+function sameMotionCandidateStat(left, right) {
+  return ['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].every((key) => left[key] === right[key]);
+}
+
+async function prepareMotionReferenceCandidate(ctx, input) {
+  normalizeMotionCandidateInput(ctx, input);
+  ctx.signal?.throwIfAborted();
+  const scope = motionCandidateScope(ctx.db, input);
+  const candidate = latestMotionCandidate(ctx.db, input, scope);
+  let handle = null;
+  let filename;
+  let verifiedStat;
+  const cleanup = async () => {
+    if (handle) {
+      const owned = handle;
+      handle = null;
+      await owned.close();
+    }
+  };
+  const assertCurrentRecordBinding = () => {
+    ctx.signal?.throwIfAborted();
+    if (JSON.stringify(motionCandidateScope(ctx.db, input)) !== JSON.stringify(scope)
+      || JSON.stringify(latestMotionCandidate(ctx.db, input, scope)) !== JSON.stringify(candidate)) {
+      throw motionCandidateError('CONFLICT');
+    }
+  };
+  const assertCurrentBinding = () => {
+    assertCurrentRecordBinding();
+    if (verifiedStat) {
+      try {
+        if (!handle || !sameMotionCandidateStat(verifiedStat, fs.fstatSync(handle.fd, { bigint: true }))
+          || !sameMotionCandidateStat(verifiedStat, checkedMotionCandidatePath(filename))) throw motionCandidateError('CONFLICT');
+      } catch (_) { throw motionCandidateError('CONFLICT'); }
+    }
+  };
+  const data = {
+    shot_id: Number(input.shotId), version_id: scope.version_id, shot_updated_at: scope.updated_at,
+    source_sha256: scope.source_fingerprint, status: candidate ? 'unavailable' : 'missing', candidate: null,
+  };
+  try {
+    if (!candidate) {
+      if (ctx.media) throw motionCandidateError('CONFLICT');
+    } else {
+      if (ctx.media && (candidate.import_id !== Number(input.expectedImportId)
+        || candidate.import_file_sha256 !== input.expectedFileSha256)) throw motionCandidateError('CONFLICT');
+      try {
+        const motion = validateMotionCandidate(input, scope, candidate);
+        filename = path.join(path.resolve(ctx.storageRoot), candidate.local_path);
+        const before = checkedMotionCandidatePath(filename);
+        if (before.size !== BigInt(candidate.file_size)) throw motionCandidateError();
+        handle = await fs.promises.open(filename, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+        if (!sameMotionCandidateStat(before, await handle.stat({ bigint: true }))
+          || !sameMotionCandidateStat(before, checkedMotionCandidatePath(filename))) throw motionCandidateError();
+        const hash = crypto.createHash('sha256');
+        const buffer = Buffer.alloc(64 * 1024);
+        let offset = 0;
+        while (offset < candidate.file_size) {
+          ctx.signal?.throwIfAborted();
+          const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, candidate.file_size - offset), offset);
+          if (!bytesRead) throw motionCandidateError();
+          hash.update(buffer.subarray(0, bytesRead));
+          offset += bytesRead;
+        }
+        ctx.signal?.throwIfAborted();
+        if (hash.digest('hex') !== candidate.import_file_sha256
+          || !sameMotionCandidateStat(before, await handle.stat({ bigint: true }))
+          || !sameMotionCandidateStat(before, checkedMotionCandidatePath(filename))) throw motionCandidateError();
+        verifiedStat = before;
+        data.status = 'available';
+        data.candidate = { import_id: candidate.import_id, asset: buildMotionResult(candidate, motion).asset };
+      } catch (error) {
+        await cleanup();
+        ctx.signal?.throwIfAborted();
+        assertCurrentBinding();
+        if (ctx.media) throw motionCandidateError();
+      }
+    }
+    assertCurrentBinding();
+    return {
+      data, assertCurrentRecordBinding, assertCurrentBinding, cleanup,
+      createReadStream() {
+        if (!handle || !verifiedStat || data.status !== 'available') throw motionCandidateError();
+        return handle.createReadStream({ start: 0, end: candidate.file_size - 1, autoClose: false });
+      },
+    };
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
+}
+
 module.exports = {
   importCharacterReferenceArtifact,
   importMotionReferenceArtifact,
   bindReadyMotionReference,
+  prepareMotionReferenceCandidate,
 };

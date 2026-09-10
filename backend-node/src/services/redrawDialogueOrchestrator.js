@@ -65,6 +65,7 @@ function quoteDialogue(db, ctx = {}) {
   assertApprovedDialogueScopeWhenRequired(db, normalized, ctx);
   return dialogueService.quoteDialoguePlan(db, {
     ...normalized,
+    storageRoot: ctx.storageRoot,
     canReadAudioAsset: ctx.canReadAudioAsset,
     canReadAsset: ctx.canReadAsset,
     canReadArtifact: ctx.canReadArtifact,
@@ -202,6 +203,7 @@ function runDialogueJob(db, log, ctx, input, taskId, deps) {
         tenantId: ctx.tenantId,
         userId: ctx.userId,
         versionId: ctx.versionId,
+        storageRoot: deps.storageRoot,
         synthesizeSegment: deps.synthesizeSegment,
         canReadAudioAsset: deps.canReadAudioAsset,
         localeRegistry: deps.localeRegistry,
@@ -232,6 +234,7 @@ function startDialogue(db, log, ctx = {}, input = {}, deps = {}) {
   const normalizedInput = normalizeInput(input);
   const quote = quoteDialogue(db, {
     ...normalizedCtx,
+    storageRoot: ctx.storageRoot,
     canReadAudioAsset: deps.canReadAudioAsset,
     canReadAsset: deps.canReadAsset,
     canReadArtifact: deps.canReadArtifact,
@@ -240,7 +243,7 @@ function startDialogue(db, log, ctx = {}, input = {}, deps = {}) {
     localeVerifier: deps.localeVerifier || ctx.localeVerifier,
   });
   if (quote.status !== 'ready') {
-    throw codedError('REDRAW_DIALOGUE_PLAN_NOT_READY', '配音计划需要重写', { quote });
+    throw codedError('REDRAW_DIALOGUE_PLAN_NOT_READY', quote.issues?.[0]?.message || '配音计划需要重写', { quote });
   }
   if (normalizedInput.quoteHash !== quote.quote_hash) {
     throw codedError('REDRAW_DIALOGUE_QUOTE_MISMATCH', '配音报价已变化', { quote });
@@ -265,6 +268,7 @@ function startDialogue(db, log, ctx = {}, input = {}, deps = {}) {
   const schedule = typeof deps.schedule === 'function' ? deps.schedule : defaultSchedule;
   const dialogueDeps = {
     ...deps,
+    storageRoot: ctx.storageRoot,
     localeRegistry: deps.localeRegistry || ctx.localeRegistry,
     localeVerifier: deps.localeVerifier || ctx.localeVerifier,
   };

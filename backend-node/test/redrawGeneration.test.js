@@ -1599,7 +1599,7 @@ function addVerifiedGenerationCapability(db, model, overrides = {}) {
   return configId;
 }
 
-function installBlueprintFirstProductionPack(state, shotId) {
+function installBlueprintFirstProductionPack(state, shotId, sourceEvidence = null) {
   const blueprint = {
     schema_version: 'episode-blueprint-v1',
     characters: [{ id: 'character-lead', source_name: '小满', role: 'courier' }],
@@ -1622,6 +1622,12 @@ function installBlueprintFirstProductionPack(state, shotId) {
     }],
     review: { status: 'locked' },
   };
+  if (sourceEvidence) {
+    blueprint.source = sourceEvidence.source;
+    blueprint.evidence_manifest = { items: [sourceEvidence.manifest] };
+    blueprint.shots[0].dialogue[0].source_language = 'zh';
+    blueprint.shots[0].dialogue[0].evidence_refs = [sourceEvidence.manifest.id];
+  }
   blueprint.blueprint_hash = crypto.createHash('sha256').update(stableJson(blueprint)).digest('hex');
   const localization = {
     schema_version: 'episode-localization-v1',
@@ -1819,6 +1825,49 @@ test('production pack source-language transaction double-check rejects self-cons
     redrawBillingService.reserveShotGeneration = originalReserve;
     state.db.close();
   }
+});
+
+test('source dialogue evidence is rechecked inside video creation transaction before reserve', async (t) => {
+  const state = setup();
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-generation-source-dialogue-'));
+  t.after(() => { state.db.close(); fs.rmSync(storageRoot, { recursive: true, force: true }); });
+  const digest = (value) => crypto.createHash('sha256').update(value).digest('hex');
+  const sourceSha = digest('original-source');
+  state.db.prepare('UPDATE redraw_works SET source_fingerprint = ? WHERE id = ?').run(sourceSha, state.workId);
+  const evidence = { schema_version: 'redraw-source-audio-evidence-v1', task_id: 'task-original',
+    tenant_id: 'tenant-a', user_id: 'user-a', work_id: state.workId, source_asset_id: 1,
+    source_video_sha256: sourceSha, audio_sha256: digest('audio'), transcript_sha256: digest('transcript'),
+    source_language: 'zh', language_probability: 0.99, dialogue_mode: 'spoken', created_at: state.now,
+    segments: [{ id: 'dialogue-1', start_ms: 500, end_ms: 2500, source_text: '我回来了。', speaker_cluster_id: 'speaker-cluster-1' }] };
+  const evidencePath = path.join(storageRoot, 'source-evidence.json');
+  fs.writeFileSync(evidencePath, JSON.stringify(evidence));
+  const evidenceSha = digest(fs.readFileSync(evidencePath));
+  const metadata = { schema_version: evidence.schema_version, tenant_id: 'tenant-a', user_id: 'user-a',
+    work_id: state.workId, source_asset_id: 1, source_video_sha256: sourceSha,
+    audio_sha256: evidence.audio_sha256, transcript_sha256: evidence.transcript_sha256, evidence_sha256: evidenceSha };
+  const assetId = Number(state.db.prepare(`INSERT INTO assets (name, type, category, local_path, metadata, created_at, updated_at)
+    VALUES ('source evidence', 'json', 'redraw_source_audio_evidence', 'source-evidence.json', ?, ?, ?)`)
+    .run(JSON.stringify(metadata), state.now, state.now).lastInsertRowid);
+  const shotId = addShot(state.db, state.versionId);
+  installBlueprintFirstProductionPack(state, shotId, {
+    source: { asset_id: 1, sha256: sourceSha, duration_ms: 15000 },
+    manifest: { id: 'audio-source-1', kind: 'audio_transcript', asset_id: assetId, sha256: evidenceSha },
+  });
+  addVerifiedGenerationCapability(state.db, 'seedance 2.0', { locale: 'en-US', market: 'US' });
+  let transactions = 0;
+  let providers = 0;
+  await assert.rejects(generateShot(ctx(state.db, {
+    storageRoot,
+    awaitCompletion: true,
+    beforeCreateTransaction() { transactions += 1; fs.appendFileSync(evidencePath, ' '); },
+    videoProcessor: async () => { providers += 1; },
+  }), { shotId }), { code: 'SOURCE_DIALOGUE_EVIDENCE_INVALID' });
+  assert.equal(transactions, 1);
+  assert.equal(providers, 0);
+  assert.equal(count(state.db, 'tenant_usage_reservations'), 0);
+  assert.equal(count(state.db, 'video_generations'), 0);
+  assert.equal(count(state.db, 'async_tasks', "type = 'redraw_shot'"), 0);
+  assert.equal(credits.getTenantAccount(state.db, 'tenant-a').held, 0);
 });
 
 test('stale production pack preparation snapshot fails closed before provider credit reserve and task writes', async () => {

@@ -1,6 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const Database = require('better-sqlite3');
+const fs = require('node:fs');
+const { registerSourceDialogueEvidence } = require('./helpers/localizationSourceEvidence');
+const sourceEvidenceLog = { info() {}, warn() {}, error() {} };
 
 const credits = require('../src/services/creditLedgerService');
 const modelPrice = require('../src/services/modelPriceService');
@@ -222,6 +225,10 @@ function createDb(options = {}) {
       current_step INTEGER NOT NULL DEFAULT 1,
       status TEXT NOT NULL DEFAULT 'fact_confirmed' CHECK (status IN ('draft', 'fact_confirmed', 'analyzing', 'asset_review', 'ready_to_generate', 'generating', 'composing', 'completed', 'failed', 'needs_attention', 'needs_review', 'blocked')),
       task_id TEXT,
+      source_asset_id INTEGER,
+      source_fingerprint TEXT,
+      duration_ms INTEGER,
+      deleted_at TEXT,
       updated_at TEXT
     );
     CREATE TABLE redraw_versions (
@@ -503,6 +510,133 @@ test('quotes only when verified text capability and model price are available', 
   assert.equal(quote.snapshot.capability.provider, 'verified-provider');
   assert.equal(quote.snapshot.input.style_snapshot.tone, 'thriller');
   db.close();
+});
+
+test('quote binds trusted complete source dialogue evidence and ignores client sidecars', (t) => {
+  const blueprint = episodeBlueprint();
+  const db = createDb({ blueprint, sourceFacts: v2SourceFacts() });
+  t.after(() => db.close());
+  const evidence = registerSourceDialogueEvidence(t, db, blueprint, { crossShot: true });
+  const input = quoteInput({ source_dialogue: [{ status: 'resolved', source_start_ms: 999 }] });
+  const quote = quoteLocalization(db, input, null, { storageRoot: evidence.storageRoot });
+  assert.equal(Array.isArray(quote.snapshot.input.source_dialogue), true);
+  assert.equal(quote.snapshot.input.source_dialogue[0].status, 'resolved');
+  assert.equal(quote.snapshot.input.source_dialogue[0].source_start_ms, 500);
+  assert.equal(quote.snapshot.input.source_dialogue[0].source_end_ms, 2500);
+  assert.equal(quote.snapshot.input.source_dialogue[0].projection_start_ms, 2000);
+  assert.equal(quote.snapshot.input.source_dialogue[0].evidence_sha256, evidence.evidenceSha);
+  assert.doesNotMatch(JSON.stringify(quote.snapshot.input.source_dialogue), /local_path|metadata|localization-source-dialogue-/);
+  const legacy = createDb({ blueprint: true, sourceFacts: v2SourceFacts() });
+  t.after(() => legacy.close());
+  const oldQuote = quoteLocalization(legacy, quoteInput());
+  assert.equal(oldQuote.snapshot.input.source_dialogue[0].status, 'not_available');
+  assert.equal(Object.hasOwn(oldQuote.snapshot.input.source_dialogue[0], 'source_start_ms'), false);
+  assert.notEqual(quote.input_hash, oldQuote.input_hash);
+  assert.notEqual(quote.quote_hash, oldQuote.quote_hash);
+});
+
+test('changed source evidence after quote blocks start before reservation, task and provider', (t) => {
+  const blueprint = episodeBlueprint();
+  const db = createDb({ blueprint, sourceFacts: v2SourceFacts() });
+  t.after(() => db.close());
+  const evidence = registerSourceDialogueEvidence(t, db, blueprint);
+  const quote = quoteLocalization(db, quoteInput(), null, { storageRoot: evidence.storageRoot });
+  fs.appendFileSync(evidence.evidencePath, ' ');
+  const provider = providerReturning(episodeLocalizedResult());
+  const countBefore = db.prepare('SELECT COUNT(*) AS count FROM async_tasks').get().count;
+  assert.throws(() => startLocalization(db, sourceEvidenceLog, {
+    ...quoteInput(), idempotencyKey: 'evidence-drift-before-start', quoteHash: quote.quote_hash,
+    source_dialogue: [{ status: 'resolved', source_start_ms: 0, source_end_ms: 99999 }],
+  }, { provider, validateTargetText: verifiedTargetLanguage, storageRoot: evidence.storageRoot, schedule: () => Promise.resolve() }),
+  (error) => error.code === 'LOCALIZATION_SOURCE_DIALOGUE_UNRESOLVED');
+  assert.equal(provider.calls.length, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM async_tasks').get().count, countBefore);
+});
+
+test('generation uses full source duration but persists projection and replays without live evidence', async (t) => {
+  const blueprint = episodeBlueprint();
+  const db = createDb({ blueprint, sourceFacts: v2SourceFacts() });
+  t.after(() => db.close());
+  const evidence = registerSourceDialogueEvidence(t, db, blueprint, { crossShot: true });
+  const quote = quoteLocalization(db, quoteInput(), null, { storageRoot: evidence.storageRoot });
+  const provider = providerReturning(episodeLocalizedResult());
+  const input = { ...quoteInput(), idempotencyKey: 'full-source-generation', quoteHash: quote.quote_hash };
+  const first = startLocalization(db, sourceEvidenceLog, input, {
+    provider, validateTargetText: verifiedTargetLanguage, storageRoot: evidence.storageRoot, schedule: (job) => job(),
+  });
+  await first.completion;
+  const stored = JSON.parse(db.prepare('SELECT localization_review_json FROM redraw_versions WHERE id = ?')
+    .get(first.draft_version_id).localization_review_json);
+  assert.equal(stored.dialogue_map[0].target_text, 'I am back.');
+  assert.deepEqual([stored.dialogue_map[0].start_ms, stored.dialogue_map[0].end_ms], [2000, 2500]);
+  assert.equal(stored.dialogue_map[0].estimated_duration_ms, 900);
+  assert.equal(provider.calls[0].input.source_dialogue[0].source_start_ms, 500);
+  fs.unlinkSync(evidence.evidencePath);
+  const replay = startLocalization(db, sourceEvidenceLog, input, { provider, storageRoot: evidence.storageRoot });
+  assert.equal(replay.task_id, first.task_id);
+  assert.equal(replay.completion, null);
+  assert.throws(() => startLocalization(db, sourceEvidenceLog, { ...input, market: 'GB' }, { provider }),
+    (error) => error.code === 'REDRAW_LOCALIZATION_IDEMPOTENCY_CONFLICT');
+  assert.equal(provider.calls.length, 1);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 1);
+});
+
+test('historical idempotent task without persisted input rejects replay without live evidence or new work', async (t) => {
+  const blueprint = episodeBlueprint();
+  const db = createDb({ blueprint, sourceFacts: v2SourceFacts() });
+  t.after(() => db.close());
+  const evidence = registerSourceDialogueEvidence(t, db, blueprint);
+  const quote = quoteLocalization(db, quoteInput(), null, { storageRoot: evidence.storageRoot });
+  const provider = providerReturning(episodeLocalizedResult());
+  const input = { ...quoteInput(), idempotencyKey: 'historical-missing-input', quoteHash: quote.quote_hash };
+  const first = startLocalization(db, sourceEvidenceLog, input, {
+    provider, storageRoot: evidence.storageRoot, validateTargetText: verifiedTargetLanguage, schedule: (job) => job(),
+  });
+  await first.completion;
+  const snapshot = JSON.parse(db.prepare('SELECT localization_model_snapshot_json FROM redraw_versions WHERE id = ?')
+    .get(first.draft_version_id).localization_model_snapshot_json);
+  delete snapshot.input;
+  db.prepare('UPDATE redraw_versions SET localization_model_snapshot_json = ? WHERE id = ?')
+    .run(JSON.stringify(snapshot), first.draft_version_id);
+  fs.unlinkSync(evidence.evidencePath);
+  const rowsBefore = db.prepare('SELECT * FROM redraw_versions').all();
+  const tasksBefore = db.prepare('SELECT * FROM async_tasks').all();
+  const reservationsBefore = db.prepare('SELECT * FROM tenant_usage_reservations').all();
+  let scheduled = 0;
+  for (const request of [input, { ...input, market: 'GB' }]) {
+    assert.throws(() => startLocalization(db, sourceEvidenceLog, request, {
+      provider, storageRoot: evidence.storageRoot, schedule() { scheduled += 1; },
+    }), (error) => error.code === 'REDRAW_LOCALIZATION_IDEMPOTENCY_CONFLICT');
+  }
+  assert.equal(scheduled, 0);
+  assert.equal(provider.calls.length, 1);
+  assert.deepEqual(db.prepare('SELECT * FROM redraw_versions').all(), rowsBefore);
+  assert.deepEqual(db.prepare('SELECT * FROM async_tasks').all(), tasksBefore);
+  assert.deepEqual(db.prepare('SELECT * FROM tenant_usage_reservations').all(), reservationsBefore);
+});
+
+test('queued generation rechecks source evidence before provider dispatch', async (t) => {
+  const blueprint = episodeBlueprint();
+  const db = createDb({ blueprint, sourceFacts: v2SourceFacts() });
+  t.after(() => db.close());
+  const evidence = registerSourceDialogueEvidence(t, db, blueprint);
+  const quote = quoteLocalization(db, quoteInput(), null, { storageRoot: evidence.storageRoot });
+  const provider = providerReturning(episodeLocalizedResult());
+  let run;
+  let finish;
+  let fail;
+  const started = startLocalization(db, sourceEvidenceLog, {
+    ...quoteInput(), idempotencyKey: 'queued-source-drift', quoteHash: quote.quote_hash,
+  }, {
+    provider, storageRoot: evidence.storageRoot, validateTargetText: verifiedTargetLanguage,
+    schedule(job) { run = job; return new Promise((resolve, reject) => { finish = resolve; fail = reject; }); },
+  });
+  fs.appendFileSync(evidence.evidencePath, ' ');
+  run().then(finish, fail);
+  await assert.rejects(started.completion, (error) => error.code === 'LOCALIZATION_SOURCE_DIALOGUE_UNRESOLVED');
+  assert.equal(provider.calls.length, 0);
+  assert.equal(credits.getReservation(db, started.reservation_id).status, 'refunded');
 });
 
 test('locked blueprint localization stays on the exact revision and waits for review without assets', async () => {

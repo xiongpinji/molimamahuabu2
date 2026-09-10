@@ -8,7 +8,7 @@ const config = require('../config');
 const {
   PROVIDER_ASSET_ROUTE,
   verifyProviderAssetUrl,
-  resolveProviderAssetPath,
+  readProviderAssetBytes,
 } = require('../services/redrawSourceConditioningService');
 
 function resolveStorageRoot(cfg, explicit) {
@@ -88,22 +88,22 @@ function createProviderAssetHandler(options = {}) {
         nowMs: typeof options.nowMs === 'function' ? options.nowMs() : options.nowMs,
       });
       const filename = String(req.params?.filename || '').toLowerCase();
-      if (filename !== `${verified.segmentSha256}.mp4`) {
+      if (filename !== path.basename(verified.pathname)) {
         const error = new Error('provider asset request 路径不匹配');
         error.code = 'REDRAW_PROVIDER_ASSET_PATH_INVALID';
         throw error;
       }
-      const absolutePath = await resolveProviderAssetPath({
+      const artifact = readProviderAssetBytes({
         storageRoot: resolveStorageRoot(cfg, options.storageRoot),
         filename,
       });
       res.set({
         'Cache-Control': 'private, no-store, max-age=0',
-        'Content-Type': 'video/mp4',
+        'Content-Type': artifact.mimeType,
         'Content-Disposition': 'inline',
         'X-Content-Type-Options': 'nosniff',
       });
-      return res.sendFile(absolutePath);
+      return res.send(artifact.bytes);
     } catch (error) {
       return res.status(errorStatus(error)).json({
         code: error?.code || 'REDRAW_PROVIDER_ASSET_UNAVAILABLE',

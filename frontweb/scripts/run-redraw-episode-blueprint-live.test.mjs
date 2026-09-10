@@ -868,7 +868,7 @@ test('shot stage keeps private uploaded references for generation POST while pub
         probedPaths.push(path.resolve(args.at(-1)))
         return JSON.stringify({
           streams: [
-            { codec_type: 'video', width: 480, height: 864, codec_name: 'h264', pix_fmt: 'yuv420p', avg_frame_rate: '24/1' },
+            { codec_type: 'video', width: 480, height: 864, codec_name: 'h264', pix_fmt: 'yuv420p', avg_frame_rate: '24/1', sample_aspect_ratio: '81:80', display_aspect_ratio: '9:16' },
             { codec_type: 'audio', channels: 2, codec_name: 'aac', sample_rate: '48000' },
           ],
           format: { duration: '5.02' },

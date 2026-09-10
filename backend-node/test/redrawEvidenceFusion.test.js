@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { createHash } = require('node:crypto');
 
 const { fuseEpisodeEvidence } = require('../src/services/redrawEvidenceFusionService');
 
@@ -242,6 +243,36 @@ test('creates a visual-only blueprint with explicit silent audio evidence', () =
   assert.ok(blueprint.shots.every((shot) => shot.audio_contract.dialogue_mode === 'silent'));
   assert.ok(blueprint.shots.every((shot) => shot.evidence_refs.includes('evidence-audio-1')));
   assert.equal(blueprint.review.status, 'needs_review');
+});
+
+test('windowed narratives keep source order while the legacy fusion ID contract stays unchanged', () => {
+  const visual = visualFacts();
+  const narrative = Array.from({ length: 12 }, (_, i) => `${i % 2 ? 'A' : 'Z'} source event ${i + 1}`);
+  for (const field of ['causal_chain', 'locked_facts', 'reversals']) visual[field] = narrative;
+  const ordered = fuse({ visualFacts: visual, preserveNarrativeOrder: true });
+  assert.deepEqual(ordered.causal_chain.map((item) => item.cause), narrative);
+  assert.deepEqual(ordered.locked_facts.map((item) => item.text), narrative);
+  assert.deepEqual(ordered.reversals.map((item) => item.text), narrative);
+  assert.deepEqual(ordered, fuse({ visualFacts: visual, preserveNarrativeOrder: true }));
+  const legacy = fuse({ visualFacts: visual });
+  const expectedLegacyIds = narrative.map((text, index) => `fact-${createHash('sha256')
+    .update(`fact\0${index}\0${text}`).digest('hex').slice(0, 16)}`).sort();
+  assert.deepEqual(legacy.locked_facts.map((item) => item.id), expectedLegacyIds);
+});
+
+test('VAD-supported no-speech evidence creates no guessed dialogue and still requires review', () => {
+  const silent = {
+    ...audioEvidence([]), dialogue_mode: 'silent', source_language: null,
+    language_probability: null, audio_sha256: 'd'.repeat(64),
+    no_speech_evidence: {
+      method: 'faster-whisper-vad', audio_duration_ms: 6000, speech_duration_ms: 0,
+    },
+  };
+  const blueprint = fuse({ audioEvidence: silent });
+  assert.deepEqual(blueprint.shots.flatMap((shot) => shot.dialogue), []);
+  assert.ok(blueprint.shots.every((shot) => shot.audio_contract.dialogue_mode === 'silent'));
+  assert.equal(blueprint.review.status, 'needs_review');
+  assert.equal(JSON.stringify(blueprint).includes('画面模型猜测的对白'), false);
 });
 
 test('rejects visual gap, overlap, duration mismatch and out-of-range shots instead of filling time', () => {

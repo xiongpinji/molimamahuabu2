@@ -293,7 +293,7 @@ function identityPack(input) {
       consistency_confirmed: true,
     },
     ready: true,
-    reviewed_by: 'user-a',
+    reviewed_by: input.userId || 'user-a',
     reviewed_at: REVIEWED_AT,
   };
   pack.pack_sha256 = sha256(stableJson(pack));
@@ -308,7 +308,7 @@ function textPack(input) {
     artifact: input.artifact,
     source_fingerprint: input.sourceFingerprint,
     ready: true,
-    reviewed_by: 'user-a',
+    reviewed_by: input.userId || 'user-a',
     reviewed_at: REVIEWED_AT,
   };
   pack.pack_sha256 = sha256(stableJson(pack));
@@ -327,7 +327,7 @@ function personCleanPack(input) {
     analysis_sha256: input.analysisSha256,
     frame_index: 0,
     ready: true,
-    reviewed_by: 'user-a',
+    reviewed_by: input.userId || 'user-a',
     reviewed_at: REVIEWED_AT,
   };
   pack.pack_sha256 = sha256(stableJson(pack));
@@ -418,6 +418,8 @@ async function createFixture(deps = {}) {
   const db = new Database(dbPath);
   try {
     runMigrationsAndEnsure(db);
+    const actor = typeof deps.createActor === 'function' ? await deps.createActor(db) : null;
+    const owner = actor ? { tenantId: actor.tenantId, userId: actor.user.id } : { tenantId: 'tenant-a', userId: 'user-a' };
     await fsp.mkdir(path.join(root, 'source'), { recursive: true });
     await fsp.mkdir(path.join(root, 'redraw'), { recursive: true });
     await fsp.mkdir(path.join(root, 'redraw-conditioning'), { recursive: true });
@@ -444,23 +446,23 @@ async function createFixture(deps = {}) {
     insertAsset(db, { id: 101, name: 'source', type: 'video', localPath: 'source/source.mp4', mimeType: 'video/mp4', sha256: sourceFingerprint, width: 864, height: 496 });
     db.prepare(`INSERT INTO redraw_projects
       (tenant_id, user_id, title, default_locale, default_market, created_at, updated_at)
-      VALUES ('tenant-a', 'user-a', 'reference bundle local project', 'en-US', 'US', ?, ?)`).run(UPDATED_AT, UPDATED_AT);
+      VALUES (@fixtureTenant, @fixtureUser, 'reference bundle local project', 'en-US', 'US', ?, ?)`).run({ fixtureTenant: owner.tenantId, fixtureUser: owner.userId }, UPDATED_AT, UPDATED_AT);
     const projectId = Number(db.prepare('SELECT id FROM redraw_projects LIMIT 1').get().id);
     db.prepare(`INSERT INTO redraw_works
       (id, project_id, tenant_id, user_id, title, source_asset_id, source_fingerprint, duration_ms, created_at, updated_at)
-      VALUES (1, ?, 'tenant-a', 'user-a', 'reference bundle local work', 101, ?, 12000, ?, ?)`)
-      .run(projectId, sourceFingerprint, UPDATED_AT, UPDATED_AT);
+      VALUES (1, ?, @fixtureTenant, @fixtureUser, 'reference bundle local work', 101, ?, 12000, ?, ?)`)
+      .run({ fixtureTenant: owner.tenantId, fixtureUser: owner.userId }, projectId, sourceFingerprint, UPDATED_AT, UPDATED_AT);
     const versionId = Number(db.prepare(`INSERT INTO redraw_versions
       (work_id, tenant_id, user_id, version, locale, market, name_map_json, source_facts_json,
        facts_hash, reference_bundle_required, status, created_at, updated_at)
-      VALUES (1, 'tenant-a', 'user-a', 1, 'en-US', 'US', ?, ?, ?, 1, 'asset_review', ?, ?)`)
-      .run(JSON.stringify(nameMap), JSON.stringify(sourceFacts), sha256(stableJson(sourceFacts)), UPDATED_AT, UPDATED_AT).lastInsertRowid);
+      VALUES (1, @fixtureTenant, @fixtureUser, 1, 'en-US', 'US', ?, ?, ?, 1, 'asset_review', ?, ?)`)
+      .run({ fixtureTenant: owner.tenantId, fixtureUser: owner.userId }, JSON.stringify(nameMap), JSON.stringify(sourceFacts), sha256(stableJson(sourceFacts)), UPDATED_AT, UPDATED_AT).lastInsertRowid);
     const shotId = Number(db.prepare(`INSERT INTO redraw_shots
       (work_id, version_id, tenant_id, user_id, shot_id, batch_index, shot_index, start_ms, end_ms,
        duration_ms, source_dialogue_json, localized_dialogue_json, references_json, reference_bundle_json,
        created_at, updated_at)
-      VALUES (1, ?, 'tenant-a', 'user-a', 'shot-1', 1, 1, 0, 5000, 5000, ?, ?, '[]', '{}', ?, ?)`)
-      .run(
+      VALUES (1, ?, @fixtureTenant, @fixtureUser, 'shot-1', 1, 1, 0, 5000, 5000, ?, ?, '[]', '{}', ?, ?)`)
+      .run({ fixtureTenant: owner.tenantId, fixtureUser: owner.userId },
         versionId,
         JSON.stringify([{ speaker_id: 'character-001', text: 'source dialogue redacted', start_ms: 0, end_ms: 2400 }]),
         JSON.stringify([
@@ -474,11 +476,11 @@ async function createFixture(deps = {}) {
       (work_id, version_id, tenant_id, user_id, shot_id, batch_index, shot_index, start_ms, end_ms,
        duration_ms, source_dialogue_json, localized_dialogue_json, references_json, reference_bundle_json,
        created_at, updated_at)
-      VALUES (1, ?, 'tenant-a', 'user-a', 'shot-2', 1, 2, 5000, 12000, 7000, '[]', '[]', '[]', '{}', ?, ?)`)
-      .run(versionId, UPDATED_AT, UPDATED_AT);
+      VALUES (1, ?, @fixtureTenant, @fixtureUser, 'shot-2', 1, 2, 5000, 12000, 7000, '[]', '[]', '[]', '{}', ?, ?)`)
+      .run({ fixtureTenant: owner.tenantId, fixtureUser: owner.userId }, versionId, UPDATED_AT, UPDATED_AT);
 
-    const identityA = identityPack({ sourceCharacterKey: 'character-001', targetActorLabel: 'Actor Ethan', artifact: { asset_id: 301, sha256: ethan.sha256, width: 864, height: 1296, mime_type: 'image/png', view_count: ethan.view_count, view_layout: ethan.view_layout }, wardrobe: { asset_id: 306, sha256: ethanWardrobe.sha256 } });
-    const identityB = identityPack({ sourceCharacterKey: 'character-002', targetActorLabel: 'Actor Maya', artifact: { asset_id: 302, sha256: maya.sha256, width: 864, height: 1296, mime_type: 'image/png', view_count: maya.view_count, view_layout: maya.view_layout }, wardrobe: { asset_id: 307, sha256: mayaWardrobe.sha256 } });
+    const identityA = identityPack({ userId: owner.userId, sourceCharacterKey: 'character-001', targetActorLabel: 'Actor Ethan', artifact: { asset_id: 301, sha256: ethan.sha256, width: 864, height: 1296, mime_type: 'image/png', view_count: ethan.view_count, view_layout: ethan.view_layout }, wardrobe: { asset_id: 306, sha256: ethanWardrobe.sha256 } });
+    const identityB = identityPack({ userId: owner.userId, sourceCharacterKey: 'character-002', targetActorLabel: 'Actor Maya', artifact: { asset_id: 302, sha256: maya.sha256, width: 864, height: 1296, mime_type: 'image/png', view_count: maya.view_count, view_layout: maya.view_layout }, wardrobe: { asset_id: 307, sha256: mayaWardrobe.sha256 } });
     for (const asset of [
       { id: 301, name: 'identity-ethan', localPath: 'redraw/identity-301.png', sha256: ethan.sha256, width: 864, height: 1296 },
       { id: 302, name: 'identity-maya', localPath: 'redraw/identity-302.png', sha256: maya.sha256, width: 864, height: 1296 },
@@ -502,8 +504,8 @@ async function createFixture(deps = {}) {
         sha256: motionSha,
         redraw_motion_import: {
           schema_version: 'redraw-motion-import-v1',
-          tenant_id: 'tenant-a',
-          user_id: 'user-a',
+          tenant_id: owner.tenantId,
+          user_id: owner.userId,
           version_id: versionId,
           shot_id: shotId,
           source_work_id: 1,
@@ -518,7 +520,7 @@ async function createFixture(deps = {}) {
           mime_type: 'video/mp4',
           video_codec: 'h264',
           audio_stream_count: 0,
-          reviewed_by: 'user-a',
+          reviewed_by: owner.userId,
           reviewed_at: REVIEWED_AT,
           review: {
             full_frame_reviewed: true,
@@ -534,18 +536,18 @@ async function createFixture(deps = {}) {
     db.prepare(`INSERT INTO redraw_assets
       (id, version_id, tenant_id, user_id, kind, source_ref_json, localized_name, localized_description,
        prompt, asset_id, version_number, approval_status, approved_by, approved_at, status, created_at, updated_at)
-      VALUES (?, ?, 'tenant-a', 'user-a', 'character', ?, ?, 'fictional adult target actor',
-       'identity redraw prompt', ?, 1, 'approved', 'user-a', ?, 'generated', ?, ?)`)
-      .run(201, versionId, JSON.stringify({ source_ref: { stable_id: 'character-001' }, identity_pack: identityA }), 'Actor Ethan', 301, REVIEWED_AT, UPDATED_AT, UPDATED_AT);
+      VALUES (?, ?, @fixtureTenant, @fixtureUser, 'character', ?, ?, 'fictional adult target actor',
+       'identity redraw prompt', ?, 1, 'approved', @fixtureUser, ?, 'generated', ?, ?)`)
+      .run({ fixtureTenant: owner.tenantId, fixtureUser: owner.userId }, 201, versionId, JSON.stringify({ source_ref: { stable_id: 'character-001' }, identity_pack: identityA }), 'Actor Ethan', 301, REVIEWED_AT, UPDATED_AT, UPDATED_AT);
     db.prepare(`INSERT INTO redraw_assets
       (id, version_id, tenant_id, user_id, kind, source_ref_json, localized_name, localized_description,
        prompt, asset_id, version_number, approval_status, approved_by, approved_at, status, created_at, updated_at)
-      VALUES (?, ?, 'tenant-a', 'user-a', 'character', ?, ?, 'fictional adult target actor',
-       'identity redraw prompt', ?, 1, 'approved', 'user-a', ?, 'generated', ?, ?)`)
-      .run(202, versionId, JSON.stringify({ source_ref: { stable_id: 'character-002' }, identity_pack: identityB }), 'Actor Maya', 302, REVIEWED_AT, UPDATED_AT, UPDATED_AT);
+      VALUES (?, ?, @fixtureTenant, @fixtureUser, 'character', ?, ?, 'fictional adult target actor',
+       'identity redraw prompt', ?, 1, 'approved', @fixtureUser, ?, 'generated', ?, ?)`)
+      .run({ fixtureTenant: owner.tenantId, fixtureUser: owner.userId }, 202, versionId, JSON.stringify({ source_ref: { stable_id: 'character-002' }, identity_pack: identityB }), 'Actor Maya', 302, REVIEWED_AT, UPDATED_AT, UPDATED_AT);
 
-    const textA = textPack({ regionKey: 'text-001', kind: 'text_subtitle', artifact: { asset_id: 303, sha256: subtitle.sha256, width: 864, height: 496, mime_type: 'image/png' }, sourceFingerprint });
-    const textB = textPack({ regionKey: 'text-002', kind: 'text_screen', artifact: { asset_id: 304, sha256: screen.sha256, width: 864, height: 496, mime_type: 'image/png' }, sourceFingerprint });
+    const textA = textPack({ userId: owner.userId, regionKey: 'text-001', kind: 'text_subtitle', artifact: { asset_id: 303, sha256: subtitle.sha256, width: 864, height: 496, mime_type: 'image/png' }, sourceFingerprint });
+    const textB = textPack({ userId: owner.userId, regionKey: 'text-002', kind: 'text_screen', artifact: { asset_id: 304, sha256: screen.sha256, width: 864, height: 496, mime_type: 'image/png' }, sourceFingerprint });
     for (const entry of [
       { id: 203, region: 'text-001', kind: 'text_subtitle', assetId: 303, pack: textA },
       { id: 204, region: 'text-002', kind: 'text_screen', assetId: 304, pack: textB },
@@ -553,9 +555,9 @@ async function createFixture(deps = {}) {
       db.prepare(`INSERT INTO redraw_assets
         (id, version_id, tenant_id, user_id, kind, source_ref_json, localized_name, localized_description,
          prompt, clean_plate_asset_id, version_number, approval_status, approved_by, approved_at, status, created_at, updated_at)
-        VALUES (?, ?, 'tenant-a', 'user-a', 'scene', ?, ?, 'text clean plate',
-         'remove localized text only', ?, 1, 'approved', 'user-a', ?, 'generated', ?, ?)`)
-        .run(entry.id, versionId, JSON.stringify({
+        VALUES (?, ?, @fixtureTenant, @fixtureUser, 'scene', ?, ?, 'text clean plate',
+         'remove localized text only', ?, 1, 'approved', @fixtureUser, ?, 'generated', ?, ?)`)
+        .run({ fixtureTenant: owner.tenantId, fixtureUser: owner.userId }, entry.id, versionId, JSON.stringify({
           source_ref: { stable_id: entry.region, kind: entry.kind },
           snapshot: { mode: 'text_clean_plate' },
           text_clean_plate_pack: entry.pack,
@@ -708,9 +710,9 @@ async function createFixture(deps = {}) {
       (id, version_id, tenant_id, user_id, kind, source_ref_json, localized_name,
        asset_id, version_number, approval_status, approved_by, approved_at,
        status, created_at, updated_at)
-      VALUES (205, ?, 'tenant-a', 'user-a', 'scene', ?, 'reviewed full frame coverage',
-        406, 1, 'approved', 'user-a', ?, 'generated', ?, ?)`)
-      .run(versionId, JSON.stringify({
+      VALUES (205, ?, @fixtureTenant, @fixtureUser, 'scene', ?, 'reviewed full frame coverage',
+        406, 1, 'approved', @fixtureUser, ?, 'generated', ?, ?)`)
+      .run({ fixtureTenant: owner.tenantId, fixtureUser: owner.userId }, versionId, JSON.stringify({
         source_ref: { stable_id: 'full-frame-reviewed-coverage' },
         snapshot: {
           mode: 'full_frame_reviewed_coverage', version_id: versionId,
@@ -723,6 +725,7 @@ async function createFixture(deps = {}) {
       { id: 207, key: 'face-002', cleanAssetId: 304, clean: screen, maskAssetId: 403, mask: masks.face002 },
     ]) {
       const pack = personCleanPack({
+        userId: owner.userId,
         requirementKey: person.key,
         artifact: { asset_id: person.cleanAssetId, sha256: person.clean.sha256, width: 864, height: 496, mime_type: 'image/png' },
         source: { asset_id: 401, sha256: frame.sha256, width: 864, height: 496, mime_type: 'image/png' },
@@ -734,8 +737,8 @@ async function createFixture(deps = {}) {
         (id, version_id, tenant_id, user_id, kind, source_ref_json, localized_name,
          clean_plate_asset_id, mask_asset_id, version_number, approval_status, approved_by, approved_at,
          status, created_at, updated_at)
-        VALUES (?, ?, 'tenant-a', 'user-a', 'scene', ?, ?, ?, ?, 1, 'approved', 'user-a', ?, 'generated', ?, ?)`)
-        .run(person.id, versionId, JSON.stringify({
+        VALUES (?, ?, @fixtureTenant, @fixtureUser, 'scene', ?, ?, ?, ?, 1, 'approved', @fixtureUser, ?, 'generated', ?, ?)`)
+        .run({ fixtureTenant: owner.tenantId, fixtureUser: owner.userId }, person.id, versionId, JSON.stringify({
           source_ref: { stable_id: person.key, kind: 'person_clean', source_asset_id: 401 },
           snapshot: { mode: 'clean_plate' },
           person_clean_plate_pack: pack,
@@ -746,9 +749,9 @@ async function createFixture(deps = {}) {
       idempotency_hash, request_hash, file_sha256, stored_asset_id,
       status, error_code, created_at, updated_at
     ) VALUES (
-      'tenant-a', 'user-a', ?, 'shot', ?, 'motion', ?, ?, ?, 305,
+      @fixtureTenant, @fixtureUser, ?, 'shot', ?, 'motion', ?, ?, ?, 305,
       'completed', NULL, ?, ?
-    )`).run(
+    )`).run({ fixtureTenant: owner.tenantId, fixtureUser: owner.userId },
       versionId,
       shotId,
       sha256('local-reference-motion-import'),
@@ -764,7 +767,7 @@ async function createFixture(deps = {}) {
       { kind: 'text_clean', key: 'text-002', status: 'completed', redraw_asset_id: 204 },
     ];
     const bindingCtx = {
-      db, tenantId: 'tenant-a', userId: 'user-a', versionId, storageRoot: root,
+      db, tenantId: owner.tenantId, userId: owner.userId, versionId, storageRoot: root,
       now: () => REVIEWED_AT,
     };
     const currentBindings = await buildCurrentReferenceBindings(bindingCtx, {
@@ -775,8 +778,8 @@ async function createFixture(deps = {}) {
 
     const saved = await saveReferenceBundle({
       db,
-      tenantId: 'tenant-a',
-      userId: 'user-a',
+      tenantId: owner.tenantId,
+      userId: owner.userId,
       versionId,
       storageRoot: root,
       now: REVIEWED_AT,
@@ -788,11 +791,13 @@ async function createFixture(deps = {}) {
       text_regions: currentBindings.text_regions,
       coverage_review: currentBindings.coverage_review,
     });
-    const loaded = await loadCurrentReferenceBundle({ db, tenantId: 'tenant-a', userId: 'user-a', versionId, storageRoot: root }, shotId);
+    const loaded = await loadCurrentReferenceBundle({ db, tenantId: owner.tenantId, userId: owner.userId, versionId, storageRoot: root }, shotId);
     const motionProbe = await probeVideo(motionPath);
     return {
       root,
       db,
+      actor,
+      owner,
       versionId,
       shotId,
       sourceFingerprint,

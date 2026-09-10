@@ -316,6 +316,234 @@ test('source audio client sends exact hash-bound request and returns sanitized e
   });
 });
 
+test('source audio raw evidence opt-in preserves the complete spoken receipt independently of the normalized DTO', async () => {
+  const audio = makeAudio();
+  const segments = [
+    { start: 0.123456, end: 1.234567, text: '  你回来了。\n', speaker_cluster_id: 'speaker-cluster-1' },
+    { start: 1.5, end: 2.5004, text: '\tYes, I am here.  ', speaker_cluster_id: 'speaker-cluster-2' },
+  ];
+  let rawResult;
+  await withServer((socket, request) => {
+    const response = sourceAudioOkResponse(request, { segments });
+    rawResult = response.result;
+    socket.end(`${JSON.stringify(response)}\n`);
+  }, async ({ socketPath, state }) => {
+    const result = await clientFor(socketPath).analyzeSourceAudio({
+      requestId: 'source-audio-raw-spoken', audioPath: audio.audioPath, privateAudioRoot: audio.tmp,
+      audioSha256: crypto.createHash('sha256').update('fake-audio').digest('hex'),
+      preserveSourceEvidence: true,
+    });
+    assert.equal(state.requestCount, 1);
+    assert.deepEqual(Object.keys(state.requests[0]).sort(), [
+      'action', 'audio_path', 'audio_sha256', 'request_id',
+    ]);
+    assert.equal(state.requests[0].action, 'analyze_source_audio');
+    assert.deepEqual(result.rawSourceEvidence, rawResult);
+    const { rawSourceEvidence, ...normalized } = result;
+    assert.deepEqual(normalized, {
+      requestId: 'source-audio-raw-spoken', sourceLanguage: 'zh', languageProbability: 0.98,
+      audioSha256: state.requests[0].audio_sha256, transcriptSha256: '9'.repeat(64),
+      segments: [
+        { startMs: 123, endMs: 1235, text: '你回来了。', speakerClusterId: 'speaker-cluster-1' },
+        { startMs: 1500, endMs: 2500, text: 'Yes, I am here.', speakerClusterId: 'speaker-cluster-2' },
+      ],
+    });
+    assert.notEqual(rawSourceEvidence.transcript_sha256,
+      crypto.createHash('sha256').update(JSON.stringify(result.segments)).digest('hex'));
+    assert.notStrictEqual(rawSourceEvidence.segments, result.segments);
+    assert.notStrictEqual(rawSourceEvidence.segments[0], result.segments[0]);
+    result.segments[0].text = 'normalized edit';
+    result.segments[0].startMs = 999;
+    result.segments.push({ text: 'normalized addition' });
+    assert.deepEqual(rawSourceEvidence, rawResult);
+    const normalizedAfterEdit = structuredClone(result.segments);
+    rawSourceEvidence.segments[1].text = 'raw edit';
+    rawSourceEvidence.segments[1].start = 9.25;
+    rawSourceEvidence.segments.push({ text: 'raw addition' });
+    assert.deepEqual(result.segments, normalizedAfterEdit);
+  });
+});
+
+test('source audio raw evidence opt-in preserves the complete no-speech receipt with independent objects', async () => {
+  const audio = makeAudio();
+  const noSpeech = { method: 'faster-whisper-vad', audio_duration_ms: 3000, speech_duration_ms: 0 };
+  let rawResult;
+  await withServer((socket, request) => {
+    const response = sourceAudioOkResponse(request, {
+      source_language: null, language_probability: null, segments: [],
+      transcript_sha256: crypto.createHash('sha256').update('[]').digest('hex'),
+      no_speech_evidence: noSpeech,
+    });
+    rawResult = response.result;
+    socket.end(`${JSON.stringify(response)}\n`);
+  }, async ({ socketPath, state }) => {
+    const result = await clientFor(socketPath).analyzeSourceAudio({
+      requestId: 'source-audio-raw-silent', audioPath: audio.audioPath, privateAudioRoot: audio.tmp,
+      audioSha256: crypto.createHash('sha256').update('fake-audio').digest('hex'),
+      preserveSourceEvidence: true,
+    });
+    assert.equal(state.requestCount, 1);
+    assert.deepEqual(Object.keys(state.requests[0]).sort(), [
+      'action', 'audio_path', 'audio_sha256', 'request_id',
+    ]);
+    assert.deepEqual(result.rawSourceEvidence, rawResult);
+    const { rawSourceEvidence, ...normalized } = result;
+    assert.deepEqual(normalized, {
+      requestId: 'source-audio-raw-silent', sourceLanguage: null, languageProbability: null,
+      audioSha256: state.requests[0].audio_sha256,
+      transcriptSha256: crypto.createHash('sha256').update('[]').digest('hex'),
+      segments: [], noSpeechEvidence: noSpeech,
+    });
+    assert.notStrictEqual(rawSourceEvidence.no_speech_evidence, result.noSpeechEvidence);
+    assert.notStrictEqual(rawSourceEvidence.segments, result.segments);
+    result.noSpeechEvidence.audio_duration_ms = 4000;
+    result.segments.push({ text: 'normalized addition' });
+    assert.deepEqual(rawSourceEvidence, rawResult);
+    const normalizedAfterEdit = structuredClone(normalized);
+    rawSourceEvidence.no_speech_evidence.audio_duration_ms = 5000;
+    rawSourceEvidence.segments.push({ text: 'raw addition' });
+    assert.deepEqual(normalized, normalizedAfterEdit);
+  });
+});
+
+test('source audio raw evidence opt-in isolates coercible JSON arrays retained by the legacy normalized DTO', async () => {
+  const audio = makeAudio();
+  let rawResult;
+  await withServer((socket, request) => {
+    const response = sourceAudioOkResponse(request, {
+      source_language: ['zh'],
+      transcript_sha256: ['9'.repeat(64)],
+      segments: [{
+        start: 0.125, end: 0.5, text: 'hello', speaker_cluster_id: ['speaker-cluster-1'],
+      }],
+    });
+    rawResult = response.result;
+    socket.end(`${JSON.stringify(response)}\n`);
+  }, async ({ socketPath, state }) => {
+    const result = await clientFor(socketPath).analyzeSourceAudio({
+      requestId: 'source-audio-raw-legacy-arrays', audioPath: audio.audioPath, privateAudioRoot: audio.tmp,
+      audioSha256: crypto.createHash('sha256').update('fake-audio').digest('hex'),
+      preserveSourceEvidence: true,
+    });
+    assert.equal(state.requestCount, 1);
+    const { rawSourceEvidence, ...normalized } = result;
+    assert.deepEqual(rawSourceEvidence, rawResult);
+    assert.deepEqual(normalized.sourceLanguage, ['zh']);
+    assert.deepEqual(normalized.transcriptSha256, ['9'.repeat(64)]);
+    assert.deepEqual(normalized.segments[0].speakerClusterId, ['speaker-cluster-1']);
+    normalized.sourceLanguage.push('en');
+    normalized.transcriptSha256[0] = '8'.repeat(64);
+    normalized.segments[0].speakerClusterId[0] = 'speaker-cluster-2';
+    assert.deepEqual(rawSourceEvidence, rawResult);
+    const normalizedAfterEdit = structuredClone(normalized);
+    rawSourceEvidence.source_language.push('es');
+    rawSourceEvidence.transcript_sha256[0] = '7'.repeat(64);
+    rawSourceEvidence.segments[0].speaker_cluster_id[0] = 'speaker-cluster-3';
+    assert.deepEqual(normalized, normalizedAfterEdit);
+  });
+});
+
+test('source audio raw evidence is absent unless the option is exactly boolean true', async () => {
+  const audio = makeAudio();
+  const options = [{}, ...[undefined, false, null, 0, 1, '', 'true', {}, []].map((value) => ({
+    preserveSourceEvidence: value,
+  }))];
+  for (const option of options) {
+    await withServer((socket, request) => {
+      socket.end(`${JSON.stringify(sourceAudioOkResponse(request))}\n`);
+    }, async ({ socketPath, state }) => {
+      const result = await clientFor(socketPath).analyzeSourceAudio({
+        requestId: 'source-audio-no-raw', audioPath: audio.audioPath, privateAudioRoot: audio.tmp,
+        audioSha256: crypto.createHash('sha256').update('fake-audio').digest('hex'),
+        ...option,
+      });
+      assert.equal(Object.hasOwn(result, 'rawSourceEvidence'), false);
+      assert.deepEqual(Object.keys(result).sort(), [
+        'audioSha256', 'languageProbability', 'requestId', 'segments', 'sourceLanguage', 'transcriptSha256',
+      ]);
+      assert.equal(state.requestCount, 1);
+      assert.deepEqual(Object.keys(state.requests[0]).sort(), [
+        'action', 'audio_path', 'audio_sha256', 'request_id',
+      ]);
+    });
+  }
+});
+
+test('source audio raw evidence opt-in keeps input path, hash and request-size rejections before connecting', async () => {
+  const audio = makeAudio();
+  const outside = makeAudio();
+  const cases = [
+    { input: { audioSha256: '0'.repeat(64) }, code: 'SOURCE_AUDIO_EVIDENCE_INVALID' },
+    { input: { audioPath: outside.audioPath }, code: 'SOURCE_AUDIO_EVIDENCE_INVALID' },
+    { input: { requestId: '' }, code: 'SOURCE_AUDIO_EVIDENCE_INVALID' },
+    { input: { requestId: 'x'.repeat(70 * 1024) }, code: 'REDRAW_LOCALE_REQUEST_TOO_LARGE' },
+  ];
+  await withServer((socket) => socket.end(), async ({ socketPath, state }) => {
+    for (const item of cases) {
+      await assert.rejects(() => clientFor(socketPath).analyzeSourceAudio({
+        requestId: 'source-audio-raw-invalid-input', audioPath: audio.audioPath, privateAudioRoot: audio.tmp,
+        audioSha256: crypto.createHash('sha256').update('fake-audio').digest('hex'),
+        preserveSourceEvidence: true,
+        ...item.input,
+      }), { code: item.code });
+      assert.equal(state.requestCount, 0);
+    }
+  });
+});
+
+test('source audio raw evidence opt-in rejects unvalidated result fields, hashes and paths without retry', async () => {
+  const audio = makeAudio();
+  const cases = [
+    { audio_sha256: '0'.repeat(64) },
+    { transcript_sha256: 'bad' },
+    { unexpected: true },
+    { source_language: 'C:\\private\\audio.wav' },
+    { segments: [{ start: 0, end: 0.5, text: 'C:\\private\\audio.wav', speaker_cluster_id: 'speaker-cluster-1' }] },
+    { segments: [{ start: 0, end: 0.5, text: 'hello', speaker_cluster_id: 'speaker-cluster-1', extra: true }] },
+    { segments: [] },
+    { no_speech_evidence: { method: 'guessed-silence', audio_duration_ms: 3000, speech_duration_ms: 0 } },
+  ];
+  for (const overrides of cases) {
+    await withServer((socket, request) => {
+      socket.end(`${JSON.stringify(sourceAudioOkResponse(request, overrides))}\n`);
+    }, async ({ socketPath, state }) => {
+      await assert.rejects(() => clientFor(socketPath).analyzeSourceAudio({
+        requestId: 'source-audio-raw-invalid-result', audioPath: audio.audioPath, privateAudioRoot: audio.tmp,
+        audioSha256: crypto.createHash('sha256').update('fake-audio').digest('hex'),
+        preserveSourceEvidence: true,
+      }), { code: 'SOURCE_AUDIO_EVIDENCE_INVALID' });
+      assert.equal(state.requestCount, 1);
+    });
+  }
+});
+
+test('source audio raw evidence opt-in retains wrapper validation and bounded transport uncertainty without retry', async () => {
+  const audio = makeAudio();
+  const cases = [
+    { code: 'SOURCE_AUDIO_EVIDENCE_INVALID', handler(socket) { socket.end('{"ok":true,"result":null}\n'); } },
+    { code: 'SOURCE_AUDIO_EVIDENCE_INVALID', handler(socket, request) {
+      socket.end(`${JSON.stringify({ ...sourceAudioOkResponse(request), extra: true })}\n`);
+    } },
+    { code: 'SOURCE_AUDIO_ANALYSIS_FAILED', handler(socket) {
+      socket.end('{"ok":false,"error_code":"worker-rejected"}\n');
+    } },
+    { code: 'SOURCE_AUDIO_RESULT_UNKNOWN', handler(socket) { socket.end('{bad-json}\n'); } },
+    { code: 'SOURCE_AUDIO_RESULT_UNKNOWN', handler(socket) { socket.end(`${'x'.repeat(270 * 1024)}\n`); } },
+    { code: 'SOURCE_AUDIO_RESULT_UNKNOWN', handler(socket) { socket.end('partial'); } },
+    { code: 'SOURCE_AUDIO_RESULT_UNKNOWN', handler() {} },
+  ];
+  for (const item of cases) {
+    await withServer(item.handler, async ({ socketPath, state }) => {
+      await assert.rejects(() => clientFor(socketPath, { timeoutMs: 50 }).analyzeSourceAudio({
+        requestId: 'source-audio-raw-invalid-wrapper', audioPath: audio.audioPath, privateAudioRoot: audio.tmp,
+        audioSha256: crypto.createHash('sha256').update('fake-audio').digest('hex'),
+        preserveSourceEvidence: true,
+      }), (error) => error.code === item.code && error.message === item.code && !Object.hasOwn(error, 'cause'));
+      assert.equal(state.requestCount, 1);
+    });
+  }
+});
+
 test('source audio client rejects hash drift and paths outside the private root before connecting', async () => {
   const audio = makeAudio();
   const outside = makeAudio();
@@ -338,6 +566,66 @@ test('source audio client rejects hash drift and paths outside the private root 
     () => client.analyzeSourceAudio({ ...base, requestId: '' }),
     { code: 'SOURCE_AUDIO_EVIDENCE_INVALID' },
   );
+});
+
+test('source audio client preserves explicit completed VAD evidence without inferred language or text', async () => {
+  const audio = makeAudio();
+  const noSpeech = { method: 'faster-whisper-vad', audio_duration_ms: 3000, speech_duration_ms: 0 };
+  await withServer((socket, request) => {
+    socket.end(`${JSON.stringify(sourceAudioOkResponse(request, {
+      source_language: null, language_probability: null, segments: [],
+      transcript_sha256: crypto.createHash('sha256').update('[]').digest('hex'),
+      no_speech_evidence: noSpeech,
+    }))}\n`);
+  }, async ({ socketPath, state }) => {
+    const result = await clientFor(socketPath).analyzeSourceAudio({
+      requestId: 'source-no-speech', audioPath: audio.audioPath, privateAudioRoot: audio.tmp,
+      audioSha256: crypto.createHash('sha256').update('fake-audio').digest('hex'),
+    });
+    assert.deepEqual(result.noSpeechEvidence, noSpeech);
+    assert.equal(result.sourceLanguage, null);
+    assert.equal(result.languageProbability, null);
+    assert.deepEqual(result.segments, []);
+    assert.equal(result.audioSha256, state.requests[0].audio_sha256);
+    assert.equal(result.requestId, 'source-no-speech');
+    assert.equal(state.requestCount, 1);
+  });
+});
+
+test('source audio client rejects unsupported empty transcripts and malformed no-speech branches', async () => {
+  const noSpeech = { method: 'faster-whisper-vad', audio_duration_ms: 3000, speech_duration_ms: 0 };
+  const cases = [
+    { no_speech_evidence: undefined }, { no_speech_evidence: null },
+    { no_speech_evidence: [] }, { no_speech_evidence: {} },
+    { no_speech_evidence: { ...noSpeech, extra: true } },
+    { no_speech_evidence: { ...noSpeech, method: 'guessed-silence' } },
+    ...[0, -1, 1.5, true, '3000', Number.NaN, Number.POSITIVE_INFINITY].map((value) => ({
+      no_speech_evidence: { ...noSpeech, audio_duration_ms: value },
+    })),
+    ...[1, -1, true, false, '0', null].map((value) => ({
+      no_speech_evidence: { ...noSpeech, speech_duration_ms: value },
+    })),
+    { source_language: 'en' }, { language_probability: 0.99 },
+    { audio_sha256: '0'.repeat(64) }, { transcript_sha256: '9'.repeat(64) },
+    { request_id: 'unbound-extra' },
+    { segments: [{ start: 0, end: 0.5, text: 'speech', speaker_cluster_id: 'speaker-cluster-1' }] },
+  ];
+  const audio = makeAudio();
+  for (const overrides of cases) {
+    await withServer((socket, request) => {
+      socket.end(`${JSON.stringify(sourceAudioOkResponse(request, {
+        source_language: null, language_probability: null, segments: [],
+        transcript_sha256: crypto.createHash('sha256').update('[]').digest('hex'),
+        no_speech_evidence: noSpeech, ...overrides,
+      }))}\n`);
+    }, async ({ socketPath, state }) => {
+      await assert.rejects(() => clientFor(socketPath).analyzeSourceAudio({
+        requestId: 'source-no-speech-invalid', audioPath: audio.audioPath, privateAudioRoot: audio.tmp,
+        audioSha256: crypto.createHash('sha256').update('fake-audio').digest('hex'),
+      }), { code: 'SOURCE_AUDIO_EVIDENCE_INVALID' });
+      assert.equal(state.requestCount, 1);
+    });
+  }
 });
 
 test('source audio client rejects response drift, unknown fields and absolute paths without retry', async () => {

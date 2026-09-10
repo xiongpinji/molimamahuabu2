@@ -24,7 +24,11 @@ test('有效报价启用且无报价禁用，只读取 work.analysis_quote', () 
   const presetWithFakeCredits = { id: 3, credits: 99 }
 
   assert.equal(analysisQuoteCredits(work, presetWithFakeCredits), 6)
-  assert.equal(canStartRedrawAnalysis({ work, locales: [{ locale: 'ja-JP', market: 'JP' }], selectedPreset: { id: 3 } }), true)
+  assert.equal(canStartRedrawAnalysis({
+    work, locale: 'ja-JP', market: 'JP',
+    locales: [{ locale: 'ja-JP', market: 'JP', status: 'subtitle_only', blocking: ['tts', 'native_dialogue_audio'] }],
+    selectedPreset: { id: 3 },
+  }), true)
   assert.equal(canStartRedrawAnalysis({
     work: { id: 8, analysis_quote: null },
     locales: [{ locale: 'ja-JP', market: 'JP' }],
@@ -106,6 +110,34 @@ test('空 locales 不伪造默认语言并禁用提交', () => {
     locales: [],
     selectedPreset: { id: 3 },
   }), false)
+})
+
+test('语言能力按精确所选组合和分析所需能力判断，非空列表不代表可用', () => {
+  const ready = { locale: 'en-US', market: 'US', status: 'full_output', blocking: [] }
+  const blocked = { locale: 'ja-JP', market: 'JP', status: 'blocking', blocking: ['text'] }
+  const locales = [ready, blocked]
+  assert.equal(localeReady(locales, 'ja-JP', 'JP'), false)
+  assert.equal(localeReady(locales, 'en-US', 'GB'), false)
+  assert.equal(localeReady(locales, '', ''), false)
+  assert.equal(localeReady([{ ...ready, blocking: ['subtitles'] }], 'en-US', 'US'), false)
+  assert.equal(localeReady([{ ...ready, status: 'unknown' }], 'en-US', 'US'), false)
+  assert.equal(localeReady([{ locale: 'en-US', market: 'US' }], 'en-US', 'US'), false)
+  assert.equal(canStartRedrawAnalysis({
+    work: { id: 8, analysis_quote: { credits: 6 } }, selectedPreset: { id: 3 },
+    locales, locale: 'ja-JP', market: 'JP',
+  }), false)
+})
+
+test('缺后续资产音视频能力不剥夺已验证 text/subtitles 的分析路径', () => {
+  for (const [status, blocking] of [
+    ['full_output', []],
+    ['asset_pending', ['character_image']],
+    ['subtitle_only', ['tts', 'native_dialogue_audio']],
+    ['voice_pending', ['video', 'tts', 'native_dialogue_audio']],
+    ['blocking', ['video']],
+  ]) {
+    assert.equal(localeReady([{ locale: 'ja-JP', market: 'JP', status, blocking }], 'ja-JP', 'JP'), true, status)
+  }
 })
 
 test('普通 preset 与自由风格双向互斥并保留参考图字段', () => {

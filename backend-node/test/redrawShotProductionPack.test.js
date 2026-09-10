@@ -201,7 +201,7 @@ function reviewLocalization(blueprint) {
 function createLockDb() {
   const db = new Database(':memory:');
   db.exec(`
-    CREATE TABLE redraw_works (id INTEGER PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, current_version INTEGER NOT NULL, current_step INTEGER NOT NULL, status TEXT NOT NULL, updated_at TEXT NOT NULL);
+    CREATE TABLE redraw_works (id INTEGER PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, current_version INTEGER NOT NULL, current_step INTEGER NOT NULL, status TEXT NOT NULL, updated_at TEXT NOT NULL, source_asset_id INTEGER, source_fingerprint TEXT, duration_ms INTEGER, deleted_at TEXT);
     CREATE TABLE redraw_versions (id INTEGER PRIMARY KEY, work_id INTEGER NOT NULL, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, version INTEGER NOT NULL, locale TEXT, market TEXT, status TEXT NOT NULL, blueprint_hash TEXT, localization_hash TEXT, localization_review_json TEXT, updated_at TEXT NOT NULL, deleted_at TEXT);
     CREATE TABLE redraw_episode_blueprints (id INTEGER PRIMARY KEY, work_id INTEGER NOT NULL, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, revision INTEGER NOT NULL, status TEXT NOT NULL, blueprint_json TEXT NOT NULL, blueprint_hash TEXT NOT NULL, updated_at TEXT NOT NULL);
     CREATE TABLE redraw_assets (id INTEGER PRIMARY KEY, version_id INTEGER NOT NULL, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, kind TEXT, source_ref_json TEXT, localized_name TEXT, asset_id INTEGER, voice_asset_id INTEGER, clean_plate_asset_id INTEGER, mask_asset_id INTEGER, approval_status TEXT, status TEXT, deleted_at TEXT);
@@ -210,7 +210,7 @@ function createLockDb() {
   const blueprint = lockedBlueprint();
   const localization = reviewLocalization(blueprint);
   const now = '2026-09-03T00:00:00.000Z';
-  db.prepare("INSERT INTO redraw_works VALUES (1, 'tenant-a', 'user-a', 1, 1, 'needs_review', ?)").run(now);
+  db.prepare("INSERT INTO redraw_works (id, tenant_id, user_id, current_version, current_step, status, updated_at) VALUES (1, 'tenant-a', 'user-a', 1, 1, 'needs_review', ?)").run(now);
   db.prepare(`INSERT INTO redraw_versions (id, work_id, tenant_id, user_id, version, locale, market, status, blueprint_hash, localization_hash, localization_review_json, updated_at)
     VALUES (10, 1, 'tenant-a', 'user-a', 1, 'en-US', 'US', 'needs_review', ?, ?, ?, ?)`)
     .run(blueprint.blueprint_hash, localization.localization_hash, JSON.stringify(localization), localization.review.updated_at);

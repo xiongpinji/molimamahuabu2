@@ -214,6 +214,154 @@ function setupRouter(cfg, db, log, options = {}) {
   r.post('/billing/admin/recharge-packages/image', requireAdmin, requireBillingManager, uploadHandlers.multerRechargePackageImageSingle, uploadHandlers.uploadRechargePackageImage);
   r.put('/billing/admin/recharge-packages/order', requireAdmin, requireBillingManager, alipayRecharge.reorderAdminPackages);
   r.put('/billing/admin/recharge-packages/:packageId', requireAdmin, requireBillingManager, alipayRecharge.updateAdminPackage);
+  // Review reads must not create or restore a personal tenant or membership.
+  r.get('/redraw/works/:id/source-audio-seam-review', (req, res) => {
+    try {
+      const userId = String(req.user?.id || '');
+      const tenantId = String(req.get('x-tenant-id') || '').trim() || `personal:${userId}`;
+      const tenant = db.prepare(`SELECT t.id, t.name, t.slug, m.role
+        FROM tenant_members m JOIN tenants t ON t.id = m.tenant_id
+        WHERE m.user_id = ? AND m.tenant_id = ?
+          AND m.status = 'active' AND t.status = 'active'`).get(userId, tenantId);
+      if (!tenant) return response.error(res, 404, 'SOURCE_AUDIO_SEAM_REVIEW_NOT_FOUND', '源音频接缝审核不存在');
+      req.tenant = tenant;
+      req.tenantId = tenant.id;
+      return redraw.getSourceAudioSeamReview(req, res);
+    } catch {
+      log?.error?.('Source audio seam review access check failed', { code: 'INTERNAL_ERROR' });
+      return response.internalError(res, '读取源音频接缝审核失败');
+    }
+  });
+  // This read-only GET must not initialize a personal tenant on rejected requests.
+  // The handler runs after setupRouter returns, when the single redraw factory below is ready.
+  r.get('/redraw/works/:id/source-video', (req, res) => {
+    const userId = String(req.user?.id || '');
+    const tenantId = String(req.get('x-tenant-id') || '').trim() || `personal:${userId}`;
+    const tenant = db.prepare(`SELECT t.id, t.name, t.slug, m.role
+      FROM tenant_members m JOIN tenants t ON t.id = m.tenant_id
+      WHERE m.user_id = ? AND m.tenant_id = ?
+        AND m.status = 'active' AND t.status = 'active'`).get(userId, tenantId);
+    if (!tenant) return response.error(res, 404, 'REDRAW_SOURCE_VIDEO_NOT_FOUND', '母本视频不存在');
+    req.tenant = tenant;
+    req.tenantId = tenant.id;
+    return redraw.getSourceVideo(req, res);
+  });
+  r.get('/redraw/shots/:id/motion-draft', (req, res) => {
+    const userId = String(req.user?.id || '');
+    const tenantId = String(req.get('x-tenant-id') || '').trim() || `personal:${userId}`;
+    const tenant = db.prepare(`SELECT t.id, t.name, t.slug, m.role
+      FROM tenant_members m JOIN tenants t ON t.id = m.tenant_id
+      WHERE m.user_id = ? AND m.tenant_id = ?
+        AND m.status = 'active' AND t.status = 'active'`).get(userId, tenantId);
+    if (!tenant) return response.error(res, 404, 'REDRAW_MOTION_DRAFT_NOT_FOUND', '动作草片镜头不存在');
+    req.tenant = tenant;
+    req.tenantId = tenant.id;
+    return redraw.getMotionDraft(req, res);
+  });
+  for (const [suffix, handler] of [['', 'getMotionReferenceCandidate'], ['/media', 'getMotionReferenceCandidateMedia']]) {
+    r.get(`/redraw/shots/:id/motion-reference${suffix}`, (req, res) => {
+      const userId = String(req.user?.id || '');
+      const tenantId = String(req.get('x-tenant-id') || '').trim() || `personal:${userId}`;
+      const tenant = db.prepare(`SELECT t.id, t.name, t.slug, m.role
+        FROM tenant_members m JOIN tenants t ON t.id = m.tenant_id
+        WHERE m.user_id = ? AND m.tenant_id = ?
+          AND m.status = 'active' AND t.status = 'active'`).get(userId, tenantId);
+      if (!tenant) return response.error(res, 404, 'REDRAW_MOTION_CANDIDATE_NOT_FOUND', '动作参考候选不存在');
+      req.tenant = tenant;
+      req.tenantId = tenant.id;
+      return redraw[handler](req, res);
+    });
+  }
+  r.get('/redraw/shots/:id/motion-processing', (req, res) => {
+    const userId = String(req.user?.id || '');
+    const tenantId = String(req.get('x-tenant-id') || '').trim() || `personal:${userId}`;
+    const tenant = db.prepare(`SELECT t.id, t.name, t.slug, m.role
+      FROM tenant_members m JOIN tenants t ON t.id = m.tenant_id
+      WHERE m.user_id = ? AND m.tenant_id = ?
+        AND m.status = 'active' AND t.status = 'active'`).get(userId, tenantId);
+    if (!tenant) return response.error(res, 404, 'REDRAW_MOTION_PROCESSING_NOT_FOUND', '动作处理镜头不存在');
+    req.tenant = tenant;
+    req.tenantId = tenant.id;
+    return redraw.getMotionProcessing(req, res);
+  });
+  const executionRunJwtSecret = process.env.PLATFORM_JWT_SECRET;
+  for (const [suffix, handler, unitExport] of [['', 'listExecutionRuns'],
+    ['/:runId', 'getExecutionRun'], ['/:runId/readiness', 'getExecutionRunReadiness'],
+    ['/:runId/units/:unitId/candidate', 'getExecutionUnitCandidate'],
+    ['/:runId/units/:unitId/candidate/media', 'getExecutionUnitCandidateMedia'],
+    ['/redraw/versions/:id/exports', 'listVersionExports', true],
+    ['/redraw/exports/:id', 'getExport', true],
+    ['/redraw/exports/:id/download/:kind', 'downloadExport', true]]) {
+    r.get(unitExport ? suffix : `/redraw/versions/:id/execution-runs${suffix}`, (req, res, next) => {
+      const userId = String(req.user?.id || '');
+      const tenantId = String(req.get('x-tenant-id') || '').trim() || `personal:${userId}`;
+      // Only stored unit exports bypass the historical tenant initializer. In
+      // particular, a missing unit-read membership must never be recreated.
+      if (unitExport && !redraw.hasExecutionUnitExports(req.params.id, handler === 'listVersionExports')) return next();
+      const bearer = /^Bearer\s+(.+)$/i.exec(String(req.get('authorization') || ''))?.[1];
+      const denied = code => { throw Object.assign(new Error(code), { code }); };
+      const assertReadAccess = () => {
+        if (publicPlatformEnabled) {
+          let claims;
+          try { claims = require('../services/userAuthService').verifyToken(bearer, executionRunJwtSecret); }
+          catch { denied('UNAUTHORIZED'); }
+          const user = db.prepare('SELECT status,token_version FROM platform_users WHERE id=?').get(userId);
+          if (claims.id !== userId || !user || user.status !== 'active'
+            || (Number(user.token_version) || 0) !== claims.tokenVersion) denied('UNAUTHORIZED');
+        }
+        const tenant = db.prepare(`SELECT t.id, t.name, t.slug, m.role
+          FROM tenant_members m JOIN tenants t ON t.id=m.tenant_id
+          WHERE m.user_id=? AND m.tenant_id=? AND m.status='active' AND t.status='active'`).get(userId, tenantId);
+        if (!tenant) denied('EXECUTION_RUN_NOT_FOUND');
+        return tenant;
+      };
+      try {
+        const tenant = assertReadAccess();
+        req.tenant = tenant; req.tenantId = tenant.id;
+        req.assertExecutionRunReadAccess = assertReadAccess;
+        return redraw[handler](req, res);
+      } catch (error) {
+        if (error?.code === 'UNAUTHORIZED') return response.error(res, 401, 'UNAUTHORIZED', '登录已失效，请重新登录');
+        if (error?.code === 'EXECUTION_RUN_NOT_FOUND') return response.error(res, 404, 'EXECUTION_RUN_NOT_FOUND', '运行不存在');
+        log?.error?.('Execution run access check failed', { code: 'INTERNAL_ERROR' });
+        return response.internalError(res, '运行请求处理失败');
+      }
+    });
+  }
+  // Unit composition must not recreate a missing membership through the legacy initializer.
+  r.post('/redraw/versions/:id/compose', async (req, res, next) => {
+    if (!redraw.isExecutionUnitCompositionRequest(req.body)) return next();
+    try {
+      const userId = String(req.user?.id || '');
+      const tenantId = String(req.get('x-tenant-id') || '').trim() || `personal:${userId}`;
+      const bearer = /^Bearer\s+(.+)$/i.exec(String(req.get('authorization') || ''))?.[1];
+      const denied = code => { throw Object.assign(new Error(code), { code }); };
+      const assertUnitCompositionAccess = () => {
+        if (publicPlatformEnabled) {
+          let claims;
+          try { claims = require('../services/userAuthService').verifyToken(bearer, executionRunJwtSecret); }
+          catch { denied('UNAUTHORIZED'); }
+          const user = db.prepare('SELECT status,token_version FROM platform_users WHERE id=?').get(userId);
+          if (claims.id !== userId || !user || user.status !== 'active'
+            || (Number(user.token_version) || 0) !== claims.tokenVersion) denied('UNAUTHORIZED');
+        }
+        const tenant = db.prepare(`SELECT t.id, t.name, t.slug, m.role
+          FROM tenant_members m JOIN tenants t ON t.id=m.tenant_id
+          WHERE m.user_id=? AND m.tenant_id=? AND m.status='active' AND t.status='active'`).get(userId, tenantId);
+        if (!tenant) denied('REDRAW_VERSION_NOT_FOUND');
+        return tenant;
+      };
+      const tenant = assertUnitCompositionAccess();
+      req.tenant = tenant; req.tenantId = tenant.id;
+      req.assertUnitCompositionAccess = assertUnitCompositionAccess;
+      return await redraw.composeVersion(req, res);
+    } catch (error) {
+      if (error?.code === 'UNAUTHORIZED') return response.error(res, 401, 'UNAUTHORIZED', '登录已失效，请重新登录');
+      if (error?.code === 'REDRAW_VERSION_NOT_FOUND') return response.error(res, 404, 'REDRAW_VERSION_NOT_FOUND', '本地化版本不存在');
+      log?.error?.('Execution unit composition access check failed', { code: 'INTERNAL_ERROR' });
+      return response.internalError(res, '提交合成任务失败');
+    }
+  });
   r.use(createTenantContextMiddleware({ db, enabled: publicPlatformEnabled }));
   // 公开平台只允许访问当前用户拥有的工程及其派生资源；本地单用户模式保持原有行为。
   r.use(createResourceOwnershipMiddleware({ db, enabled: publicPlatformEnabled }));
@@ -402,6 +550,7 @@ function setupRouter(cfg, db, log, options = {}) {
   r.get('/redraw/projects/:id', redraw.getProject);
   r.put('/redraw/projects/:id/policy', redraw.updateProjectPolicy);
   r.get('/redraw/projects/:id/events', redraw.listProjectEvents);
+  r.get('/redraw/projects/:id/works', redraw.listProjectWorks);
   r.post('/redraw/projects/:id/works', redraw.uploadSource, redraw.createWorks);
   r.get('/redraw/works/:id', redraw.getWork);
   r.put('/redraw/shots/:id', redraw.updateShot);
@@ -419,12 +568,27 @@ function setupRouter(cfg, db, log, options = {}) {
   r.get('/redraw/style-presets', redraw.listStylePresets);
   r.get('/redraw/locales', redraw.listLocales);
   r.post('/redraw/works/:id/analyze', redraw.uploadReferenceImage, redraw.analyzeWork);
+  r.post('/redraw/works/:id/source-audio-seam-review', redraw.recordSourceAudioSeamDecision);
+  r.post('/redraw/works/:id/source-audio-seam-resume', redraw.resumeSourceAudioSeamAnalysis);
   r.get('/redraw/works/:id/blueprint', redraw.getBlueprint);
   r.put('/redraw/works/:id/blueprint', redraw.saveBlueprint);
   r.post('/redraw/works/:id/blueprint/lock', redraw.lockBlueprint);
   r.post('/redraw/works/:id/localization-quote', redraw.localizationQuote);
   r.post('/redraw/works/:id/versions', redraw.createVersion);
   r.get('/redraw/versions/:id/localization', redraw.getLocalizationReview);
+  r.get('/redraw/versions/:id/execution-plan', redraw.getExecutionPlan);
+  r.get('/redraw/versions/:id/execution-plan/review', redraw.getExecutionPlanReview);
+  r.post('/redraw/versions/:id/execution-plan/review', redraw.saveExecutionPlanReview);
+  r.get('/redraw/versions/:id/execution-queue', redraw.getExecutionQueue);
+  r.post('/redraw/versions/:id/execution-queue', redraw.prepareExecutionQueue);
+  r.post('/redraw/versions/:id/execution-runs', redraw.createExecutionRun);
+  for (const [action, handler] of [['pause', 'pauseExecutionRun'], ['resume', 'resumeExecutionRun'],
+    ['advance', 'advanceExecutionRun'], ['recover', 'recoverExecutionUnit']]) {
+    r.post(`/redraw/versions/:id/execution-runs/:runId/${action}`, redraw[handler]);
+  }
+  r.post('/redraw/versions/:id/execution-runs/:runId/units/:unitId/review', redraw.reviewExecutionUnitCandidate);
+  r.get('/redraw/versions/:id/execution-queues/:queueId/units/:unitId/reference-materials', redraw.getUnitReferenceMaterials);
+  r.post('/redraw/versions/:id/execution-queues/:queueId/units/:unitId/reference-materials', redraw.prepareUnitReferenceMaterials);
   r.put('/redraw/versions/:id/localization', redraw.saveLocalizationReview);
   r.post('/redraw/versions/:id/localization/lock', redraw.lockLocalizationReview);
   if (typeof explicitCoverageRegistrationProvider === 'function') {

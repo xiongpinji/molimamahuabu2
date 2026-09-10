@@ -64,7 +64,8 @@ test('工作台步骤由路由 query 和后端 current_step 取较小允许值�
   assert.doesNotMatch(stateSource, /localStorage|sessionStorage/)
   assert.match(workspaceSource, /getWork\(requestedWorkId\)/)
   assert.match(workspaceSource, /isCurrentWorkspaceRequest\(requestSequence,\s*requestedProjectId,\s*requestedWorkId\)/)
-  assert.match(workspaceSource, /resolveAllowedStep\(\s*route\.query\.step,\s*work\.value\?\.current_step/)
+  assert.match(workspaceSource, /workspaceStep\(\s*route\.query\.step,\s*work\.value\?\.current_step/)
+  assert.match(workspaceSource, /function workspaceStep\(requested, backend\)[\s\S]*resolveAllowedStep\(requested, backend\)/)
   assert.match(workspaceSource, /router\.replace/)
 })
 
@@ -111,7 +112,7 @@ test('语言能力目录为空时显示未开放原因而不是两个空白下�
   assert.equal(sourceStepSource.match(/:disabled="!localeOptions\.length"/g)?.length, 2)
 })
 
-test('分析确认与英文 1:1 本地化使用服务端报价、独立轮询和失败退款门禁', () => {
+test('分析确认与目标语言本地化使用服务端报价、独立轮询和失败退款门禁', () => {
   for (const name of [
     'redrawWorkflowPhase',
     'localizationQuoteCredits',
@@ -126,7 +127,7 @@ test('分析确认与英文 1:1 本地化使用服务端报价、独立轮询和
   assert.match(sourceStepSource, /localization_needs_attention/)
   assert.match(sourceStepSource, /服务端分析摘要/)
   assert.match(sourceStepSource, /本地化报价/)
-  assert.match(sourceStepSource, /确认英文 1:1 本地化/)
+  assert.match(sourceStepSource, /确认本地化/)
   assert.match(sourceStepSource, /请勿重复提交/)
   assert.match(sourceStepSource, /等待退款确认/)
   assert.match(sourceStepSource, /crypto\.randomUUID\(\)/)

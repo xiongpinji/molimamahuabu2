@@ -432,7 +432,7 @@ function refundExpiredGenerationReservation(db, input = {}) {
     }
 
     const reservation = reservationForInspection(db, reservationId);
-    if (reservation.status !== 'held') {
+    if (reservation.resource_type === 'redraw_execution_unit' || reservation.status !== 'held') {
       return { applied: false, history: null, reservation };
     }
     const createdAt = Date.parse(reservation.created_at || '');

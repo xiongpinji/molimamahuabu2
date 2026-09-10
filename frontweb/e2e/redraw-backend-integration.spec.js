@@ -3,10 +3,13 @@ import { spawnSync } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import http from 'node:http'
+import https from 'node:https'
+import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
+import { assertMotionDuration, installMotionProcessingCoverage } from './helpers/motionProcessingCoverage.js'
 
 import {
   actorReferenceUrl,
@@ -21,6 +24,78 @@ import {
   genericSpanishSpeechFixtures,
   genericSourceFacts,
 } from './fixtures/redraw-generic-project.js'
+
+const loopbackHosts = new Set(['127.0.0.1', 'localhost', '::1', '[::1]'])
+const blockedNetworkRequests = []
+function assertLoopbackHost(host) {
+  if (!loopbackHosts.has(String(host || '').toLowerCase())) {
+    blockedNetworkRequests.push(String(host || 'unknown-socket'))
+    throw new Error('本地转绘验收禁止非 loopback 或未知网络目标')
+  }
+}
+
+function assertLoopbackUrl(input) {
+  const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url)
+  if (!['http:', 'https:', 'ws:', 'wss:'].includes(url.protocol) || url.username || url.password) {
+    throw new Error('本地转绘验收禁止非 HTTP/WebSocket 或带凭据网络目标')
+  }
+  assertLoopbackHost(url.hostname)
+  return url
+}
+
+// Install before any backend require: normal integration mode must be as isolated as full-product mode.
+function installLoopbackNetworkGuard() {
+  const originalFetch = globalThis.fetch
+  const originalConnect = net.Socket.prototype.connect
+  const originals = [http, https].map(module => ({ module, request: module.request, get: module.get }))
+  globalThis.fetch = (input, init = {}) => {
+    const url = assertLoopbackUrl(input)
+    if (!['http:', 'https:'].includes(url.protocol)) throw new Error('fetch 仅允许本地 HTTP')
+    return originalFetch(input, { ...init, redirect: 'error' })
+  }
+  net.Socket.prototype.connect = function (...args) {
+    const values = Array.isArray(args[0]) ? args[0] : args
+    const options = typeof values[0] === 'object' && values[0] !== null
+      ? values[0] : { port: values[0], host: values[1] }
+    if (options.path || options.socketPath || !Number.isInteger(Number(options.port))
+      || Number(options.port) <= 0 || Number(options.port) > 65535) {
+      throw new Error('本地转绘验收禁止未知 socket 或 pipe')
+    }
+    const host = String(options.host || options.hostname || '').toLowerCase()
+    assertLoopbackHost(host)
+    if (options.lookup) throw new Error('本地转绘验收禁止自定义 DNS lookup')
+    const safeOptions = { ...options, host: host === 'localhost' ? '127.0.0.1' : host === '[::1]' ? '::1' : host }
+    delete safeOptions.hostname
+    const callback = values.find(value => typeof value === 'function')
+    return originalConnect.call(this, safeOptions, ...(callback ? [callback] : []))
+  }
+  for (const { module, request } of originals) {
+    module.request = function (...args) {
+      if (typeof args[0] === 'string' || args[0] instanceof URL) assertLoopbackUrl(args[0])
+      const options = typeof args[0] === 'object' && !(args[0] instanceof URL) ? args[0]
+        : typeof args[1] === 'object' ? args[1] : null
+      if (options) {
+        if (options.socketPath || options.createConnection || options.lookup) {
+          throw new Error('本地转绘验收禁止自定义 HTTP socket')
+        }
+        if (options.hostname || options.host) assertLoopbackHost(options.hostname || options.host)
+        else if (typeof args[0] !== 'string' && !(args[0] instanceof URL)) assertLoopbackHost(null)
+      }
+      return request.apply(this, args)
+    }
+    module.get = function (...args) {
+      const request = module.request.apply(this, args)
+      request.end()
+      return request
+    }
+  }
+  return () => {
+    globalThis.fetch = originalFetch
+    net.Socket.prototype.connect = originalConnect
+    for (const { module, request, get } of originals) Object.assign(module, { request, get })
+  }
+}
+const restoreNetworkGuard = installLoopbackNetworkGuard()
 
 const require = createRequire(import.meta.url)
 const backendRoot = fileURLToPath(new URL('../../backend-node/', import.meta.url))
@@ -46,9 +121,11 @@ const {
 } = require(path.join(backendRoot, 'src', 'services', 'redrawFullFrameModelLockService'))
 const {
   buildCurrentReferenceBindings,
+  canonicalBundleHash,
   loadReviewedReferenceCoverage,
   projectReferenceBundleForGeneration,
 } = require(path.join(backendRoot, 'src', 'services', 'redrawReferenceBundleService'))
+const { preparationEvidenceHash } = require(path.join(backendRoot, 'src', 'services', 'redrawPreparationGateService'))
 const {
   finalizeReviewedCoverage,
   validateReviewedCoverageManifest,
@@ -75,7 +152,6 @@ const coverageInstallationByVersion = new Map()
 let genericPreparationFiles
 let referencePreparationProviderCalls = 0
 const runtimeErrors = []
-let originalNodeFetch
 let originalStorageLocalPath
 let originalStorageBaseUrl
 let fakeProviderOrigin
@@ -154,6 +230,7 @@ const defaultSourceFacts = {
 }
 
 const fullProductMode = process.env.REDRAW_E2E_FAKE_PROVIDER === '1'
+const r2d2dMode = process.env.REDRAW_E2E_R2D2D === '1'
 const activeCase = !fullProductMode && process.env.REDRAW_E2E_CASE === 'latam-real-source'
   ? redrawLatinAmericanCase
   : null
@@ -212,7 +289,23 @@ const integrationTest = (title, callback) => {
   if (!fullProductMode) test(title, callback)
 }
 
-test.beforeEach(async ({ page }) => {
+test.beforeEach(async ({ page, context }) => {
+  await context.route('**/*', async route => {
+    try {
+      assertLoopbackUrl(route.request().url())
+      await route.continue()
+    } catch (_) {
+      await route.abort('blockedbyclient')
+    }
+  })
+  await context.routeWebSocket('**/*', socket => {
+    try {
+      assertLoopbackUrl(socket.url())
+      socket.connectToServer()
+    } catch (_) {
+      socket.close()
+    }
+  })
   await page.addInitScript(() => {
     window.localStorage.setItem('moli_mama_session', JSON.stringify({
       token: 'redraw-local-browser-session',
@@ -235,6 +328,13 @@ function close(server) {
 }
 
 async function browserApi(page, pathname, init = {}) {
+  if (r2d2dMode) return page.evaluate(async ({ target, options }) => {
+    const tenantId = window.localStorage.getItem('moli_mama_tenant_id')
+    const response = await fetch(target, { ...options,
+      headers: { ...options.headers, ...(tenantId ? { 'X-Tenant-Id': tenantId } : {}) },
+    })
+    return { status: response.status, body: await response.json() }
+  }, { target: pathname, options: init })
   return page.evaluate(async ({ target, options }) => {
     const response = await fetch(target, options)
     return { status: response.status, body: await response.json() }
@@ -692,16 +792,6 @@ test.beforeAll(async () => {
   originalStorageBaseUrl = process.env.STORAGE_BASE_URL
   process.env.STORAGE_LOCAL_PATH = storageRoot
   process.env.STORAGE_BASE_URL = 'https://media.example.test'
-  if (fullProductMode) {
-    originalNodeFetch = globalThis.fetch
-    globalThis.fetch = (input, init) => {
-      const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url)
-      if (!['127.0.0.1', 'localhost'].includes(url.hostname)) {
-        throw new Error(`完整本地验收禁止公网请求：${url.origin}`)
-      }
-      return originalNodeFetch(input, init)
-    }
-  }
   genericPreparationFiles = await createGenericPreparationFiles()
   if (activeCase) {
     sourceVideoPath = path.resolve(process.env.REDRAW_E2E_SOURCE_VIDEO)
@@ -1253,34 +1343,23 @@ test.beforeAll(async () => {
     localeVerifier,
     redrawOptions: {
       localeVerifier,
-      uploadLimits: {
+      ...(!r2d2dMode ? { uploadLimits: {
         minDurationMs: 1_000,
         maxDurationMs: 60_000,
-      },
-      referencePreparationProvider: async ({ input }) => {
+      } } : {}),
+      referencePreparationProvider: async ({ input, outputDir }) => {
         referencePreparationProviderCalls += 1
         const shot = genericPreparationFiles.shots.get(String(input.shot_id || ''))
         if (!shot) throw new Error('通用逐镜净景缺少本地输出')
-        const artifactId = insertStoredArtifact({
-          name: `本地逐镜净景 ${input.shot_id}`,
-          type: 'image',
-          relativePath: shot.cleanPlate.relativePath,
-          mimeType: 'image/png',
-          width: shot.cleanPlate.width,
-          height: shot.cleanPlate.height,
-          metadata: {
-            fixture_version_id: Number(input.version_id),
-            fixture_shot_id: String(input.shot_id || ''),
-          },
-        })
+        fs.copyFileSync(shot.cleanPlate.absolutePath, path.join(outputDir, 'clean.png'))
         return {
           status: 'completed',
           provider_task_id: `local-clean-${input.version_id}-${input.shot_id}-${input.mode}`,
-          asset_id: artifactId,
-          clean_plate: true,
+          output: { relative_path: 'clean.png' },
           quality: {
             width: shot.cleanPlate.width,
             height: shot.cleanPlate.height,
+            mime_type: 'image/png',
             mask_area_changed: true,
             non_mask_similarity: 0.99,
           },
@@ -1448,14 +1527,17 @@ test.beforeAll(async () => {
 })
 
 test.afterAll(async () => {
-  if (backendServer) await close(backendServer)
-  database?.close()
-  if (tempRoot) fs.rmSync(tempRoot, { recursive: true, force: true })
-  if (originalNodeFetch) globalThis.fetch = originalNodeFetch
-  if (originalStorageLocalPath === undefined) delete process.env.STORAGE_LOCAL_PATH
-  else process.env.STORAGE_LOCAL_PATH = originalStorageLocalPath
-  if (originalStorageBaseUrl === undefined) delete process.env.STORAGE_BASE_URL
-  else process.env.STORAGE_BASE_URL = originalStorageBaseUrl
+  try {
+    if (backendServer) await close(backendServer)
+    database?.close()
+    if (tempRoot) fs.rmSync(tempRoot, { recursive: true, force: true })
+  } finally {
+    restoreNetworkGuard()
+    if (originalStorageLocalPath === undefined) delete process.env.STORAGE_LOCAL_PATH
+    else process.env.STORAGE_LOCAL_PATH = originalStorageLocalPath
+    if (originalStorageBaseUrl === undefined) delete process.env.STORAGE_BASE_URL
+    else process.env.STORAGE_BASE_URL = originalStorageBaseUrl
+  }
 })
 
 function resetProviderFixture(facts = sourceFacts, localization = localizationOverrides) {
@@ -2288,6 +2370,522 @@ integrationTest('通用三镜项目完成前链分析并在低说话人置信度
   expect(runtimeErrors, JSON.stringify(runtimeErrors)).toEqual([])
 })
 
+integrationTest('R2d2d 普通页面真实导入动作 A→B 并显式准备复用净景且不生成', async ({ page }, testInfo) => {
+  test.setTimeout(240_000)
+  expect(r2d2dMode, 'R2d2d 必须以专用隔离配置启用默认 uploadLimits').toBe(true)
+  resetProviderFixture(genericHighConfidenceSourceFacts(), genericLocalization)
+  const readPersistentOwner = () => ({
+    tenant: database.prepare('SELECT id, status FROM tenants WHERE id = ?').get(owner.tenant.id) || null,
+    member: database.prepare('SELECT tenant_id, user_id, role, status FROM tenant_members WHERE tenant_id = ? AND user_id = ?')
+      .get(owner.tenant.id, owner.user.id) || null,
+  })
+  const ownerBefore = readPersistentOwner()
+  expect(ownerBefore, '旧浏览器鉴权夹具没有持久化租户和成员前提').toEqual({ tenant: null, member: null })
+  const ownerCreatedAt = new Date().toISOString()
+  database.transaction(() => {
+    database.prepare(`INSERT INTO tenants (id, name, slug, status, created_by, created_at, updated_at)
+      VALUES (?, 'R2d2d local fixture', 'r2d2d-local-fixture', 'active', ?, ?, ?)`)
+      .run(owner.tenant.id, owner.user.id, ownerCreatedAt, ownerCreatedAt)
+    database.prepare(`INSERT INTO tenant_members (tenant_id, user_id, role, status, created_at, updated_at)
+      VALUES (?, ?, 'owner', 'active', ?, ?)`)
+      .run(owner.tenant.id, owner.user.id, ownerCreatedAt, ownerCreatedAt)
+  })()
+  const ownerAfter = readPersistentOwner()
+  expect(ownerAfter).toEqual({ tenant: { id: owner.tenant.id, status: 'active' },
+    member: { tenant_id: owner.tenant.id, user_id: owner.user.id, role: 'owner', status: 'active' } })
+  await page.addInitScript(tenantId => {
+    window.localStorage.setItem('moli_mama_tenant_id', tenantId)
+  }, owner.tenant.id)
+  await testInfo.attach('r2d2d-isolated-owner-prerequisite', {
+    body: Buffer.from(JSON.stringify({ before: ownerBefore, after: ownerAfter,
+      boundary: 'Persisted owner/member prerequisite for the existing injected local session; not real login verification.' }, null, 2)),
+    contentType: 'application/json',
+  })
+  const browserErrors = []
+  const requests = []
+  const baselineTasks = []
+  page.on('pageerror', error => browserErrors.push(error.message))
+  page.on('request', request => {
+    const url = new URL(request.url())
+    if (!url.pathname.startsWith('/api/v1/redraw/')) return
+    let body = null
+    if (request.headers()['content-type']?.includes('application/json')) {
+      try { body = request.postDataJSON() } catch (_) {}
+    }
+    requests.push({ method: request.method(), path: url.pathname, query: url.search,
+      tenant_id: request.headers()['x-tenant-id'], body })
+  })
+  const jsonPost = (pathname, body) => browserApi(page, pathname, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  })
+  const sourcePath = createGenericSourceVideo({ filename: 'r2d2d-source-12s.mp4', color: 'darkblue' })
+  const projectId = await createGenericProjectFromRedraw(page)
+  await page.locator('input[type="file"][accept*="video/mp4"]').setInputFiles(sourcePath)
+  const uploadedSource = await clickForJsonResponse(page,
+    page.getByRole('button', { name: '上传源片', exact: true }),
+    apiResponse('POST', new RegExp(`/api/v1/redraw/projects/${projectId}/works$`)))
+  expect(uploadedSource.response.status(), JSON.stringify(uploadedSource.payload)).toBe(201)
+  const workId = Number(uploadedSource.payload.data.items[0].id)
+  const analyzed = await jsonPost(`/api/v1/redraw/works/${workId}/analyze`, {
+    locale: 'es-ES', market: 'ES', aspect_ratio: '16:9', style_preset_id: 1,
+  })
+  expect([201, 202]).toContain(analyzed.status)
+  await expect.poll(async () => (await browserApi(page, `/api/v1/redraw/works/${workId}`))
+    .body.data.analysis_decision?.effective_mode, { timeout: 15_000 }).toBe('auto')
+  const localizationQuote = await jsonPost(`/api/v1/redraw/works/${workId}/localization-quote`, {
+    locale: 'es-ES', market: 'ES', localization_level: 'faithful',
+  })
+  expect(localizationQuote.status, JSON.stringify(localizationQuote.body)).toBe(200)
+  const localized = await jsonPost(`/api/v1/redraw/works/${workId}/versions`, {
+    locale: 'es-ES', market: 'ES', localization_level: 'faithful',
+    quote_hash: localizationQuote.body.data.quote_hash, idempotency_key: 'r2d2d-localization',
+  })
+  expect(localized.status, JSON.stringify(localized.body)).toBe(202)
+  let work
+  await expect.poll(async () => {
+    work = (await browserApi(page, `/api/v1/redraw/works/${workId}`)).body.data
+    return work.shots?.length
+  }, { timeout: 15_000 }).toBe(3)
+  const versionId = Number(work.version_id)
+  const shots = database.prepare('SELECT * FROM redraw_shots WHERE version_id = ? ORDER BY shot_index').all(versionId)
+  const targetId = Number(shots[0].id)
+  expect(shots.map(shot => [shot.start_ms, shot.end_ms])).toEqual([[0, 4000], [4000, 8000], [8000, 12000]])
+
+  // Only character/coverage prerequisites are fixtures. Every motion below uses the actual multipart import.
+  await materializeGenericCharacterPlan(page, versionId)
+  const coverage = await installGenericReviewedCoverage(versionId)
+  const reviewed = await jsonPost(`/api/v1/redraw/assets/${coverage.coverageAsset.id}/review`, {
+    action: 'approved', expected_updated_at: coverage.coverageAsset.updated_at,
+  })
+  expect(reviewed.status, JSON.stringify(reviewed.body)).toBe(200)
+  const confirmations = {
+    full_frame_reviewed: 'true', source_identity_obscured: 'true', source_text_obscured: 'true', motion_preserved: 'true',
+  }
+  for (const shot of shots.slice(1)) {
+    const file = genericPreparationFiles.shots.get(shot.shot_id).motion
+    const imported = await page.request.post(`/api/v1/redraw/shots/${shot.id}/motion-reference`, {
+      headers: { 'Idempotency-Key': `r2d2d-prerequisite-motion-${shot.id}`, 'X-Tenant-Id': owner.tenant.id },
+      multipart: {
+        file: { name: `${shot.shot_id}.mp4`, mimeType: 'video/mp4', buffer: fs.readFileSync(file.absolutePath) },
+        expected_updated_at: shot.updated_at, ...confirmations,
+      },
+    })
+    expect(imported.status(), await imported.text()).toBe(200)
+  }
+  async function waitForTask(taskId) {
+    expect(taskId).toBeTruthy()
+    await expect.poll(() => database.prepare('SELECT status FROM async_tasks WHERE id = ?').get(taskId)?.status,
+      { timeout: 20_000 }).toMatch(/^(completed|needs_attention|failed)$/)
+    return database.prepare('SELECT id, status, error, message, result FROM async_tasks WHERE id = ?').get(taskId)
+  }
+  for (const shot of shots) {
+    let complete = false
+    for (let round = 0; round < 6; round += 1) {
+      const quoteErrors = []
+      const originalLogError = log.error
+      log.error = (...args) => {
+        for (const value of args) {
+          if (value?.err instanceof Error) {
+            const { name, code, message, stack } = value.err
+            quoteErrors.push({ name, code, message, stack })
+          }
+        }
+        originalLogError(...args)
+      }
+      let quote
+      try {
+        quote = await jsonPost(`/api/v1/redraw/versions/${versionId}/reference-preparation-quote`, { shot_ids: [shot.id] })
+      } finally {
+        log.error = originalLogError
+      }
+      if (quote.status !== 200) await testInfo.attach('r2d2d-quote-failure-diagnostic', {
+        body: Buffer.from(JSON.stringify({ versionId, shot_id: Number(shot.id), round,
+          status: quote.status, quoteErrors, runtimeErrors,
+          baselineTasks: baselineTasks.map(({ id, status, error }) => ({ id, status, error })),
+          requests: requests.map(({ method, path, body }) => ({ method, path,
+            shot_ids: body?.shot_ids, quote_hash: body?.quote_hash })),
+        }, null, 2)),
+        contentType: 'application/json',
+      })
+      expect(quote.status, JSON.stringify(quote.body)).toBe(200)
+      const priced = quote.body.data
+      if (priced.reused_shot_ids.includes(shot.id)
+        || (shot.id === targetId && priced.items.length === 0 && priced.missing_shot_ids.includes(targetId))) {
+        complete = true
+        break
+      }
+      expect(priced, JSON.stringify(priced)).toMatchObject({ priced: true, needs_attention_shot_ids: [] })
+      const started = await jsonPost(`/api/v1/redraw/versions/${versionId}/reference-preparations`, {
+        shot_ids: [shot.id], quote_hash: priced.quote_hash, idempotency_key: `r2d2d-clean-${shot.id}-${round}`,
+      })
+      expect(started.status, JSON.stringify(started.body)).toBe(202)
+      const task = await waitForTask(started.body.data.task_id)
+      baselineTasks.push(task)
+      expect(task.status, JSON.stringify({ task, runtimeErrors })).not.toBe('failed')
+      const pending = database.prepare(`SELECT * FROM redraw_assets WHERE version_id = ?
+        AND clean_plate_asset_id IS NOT NULL AND approval_status = 'pending' AND deleted_at IS NULL`).all(versionId)
+      for (const asset of pending) {
+        const review = await jsonPost(`/api/v1/redraw/assets/${asset.id}/review`, {
+          action: 'approved', expected_updated_at: asset.updated_at,
+        })
+        expect(review.status, JSON.stringify(review.body)).toBe(200)
+      }
+    }
+    expect(complete, `镜头 ${shot.id} 的真实 clean/审核前提未完成`).toBe(true)
+  }
+  expect(approvedCleanRows(versionId)).toHaveLength(7)
+  expect(database.prepare("SELECT COUNT(*) AS count FROM redraw_reference_artifact_imports WHERE version_id = ? AND scope_id = ? AND purpose = 'motion'")
+    .get(versionId, targetId).count).toBe(0)
+  expect(shots.slice(1).map(shot => database.prepare('SELECT preparation_state FROM redraw_shots WHERE id = ?')
+    .get(shot.id).preparation_state)).toEqual(['reference_ready', 'reference_ready'])
+
+  await page.reload()
+  await page.locator('.redraw-step').filter({ hasText: '批量转绘' }).click()
+  await expect(page.getByTestId('motion-processed-file')).toBeEnabled()
+  const refreshQuote = page.getByTestId('redraw-reference-preparation-refresh')
+  const prepareButton = page.getByRole('button', { name: '按服务端策略自动准备', exact: true })
+  const counts = () => ({
+    provider: referencePreparationProviderCalls,
+    reservations: database.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count,
+  })
+  const preparationPosts = () => requests.filter(item => item.method === 'POST'
+    && /\/reference-preparations?$|\/reference-preparation-quote$/.test(item.path))
+  const readyResults = []
+  const baselineCounts = counts()
+  let oldA
+  let oldImportA
+  let oldFileA
+  let oldReadyA
+  for (const [label, file] of [
+    ['A', genericPreparationFiles.shots.get('shot-1').motion],
+    ['B', genericPreparationFiles.shots.get('shot-2').motion],
+  ]) {
+    const before = database.prepare('SELECT * FROM redraw_shots WHERE id = ?').get(targetId)
+    const requestStart = requests.length
+    const postsBeforeUpload = preparationPosts().length
+    await page.getByTestId('motion-processed-file').setInputFiles(file.absolutePath)
+    await expect.poll(() => page.getByTestId('motion-local-video').evaluate(video => video.readyState)).toBeGreaterThanOrEqual(2)
+    for (const key of Object.keys(confirmations)) await page.getByTestId(`motion-confirm-${key.replaceAll('_', '-')}`).check()
+    const imported = await clickForJsonResponse(page, page.getByTestId('motion-upload'),
+      apiResponse('POST', new RegExp(`/api/v1/redraw/shots/${targetId}/motion-reference$`)))
+    expect(imported.response.status(), JSON.stringify(imported.payload)).toBe(200)
+    const importedAsset = imported.payload.data.asset
+    expect(imported.payload.data.billing).toEqual({ credits: 0, held: 0, charged: 0 })
+    expect(importedAsset).toMatchObject({ sha256: file.sha256, width: 320, height: 180, duration_ms: 4000 })
+    expect([...new Set(requests.map(request => request.tenant_id))]).toEqual([owner.tenant.id])
+    await expect.poll(() => page.getByTestId('motion-candidate-video').evaluate(video => video.readyState)).toBeGreaterThanOrEqual(2)
+    await expect(refreshQuote).toBeEnabled()
+    expect(preparationPosts().length, '上传及其 fresh GET 回调不得自动报价或 prepare').toBe(postsBeforeUpload)
+    expect(counts()).toEqual(baselineCounts)
+    await expect(page.getByRole('button', { name: '生成本镜头', exact: true })).toBeDisabled()
+    const uploadReads = requests.slice(requestStart).filter(item => item.method === 'GET')
+    expect(uploadReads.some(item => item.path === `/api/v1/redraw/works/${workId}`)).toBe(true)
+    for (const suffix of ['motion-reference', 'reference-bundle', 'motion-reference/media']) {
+      expect(uploadReads.some(item => item.path === `/api/v1/redraw/shots/${targetId}/${suffix}`), suffix).toBe(true)
+    }
+    const importRecord = database.prepare(`SELECT * FROM redraw_reference_artifact_imports
+      WHERE version_id = ? AND scope_id = ? AND purpose = 'motion' ORDER BY id DESC LIMIT 1`).get(versionId, targetId)
+    expect(importRecord).toMatchObject({ status: 'completed', stored_asset_id: importedAsset.id, file_sha256: file.sha256 })
+    expect(database.prepare('SELECT updated_at FROM redraw_shots WHERE id = ?').get(targetId).updated_at).toBe(before.updated_at)
+    if (label === 'B') {
+      expect(importRecord.id).not.toBe(oldImportA.id)
+      expect(importedAsset.id).not.toBe(oldA.id)
+      expect(file.sha256).not.toBe(oldImportA.file_sha256)
+      expect(JSON.parse(before.reference_bundle_json).motion_reference.asset_id).toBe(oldA.id)
+    }
+
+    const quote = await clickForJsonResponse(page, refreshQuote,
+      apiResponse('POST', new RegExp(`/api/v1/redraw/versions/${versionId}/reference-preparation-quote$`)))
+    expect(quote.response.status(), JSON.stringify(quote.payload)).toBe(200)
+    expect(quote.response.request().postDataJSON()).toEqual({ shot_ids: [targetId] })
+    expect(quote.payload.data).toMatchObject({ credits: 0, items: [], missing_shot_ids: [targetId], needs_attention_shot_ids: [] })
+    await expect(prepareButton).toBeEnabled()
+    const prepareRequestStart = requests.length
+    const started = await clickForJsonResponse(page, prepareButton,
+      apiResponse('POST', new RegExp(`/api/v1/redraw/versions/${versionId}/reference-preparations$`)))
+    expect(started.response.status(), JSON.stringify(started.payload)).toBe(202)
+    expect(started.response.request().postDataJSON()).toMatchObject({ shot_ids: [targetId] })
+    const task = await waitForTask(started.payload.data.task_id)
+    expect(task.status, JSON.stringify({ task, runtimeErrors })).toBe('completed')
+    expect(JSON.parse(task.result).prepared_shot_ids).toEqual([targetId])
+    // The explicit status control only reads this pending task; no reload can erase the operation marker.
+    if (await page.getByTestId('motion-processed-file').isDisabled()) await refreshQuote.click()
+    await expect(page.getByTestId('motion-processed-file')).toBeEnabled({ timeout: 15_000 })
+    await expect(page.getByRole('heading', { name: '服务端证据已复核', exact: true })).toBeVisible()
+    expect(await page.evaluate(() => Object.keys(sessionStorage).filter(key => key.startsWith('redraw-motion-pending:')))).toEqual([])
+    const completed = database.prepare('SELECT * FROM redraw_shots WHERE id = ?').get(targetId)
+    expect(completed.updated_at).not.toBe(before.updated_at)
+    const pageReads = requests.slice(prepareRequestStart).filter(item => item.method === 'GET')
+    for (const requiredPath of [`/api/v1/redraw/works/${workId}`, `/api/v1/redraw/shots/${targetId}/motion-reference`,
+      `/api/v1/redraw/shots/${targetId}/reference-bundle`, `/api/v1/redraw/versions/${versionId}/generation-gate`]) {
+      expect(pageReads.some(item => item.path === requiredPath), `页面完成屏障缺少 ${requiredPath}`).toBe(true)
+    }
+    const fresh = await browserApi(page, `/api/v1/redraw/works/${workId}`)
+    expect(fresh.body.data.version_id).toBe(versionId)
+    expect(fresh.body.data.source_fingerprint).toBe(work.source_fingerprint)
+    expect(fresh.body.data.shots.find(shot => Number(shot.id) === targetId).updated_at).toBe(completed.updated_at)
+    const identity = new URLSearchParams({ expected_updated_at: completed.updated_at, expected_source_sha256: work.source_fingerprint })
+    const candidate = await browserApi(page, `/api/v1/redraw/shots/${targetId}/motion-reference?${identity}`)
+    expect(candidate.status, JSON.stringify(candidate.body)).toBe(200)
+    expect(candidate.body.data).toMatchObject({ status: 'available', shot_updated_at: completed.updated_at,
+      candidate: { import_id: importRecord.id, asset: { id: importedAsset.id, sha256: file.sha256 } } })
+    const bundle = JSON.parse(completed.reference_bundle_json)
+    const snapshot = JSON.parse(completed.preparation_snapshot_json)
+    expect(completed.preparation_state).toBe('reference_ready')
+    expect(bundle.motion_reference).toMatchObject({ asset_id: importedAsset.id, sha256: file.sha256, audio_stream_count: 0 })
+    expect(completed.reference_bundle_hash).toBe(canonicalBundleHash(bundle))
+    expect(completed.preparation_evidence_hash).toBe(preparationEvidenceHash(completed))
+    expect(snapshot).toMatchObject({ status: 'completed', reference_bundle_hash: completed.reference_bundle_hash })
+    expect(snapshot.clean_results.every(item => item.status === 'completed')).toBe(true)
+    const asset = database.prepare('SELECT * FROM assets WHERE id = ?').get(importedAsset.id)
+    expect(JSON.parse(asset.metadata)).toMatchObject({
+      redraw_motion_import: { file_sha256: file.sha256, shot_id: targetId, source_fingerprint: work.source_fingerprint },
+      redraw_motion_reference: { file_sha256: file.sha256, shot_id: targetId, source_fingerprint: work.source_fingerprint },
+    })
+    expect(sha256File(path.join(storageRoot, asset.local_path))).toBe(file.sha256)
+    const publicBundle = await browserApi(page, `/api/v1/redraw/shots/${targetId}/reference-bundle`)
+    expect(publicBundle.body.data).toMatchObject({ reference_bundle_hash: completed.reference_bundle_hash,
+      bundle: { motion_reference: { asset_id: importedAsset.id, sha256: file.sha256 } } })
+    const gate = await browserApi(page, `/api/v1/redraw/versions/${versionId}/generation-gate`)
+    expect(gate.status, JSON.stringify(gate.body)).toBe(200)
+    expect(gate.body.data.ok, JSON.stringify(gate.body)).toBe(true)
+    expect(pageReads.some(item => item.path === `/api/v1/redraw/shots/${targetId}/motion-reference/media`
+      && new URLSearchParams(item.query).get('expected_updated_at') === completed.updated_at
+      && new URLSearchParams(item.query).get('expected_import_id') === String(importRecord.id)
+      && new URLSearchParams(item.query).get('expected_file_sha256') === file.sha256)).toBe(true)
+    const decoded = await page.getByTestId('motion-candidate-video').evaluate(async video => {
+      await video.play()
+      await new Promise(resolve => video.requestVideoFrameCallback(resolve))
+      video.pause()
+      return { width: video.videoWidth, height: video.videoHeight, duration: video.duration,
+        decoded_frames: video.getVideoPlaybackQuality().totalVideoFrames }
+    })
+    expect(decoded).toMatchObject({ width: 320, height: 180, duration: 4 })
+    expect(decoded.decoded_frames).toBeGreaterThan(0)
+    expect(counts()).toEqual(baselineCounts)
+    readyResults.push({ label, task, import_id: importRecord.id, asset_id: asset.id, sha256: file.sha256,
+      shot_updated_at: completed.updated_at, bundle_hash: completed.reference_bundle_hash,
+      evidence_hash: completed.preparation_evidence_hash, decoded, counts: counts() })
+    if (label === 'A') {
+      oldA = asset; oldImportA = importRecord; oldFileA = fs.readFileSync(path.join(storageRoot, asset.local_path)); oldReadyA = completed
+    } else {
+      expect(completed.reference_bundle_hash).not.toBe(oldReadyA.reference_bundle_hash)
+      expect(completed.preparation_evidence_hash).not.toBe(oldReadyA.preparation_evidence_hash)
+      expect(snapshot.clean_results).toEqual(JSON.parse(oldReadyA.preparation_snapshot_json).clean_results)
+      expect(database.prepare('SELECT * FROM assets WHERE id = ?').get(oldA.id)).toEqual(oldA)
+      expect(database.prepare('SELECT * FROM redraw_reference_artifact_imports WHERE id = ?').get(oldImportA.id)).toEqual(oldImportA)
+      expect(fs.readFileSync(path.join(storageRoot, oldA.local_path))).toEqual(oldFileA)
+    }
+  }
+  expect(requests.filter(item => item.method === 'POST' && /\/(generate(?:-batch)?|retry|generation-queue)(\/|$)/.test(item.path))).toEqual([])
+  expect([...new Set(requests.map(request => request.tenant_id))]).toEqual([owner.tenant.id])
+  expect(database.prepare('SELECT COUNT(*) AS count FROM video_generations').get().count).toBe(0)
+  expect(providerCallCounts.video).toBe(0)
+  expect(blockedNetworkRequests).toEqual([])
+  expect(browserErrors).toEqual([])
+  await testInfo.attach('r2d2d-default-backend-motion-chain', {
+    body: Buffer.from(JSON.stringify({ workId, versionId, targetId, baselineTasks, baselineCounts, readyResults, requests,
+      limits: 'Local authentication, analysis, localization, character and coverage fixtures; real default motion multipart/import/ffprobe/prepare/bundle/media. No real provider, login or visual-quality acceptance.' }, null, 2)),
+    contentType: 'application/json',
+  })
+  await testInfo.attach('r2d2d-ready-B-page', { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' })
+})
+
+integrationTest('G1.3b 普通页面真实逐帧处理待审 MP4、显式四确认导入报告及准备且零生成', async ({ page }, testInfo) => {
+  test.setTimeout(480_000)
+  const deadline = Date.now() + 480_000
+  const remainingBudget = () => Math.max(1, deadline - Date.now() - 15_000)
+  expect(r2d2dMode, '必须采用独占进程的默认 uploadLimits 配置').toBe(true)
+  resetProviderFixture(genericHighConfidenceSourceFacts(), genericLocalization)
+  expect(database.prepare('SELECT id FROM tenants WHERE id = ?').get(owner.tenant.id)).toBeUndefined()
+  const now = new Date().toISOString()
+  database.transaction(() => {
+    database.prepare(`INSERT INTO tenants (id, name, slug, status, created_by, created_at, updated_at)
+      VALUES (?, 'G1.3b local fixture', 'g1-motion-processing-local', 'active', ?, ?, ?)`).run(owner.tenant.id, owner.user.id, now, now)
+    database.prepare(`INSERT INTO tenant_members (tenant_id, user_id, role, status, created_at, updated_at)
+      VALUES (?, ?, 'owner', 'active', ?, ?)`).run(owner.tenant.id, owner.user.id, now, now)
+  })()
+  await page.addInitScript(tenantId => localStorage.setItem('moli_mama_tenant_id', tenantId), owner.tenant.id)
+  const requests = [], browserErrors = []
+  page.on('pageerror', error => browserErrors.push(error.message))
+  page.on('request', request => {
+    const url = new URL(request.url())
+    if (url.pathname.startsWith('/api/v1/redraw/')) requests.push({ method: request.method(), path: url.pathname, query: url.search })
+  })
+  const post = (url, body) => browserApi(page, url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+  const sourcePath = path.join(tempRoot, 'g1-moving-source-12s.mp4')
+  runFfmpeg(['-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=320x180:rate=12',
+    '-f', 'lavfi', '-i', 'sine=frequency=380:sample_rate=44100', '-t', '12', '-c:v', 'libx264',
+    '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', '-y', sourcePath], 'G1.3b 非均匀真实移动源片')
+  const projectId = await createGenericProjectFromRedraw(page)
+  await page.locator('input[type="file"][accept*="video/mp4"]').setInputFiles(sourcePath)
+  const uploadedSource = await clickForJsonResponse(page, page.getByRole('button', { name: '上传源片', exact: true }),
+    apiResponse('POST', new RegExp(`/api/v1/redraw/projects/${projectId}/works$`)))
+  expect(uploadedSource.response.status(), JSON.stringify(uploadedSource.payload)).toBe(201)
+  const workId = Number(uploadedSource.payload.data.items[0].id)
+  const analyzed = await post(`/api/v1/redraw/works/${workId}/analyze`, { locale: 'es-ES', market: 'ES', aspect_ratio: '16:9', style_preset_id: 1 })
+  expect([201, 202]).toContain(analyzed.status)
+  await expect.poll(async () => (await browserApi(page, `/api/v1/redraw/works/${workId}`)).body.data.analysis_decision?.effective_mode,
+    { timeout: 15000 }).toBe('auto')
+  const quoted = await post(`/api/v1/redraw/works/${workId}/localization-quote`, { locale: 'es-ES', market: 'ES', localization_level: 'faithful' })
+  expect(quoted.status, JSON.stringify(quoted.body)).toBe(200)
+  const localized = await post(`/api/v1/redraw/works/${workId}/versions`, { locale: 'es-ES', market: 'ES', localization_level: 'faithful',
+    quote_hash: quoted.body.data.quote_hash, idempotency_key: 'g1-processing-localization' })
+  expect(localized.status, JSON.stringify(localized.body)).toBe(202)
+  let work
+  await expect.poll(async () => { work = (await browserApi(page, `/api/v1/redraw/works/${workId}`)).body.data; return work.shots?.length },
+    { timeout: 15000 }).toBe(3)
+  const versionId = Number(work.version_id)
+  await materializeGenericCharacterPlan(page, versionId)
+  const coverage = await installMotionProcessingCoverage({ database, owner, log, storageRoot, backendRoot, versionId, modelLock: genericModelLock() })
+  const coverageReview = await post(`/api/v1/redraw/assets/${coverage.coverageAsset.id}/review`, {
+    action: 'approved', expected_updated_at: coverage.coverageAsset.updated_at,
+  })
+  expect(coverageReview.status, JSON.stringify(coverageReview.body)).toBe(200)
+  const targetId = Number(work.shots[0].id), baselineTasks = []
+  const waitTask = async taskId => {
+    const states = [], startedAt = Date.now(), diagnostic = testInfo.outputPath(`g1-task-${taskId}-states.json`)
+    let current
+    try {
+      await expect.poll(() => {
+        current = database.prepare('SELECT id, status, error, message, result FROM async_tasks WHERE id = ?').get(taskId)
+        let result = null
+        try { const value = JSON.parse(current?.result || 'null'); if (value) result = {
+          prepared_shot_ids: value.prepared_shot_ids, failed_shot_ids: value.failed_shot_ids, needs_attention_shot_ids: value.needs_attention_shot_ids,
+        } } catch (_) {}
+        states.push({ elapsed_ms: Date.now() - startedAt, task_id: taskId, status: current?.status,
+          error: current?.error || null, message: current?.message || null, result })
+        fs.writeFileSync(diagnostic, JSON.stringify(states, null, 2))
+        return current?.status
+      }, { timeout: remainingBudget(), intervals: [5000] }).toMatch(/^(completed|needs_attention|failed)$/)
+      return current
+    } finally {
+      await testInfo.attach(`g1-task-${taskId}-states`, { path: diagnostic, contentType: 'application/json' })
+    }
+  }
+  let cleanComplete = false
+  for (let round = 0; round < 4; round += 1) {
+    const quote = await post(`/api/v1/redraw/versions/${versionId}/reference-preparation-quote`, { shot_ids: [targetId] })
+    expect(quote.status, JSON.stringify(quote.body)).toBe(200)
+    const priced = quote.body.data
+    if (priced.items.length === 0 && priced.missing_shot_ids.includes(targetId)) { cleanComplete = true; break }
+    expect(priced).toMatchObject({ priced: true, needs_attention_shot_ids: [] })
+    const started = await post(`/api/v1/redraw/versions/${versionId}/reference-preparations`, {
+      shot_ids: [targetId], quote_hash: priced.quote_hash, idempotency_key: `g1-processing-clean-${round}`,
+    })
+    expect(started.status, JSON.stringify(started.body)).toBe(202)
+    const task = await waitTask(started.body.data.task_id); baselineTasks.push(task)
+    expect(task.status, JSON.stringify({ task, runtimeErrors })).not.toBe('failed')
+    const pending = database.prepare(`SELECT * FROM redraw_assets WHERE version_id = ? AND clean_plate_asset_id IS NOT NULL
+      AND approval_status = 'pending' AND deleted_at IS NULL`).all(versionId)
+    expect(pending.length).toBeGreaterThan(0)
+    for (const asset of pending) {
+      const reviewed = await post(`/api/v1/redraw/assets/${asset.id}/review`, { action: 'approved', expected_updated_at: asset.updated_at })
+      expect(reviewed.status, JSON.stringify(reviewed.body)).toBe(200)
+    }
+  }
+  expect(cleanComplete).toBe(true)
+  const before = database.prepare('SELECT * FROM redraw_shots WHERE id = ?').get(targetId)
+  const cleanRowsBefore = approvedCleanRows(versionId)
+  expect(cleanRowsBefore).toHaveLength(2)
+  const counts = () => ({ provider: referencePreparationProviderCalls,
+    reservations: database.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count })
+  const baselineCounts = counts()
+  await page.reload(); await page.locator('.redraw-step').filter({ hasText: '批量转绘' }).click()
+  await expect(page.getByTestId('motion-process')).toBeEnabled()
+  const requestStart = requests.length
+  const responsePromise = page.waitForResponse(apiResponse('GET', new RegExp(`/api/v1/redraw/shots/${targetId}/motion-processing$`)))
+  await page.getByTestId('motion-process').click()
+  const response = await responsePromise
+  expect(response.status(), await response.text().catch(() => 'binary envelope')).toBe(200)
+  expect(response.headers()['content-type']).toContain('application/vnd.moli.redraw-motion-processing.v1')
+  const envelope = await response.body()
+  expect(envelope.subarray(0, 8).toString('ascii')).toBe('RDMO0001')
+  const reportLength = envelope.readUInt32BE(8), rawReport = envelope.subarray(12, 12 + reportLength).toString('utf8')
+  const report = JSON.parse(rawReport), video = envelope.subarray(12 + reportLength)
+  expect(report).toMatchObject({ approval_status: 'pending', shot_id: targetId, source_fingerprint: work.source_fingerprint,
+    owner: { tenant_id: owner.tenant.id, user_id: owner.user.id }, output: { mime: 'video/mp4', size: video.length } })
+  expect(report.frames).toHaveLength(48)
+  expect(report.output.sha256).toBe(crypto.createHash('sha256').update(video).digest('hex'))
+  const actualVideoPath = testInfo.outputPath('g1-actual-processing.mp4')
+  fs.writeFileSync(actualVideoPath, video)
+  const actualProbe = probeFixtureMedia(actualVideoPath)
+  expect(actualProbe.audio).toBeNull()
+  expect(actualProbe.video).toMatchObject({ width: 320, height: 180, sample_aspect_ratio: '1:1', display_aspect_ratio: '16:9' })
+  const expectedDuration = report.timing.duration / report.timing.timescale
+  assertMotionDuration(actualProbe.duration, expectedDuration, actualProbe.video.time_base)
+  const decode = locator => locator.evaluate(async video => {
+    await video.play(); await new Promise(resolve => video.requestVideoFrameCallback(resolve)); video.pause()
+    return { width: video.videoWidth, height: video.videoHeight, duration: video.duration, decoded_frames: video.getVideoPlaybackQuality().totalVideoFrames }
+  })
+  await expect.poll(() => page.getByTestId('motion-local-video').evaluate(video => video.readyState)).toBeGreaterThanOrEqual(2)
+  const decodedLocal = await decode(page.getByTestId('motion-local-video'))
+  expect(decodedLocal).toMatchObject({ width: 320, height: 180 })
+  assertMotionDuration(decodedLocal.duration, expectedDuration, actualProbe.video.time_base)
+  expect(decodedLocal.decoded_frames).toBeGreaterThan(0)
+  await expect(page.getByTestId('motion-processing-review')).toBeVisible()
+  await expect(page.getByTestId('motion-reject')).toBeVisible()
+  const checks = ['full_frame_reviewed', 'source_identity_obscured', 'source_text_obscured', 'motion_preserved']
+  for (const key of checks) await expect(page.getByTestId(`motion-confirm-${key.replaceAll('_', '-')}`)).not.toBeChecked()
+  await expect(page.getByTestId('motion-upload')).toBeDisabled()
+  expect(requests.slice(requestStart).filter(item => item.method === 'POST')).toEqual([])
+  await testInfo.attach('g1-pending-unchecked-page', { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' })
+  for (const key of checks) await page.getByTestId(`motion-confirm-${key.replaceAll('_', '-')}`).check()
+  const imported = await clickForJsonResponse(page, page.getByTestId('motion-upload'),
+    apiResponse('POST', new RegExp(`/api/v1/redraw/shots/${targetId}/motion-reference$`)))
+  expect(imported.response.status(), JSON.stringify(imported.payload)).toBe(200)
+  const uploadBytes = imported.response.request().postDataBuffer()
+  expect(uploadBytes.includes(Buffer.from('name="processing_report"'))).toBe(true)
+  expect(uploadBytes.includes(Buffer.from(rawReport))).toBe(true)
+  expect(imported.payload.data.asset).toMatchObject({ sha256: report.output.sha256, width: 320, height: 180, duration_ms: 4000 })
+  const importRow = database.prepare("SELECT * FROM redraw_reference_artifact_imports WHERE scope_id = ? AND purpose = 'motion' ORDER BY id DESC LIMIT 1").get(targetId)
+  expect(importRow.status).toBe('completed')
+  const importedAsset = database.prepare('SELECT * FROM assets WHERE id = ?').get(importRow.stored_asset_id)
+  const metadata = JSON.parse(importedAsset.metadata)
+  expect(metadata.redraw_motion_processing).toMatchObject({ provenance: 'client_returned_unattested',
+    verified: { output_media_verified: true, pixel_claims_verified: false, renderer_origin_verified: false } })
+  expect(metadata.redraw_motion_processing.report).toEqual(report)
+  expect(sha256File(path.join(storageRoot, importedAsset.local_path))).toBe(report.output.sha256)
+  await expect.poll(() => page.getByTestId('motion-candidate-video').evaluate(video => video.readyState)).toBeGreaterThanOrEqual(2)
+  expect(requests.slice(requestStart).filter(item => item.method === 'POST').map(item => item.path))
+    .toEqual([`/api/v1/redraw/shots/${targetId}/motion-reference`])
+  const refresh = page.getByTestId('redraw-reference-preparation-refresh')
+  await expect(refresh).toBeEnabled()
+  const quote = await clickForJsonResponse(page, refresh,
+    apiResponse('POST', new RegExp(`/api/v1/redraw/versions/${versionId}/reference-preparation-quote$`)))
+  expect(quote.payload.data).toMatchObject({ credits: 0, items: [], missing_shot_ids: [targetId], needs_attention_shot_ids: [] })
+  const started = await clickForJsonResponse(page, page.getByRole('button', { name: '按服务端策略自动准备', exact: true }),
+    apiResponse('POST', new RegExp(`/api/v1/redraw/versions/${versionId}/reference-preparations$`)))
+  expect(started.response.status(), JSON.stringify(started.payload)).toBe(202)
+  const task = await waitTask(started.payload.data.task_id)
+  expect(task.status, JSON.stringify({ task, runtimeErrors })).toBe('completed')
+  if (await page.getByTestId('motion-processed-file').isDisabled()) await refresh.click()
+  await expect(page.getByTestId('motion-processed-file')).toBeEnabled({ timeout: remainingBudget() })
+  await expect(page.getByRole('heading', { name: '服务端证据已复核', exact: true })).toBeVisible({ timeout: remainingBudget() })
+  const completed = database.prepare('SELECT * FROM redraw_shots WHERE id = ?').get(targetId)
+  const bundle = JSON.parse(completed.reference_bundle_json)
+  expect(completed.preparation_state).toBe('reference_ready'); expect(completed.updated_at).not.toBe(before.updated_at)
+  expect(bundle.motion_reference).toMatchObject({ asset_id: importedAsset.id, sha256: report.output.sha256, audio_stream_count: 0 })
+  expect(completed.reference_bundle_hash).toBe(canonicalBundleHash(bundle))
+  expect(completed.preparation_evidence_hash).toBe(preparationEvidenceHash(completed))
+  expect(approvedCleanRows(versionId)).toEqual(cleanRowsBefore); expect(counts()).toEqual(baselineCounts)
+  expect(await page.evaluate(() => Object.keys(sessionStorage).filter(key => key.startsWith('redraw-motion-pending:')))).toEqual([])
+  const decodedCandidate = await decode(page.getByTestId('motion-candidate-video'))
+  expect(decodedCandidate.decoded_frames).toBeGreaterThan(0)
+  expect(requests.filter(item => item.method === 'POST' && /\/(generate(?:-batch)?|retry|generation-queue)(\/|$)/.test(item.path))).toEqual([])
+  expect(database.prepare('SELECT COUNT(*) AS count FROM video_generations').get().count).toBe(0)
+  expect(providerCallCounts.video).toBe(0); expect(blockedNetworkRequests).toEqual([]); expect(browserErrors).toEqual([])
+  await testInfo.attach('g1-processing-default-backend-chain', { contentType: 'application/json', body: Buffer.from(JSON.stringify({
+    projectId, workId, versionId, targetId, source: coverage.evidence, report, baselineTasks, baselineCounts, decodedLocal, decodedCandidate,
+    output: { size: video.length, sha256: report.output.sha256, sar: actualProbe.video.sample_aspect_ratio, dar: actualProbe.video.display_aspect_ratio,
+      width: actualProbe.video.width, height: actualProbe.video.height, duration: actualProbe.duration },
+    import_id: importRow.id, asset_id: importedAsset.id, task, before_cas: before.updated_at, after_cas: completed.updated_at,
+    bundle_hash: completed.reference_bundle_hash, evidence_hash: completed.preparation_evidence_hash, explicit_confirmations: checks,
+    requests, boundary: 'Injected local session and persistent owner/member; synthetic source and explicit fixture coverage review; local clean provider. Actual default processing renderer, video decode, multipart import and prepare. Not real login, supplier or human visual-quality acceptance.',
+  }, null, 2)) })
+  await testInfo.attach('g1-processing-ready-page', { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' })
+})
+
 integrationTest('通用三镜项目高置信度分析后完成 es-ES 本地化并物化三镜', async ({ page }) => {
   resetProviderFixture(genericHighConfidenceSourceFacts(), genericLocalization)
   const browserErrors = []
@@ -2796,6 +3394,12 @@ export async function runRedrawFullProductFlow({ page }, flowOptions = {}) {
     return ['127.0.0.1', 'localhost'].includes(url.hostname)
       && url.pathname.startsWith('/api/v1/redraw/')
   }
+  const isExpectedReadCancellation = (request) => {
+    const url = new URL(request.url())
+    return request.method() === 'GET'
+      && /^\/api\/v1\/redraw\/shots\/\d+\/motion-reference$/.test(url.pathname)
+      && request.failure()?.errorText === 'net::ERR_ABORTED'
+  }
   page.on('pageerror', (error) => browserErrors.push(`pageerror:${error.message}`))
   page.on('request', (request) => {
     browserRequests.push(request.url())
@@ -2813,7 +3417,9 @@ export async function runRedrawFullProductFlow({ page }, flowOptions = {}) {
       pendingRedrawRequests.delete(request)
       redrawRequestActivity += 1
     }
-    browserErrors.push(`requestfailed:${request.method()} ${request.url()} ${request.failure()?.errorText || ''}`)
+    if (!isExpectedReadCancellation(request)) {
+      browserErrors.push(`requestfailed:${request.method()} ${request.url()} ${request.failure()?.errorText || ''}`)
+    }
   })
   const waitForRedrawRequestsToSettle = async () => {
     await expect.poll(async () => {
@@ -2862,7 +3468,7 @@ export async function runRedrawFullProductFlow({ page }, flowOptions = {}) {
   await page.getByRole('button', { name: '开始分析' }).click()
   await expect(page.getByText('服务端分析摘要')).toBeVisible()
   await expect(page.getByText('本地化报价 7 积分')).toBeVisible()
-  await page.getByRole('button', { name: '确认英文 1:1 本地化' }).click()
+  await page.getByRole('button', { name: '确认本地化' }).click()
   let localizationDebug
   for (let attempt = 0; attempt < 30; attempt += 1) {
     const result = await browserApi(page, `/api/v1/redraw/works/${workId}`)

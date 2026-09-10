@@ -3,6 +3,7 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const { Readable } = require('node:stream');
 
 const { loadConfig } = require('../config');
 const {
@@ -139,8 +140,10 @@ function ownedExport(ctx, exportId) {
   return row;
 }
 
-function artifactBinding(ctx, row, kind) {
-  const contract = DOWNLOAD_KINDS[String(kind || '').toLowerCase()];
+function artifactBinding(ctx, row, kind, unitReport = false) {
+  const contract = unitReport && kind === 'report'
+    ? { outputKey: 'report_asset_id', assetType: 'json', assetKind: 'composition_report', mimeType: 'application/json' }
+    : DOWNLOAD_KINDS[String(kind || '').toLowerCase()];
   if (!contract) throw exportError('REDRAW_EXPORT_KIND_INVALID', 'download kind invalid');
   const manifest = parseObject(row.manifest_json);
   const outputs = parseObject(manifest.outputs);
@@ -165,6 +168,11 @@ function artifactBinding(ctx, row, kind) {
 
 async function resolveDownloadArtifact(ctx, input) {
   const row = ownedExport(ctx, input.exportId);
+  if (parseObject(row.manifest_json).schema_version === 'redraw-execution-unit-composition-v1') {
+    // The historical HTTP handler reopens a pathname. Unit artifacts must wait
+    // for the explicit protected-stream bridge, including cleanup ownership.
+    throw exportError('REDRAW_EXPORT_UNIT_DOWNLOAD_NOT_CONNECTED', 'unit download handler is not connected');
+  }
   const kind = String(input.kind || '').toLowerCase();
   const { asset, contract, manifest } = artifactBinding(ctx, row, kind);
   let release;
@@ -208,6 +216,129 @@ async function getDownloadDescriptor(ctx, input) {
     sha256: artifact.sha256,
     download_url: `/api/redraw/exports/${artifact.export_id}/download/${artifact.kind}`,
   };
+}
+
+async function prepareExecutionUnitExportArtifact(ctx, input) {
+  const row = ownedExport(ctx, input.exportId);
+  const kind = String(input.kind || '').toLowerCase();
+  const { asset, contract, manifest } = artifactBinding(ctx, row, kind, true);
+  const request = manifest.request;
+  const assertCurrentRelease = async () => {
+    try {
+      if (manifest.schema_version !== 'redraw-execution-unit-composition-v1'
+        || !request || Object.getPrototypeOf(request) !== Object.prototype
+        || Reflect.ownKeys(request).length !== 5
+        || !['schema_version', 'version_id', 'run_id', 'expected_plan_hash', 'expected_run_revision'].every(key => Object.hasOwn(request, key))
+        || request.schema_version !== 'redraw-execution-unit-release-v1' || request.version_id !== row.version_id) {
+        throw new Error('unit release request invalid');
+      }
+      assertReleaseHash(manifest.episode_release, row.release_hash);
+      const current = await buildEpisodeRelease(ctx, request);
+      assertReleaseHash(current, row.release_hash);
+    } catch (_) {
+      throw exportError('REDRAW_EXPORT_RELEASE_HASH_MISMATCH', 'export release is no longer current');
+    }
+  };
+  await assertCurrentRelease();
+  const root = resolveStorageRoot(ctx);
+  const file = resolveReadableFile(root, asset.local_path);
+  if (manifest.outputs[`${kind}_path`] !== asset.local_path) {
+    throw exportError('REDRAW_EXPORT_ASSET_INVALID', 'export artifact path binding mismatch');
+  }
+  const expected = manifest.outputs.hashes?.[kind];
+  const emptySrt = kind === 'srt' && manifest.episode_release.subtitles.cues.length === 0
+    && manifest.episode_release.subtitles.srt === '';
+  if (typeof expected !== 'string' || !/^[a-f0-9]{64}$/.test(expected) || (file.size === 0 && !emptySrt)) {
+    throw exportError('REDRAW_EXPORT_CHECKSUM_MISMATCH', 'export artifact checksum missing');
+  }
+  let fd, closed = false, streamed = false;
+  const streams = new Set();
+  const rejectBytes = () => { throw exportError('REDRAW_EXPORT_CHECKSUM_MISMATCH', 'export artifact bytes changed'); };
+  const initial = fs.lstatSync(file.absolute, { bigint: true });
+  const same = value => ['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].every(key => value[key] === initial[key]);
+  const assertBinding = () => {
+    if (closed) throw exportError('REDRAW_EXPORT_FILE_UNREADABLE', 'export read capability is closed');
+    const currentRow = ownedExport(ctx, row.id);
+    const current = artifactBinding(ctx, currentRow, kind, true);
+    if (JSON.stringify(currentRow) !== JSON.stringify(row) || JSON.stringify(current.asset) !== JSON.stringify(asset)) {
+      throw exportError('REDRAW_EXPORT_RELEASE_HASH_MISMATCH', 'export artifact binding changed');
+    }
+  };
+  const assertFile = () => {
+    if (closed || fd === undefined) rejectBytes();
+    try {
+      assertPlainPath(root, file.absolute);
+      if (fs.realpathSync.native(file.absolute) !== file.absolute
+        || !same(fs.lstatSync(file.absolute, { bigint: true })) || !same(fs.fstatSync(fd, { bigint: true }))) rejectBytes();
+    } catch (_) { rejectBytes(); }
+  };
+  const cleanup = () => {
+    if (closed) return;
+    closed = true;
+    for (const stream of streams) stream.destroy();
+    if (fd !== undefined) { fs.closeSync(fd); fd = undefined; }
+  };
+  try {
+    fd = fs.openSync(file.absolute, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+    assertBinding(); assertFile();
+    const digest = crypto.createHash('sha256'), buffer = Buffer.allocUnsafe(64 * 1024);
+    let position = 0;
+    while (position < file.size) {
+      const count = fs.readSync(fd, buffer, 0, Math.min(buffer.length, file.size - position), position);
+      if (!count) rejectBytes();
+      digest.update(buffer.subarray(0, count)); position += count;
+    }
+    if (digest.digest('hex') !== expected) rejectBytes();
+    assertFile();
+    return {
+      export_id: row.id, version_id: row.version_id, asset_id: asset.id, kind,
+      mime_type: contract.mimeType, filename: `redraw-export-${row.id}.${kind === 'report' ? 'json' : kind}`,
+      size: file.size, sha256: expected, cleanup,
+      createReadStream() {
+        assertBinding(); assertFile();
+        if (streamed) throw exportError('REDRAW_EXPORT_FILE_UNREADABLE', 'export read capability already consumed');
+        streamed = true;
+        const output = Readable.from((async function* () {
+          // A capability may be held before consumption. Reuse the authoritative
+          // release builder rather than cloning its approval/ledger validator.
+          await assertCurrentRelease();
+          assertBinding(); assertFile();
+          if (file.size === 0) return;
+          const actual = crypto.createHash('sha256');
+          let bytes = 0;
+          const source = fs.createReadStream(file.absolute, { fd, start: 0, end: file.size - 1, autoClose: false,
+            fs: {
+              read(readFd, chunk, offset, length, at, callback) {
+                try { assertBinding(); assertFile(); } catch (error) { callback(error); return; }
+                fs.read(readFd, chunk, offset, length, at, (error, count, result) => {
+                  if (error) { callback(error); return; }
+                  try { assertBinding(); assertFile(); callback(null, count, result); }
+                  catch (failure) { callback(failure); }
+                });
+              },
+              close(_fd, callback) { callback(null); },
+            } });
+          streams.add(source);
+          try {
+            for await (const chunk of source) {
+              assertBinding(); assertFile();
+              actual.update(chunk); bytes += chunk.length;
+              yield chunk;
+            }
+            assertBinding(); assertFile();
+            if (bytes !== file.size || actual.digest('hex') !== expected) rejectBytes();
+          } finally { source.destroy(); streams.delete(source); }
+        })());
+        streams.add(output);
+        output.once('close', () => streams.delete(output));
+        return output;
+      },
+    };
+  } catch (error) {
+    cleanup();
+    if (String(error.code || '').startsWith('REDRAW_EXPORT_')) throw error;
+    throw exportError('REDRAW_EXPORT_FILE_UNREADABLE', 'export artifact could not be opened');
+  }
 }
 
 function stripPaths(value) {
@@ -326,5 +457,6 @@ module.exports = {
   buildJianyingManifest,
   getDownloadDescriptor,
   resolveDownloadArtifact,
+  prepareExecutionUnitExportArtifact,
   validateJianyingImport,
 };

@@ -1,6 +1,7 @@
 'use strict';
 
 const { createHash } = require('node:crypto');
+const { resolveBlueprintDialogueSources } = require('./redrawSourceDialogueService');
 
 const HEX_64 = /^[a-f0-9]{64}$/;
 const UNSAFE_CONTRACT_KEY = /(?:^|_)(?:api_?key|access_?key|secret|token|password|credential|provider|model|prompt|raw|url|path)(?:_|$)/i;
@@ -364,8 +365,25 @@ function versionRows(db, owner, versionId) {
     .all(Number(versionId), String(owner.tenantId), String(owner.userId));
 }
 
-function compileVersionProductionPacks(db, owner, versionId) {
+function assertSourceDialogueGeneratable(db, owner, version, blueprint, options = {}, shotId = null) {
+  const sources = resolveBlueprintDialogueSources({ db, ...owner, storageRoot: options.storageRoot }, {
+    workId: version.work_id,
+    blueprint,
+  });
+  for (const source of sources) {
+    if (shotId !== null && source.shot_id !== shotId) continue;
+    if (source.status === 'unresolved') {
+      throw codedError('SOURCE_DIALOGUE_EVIDENCE_INVALID', '原始对白证据不可验证，请修复证据后重试');
+    }
+    if (source.status === 'resolved' && source.cross_shot) {
+      throw codedError('REDRAW_CROSS_SHOT_DIALOGUE_PLAN_REQUIRED', '完整对白跨越镜头，需先建立跨镜对白时间线；不能截句或按单镜时长生成');
+    }
+  }
+}
+
+function compileVersionProductionPacks(db, owner, versionId, options = {}) {
   const context = loadLockedEpisodeContext(db, owner, versionId);
+  assertSourceDialogueGeneratable(db, owner, context.version, context.blueprint, options);
   const rows = versionRows(db, owner, versionId);
   const blueprintIds = new Set((context.blueprint.shots || []).map((shot) => String(shot.id)));
   const rowIds = new Set(rows.map((row) => String(row.shot_id || '')));
@@ -419,7 +437,7 @@ function defaultPersistProductionPack(db, owner, versionId, payload) {
 
 function writeVersionProductionPacks(db, owner, versionId, options = {}) {
   const compile = options.compileVersionProductionPacks || compileVersionProductionPacks;
-  const packs = compile(db, owner, versionId);
+  const packs = compile(db, owner, versionId, options);
   if (packs.length === 0) return packs;
   const rows = versionRows(db, owner, versionId);
   const persist = options.persistProductionPack || ((database, payload) => (
@@ -465,7 +483,7 @@ function assertPreparationSnapshotCurrent(snapshot, pack, version, blueprintRow)
   }
 }
 
-function assertShotProductionPackCurrent(db, owner, shot) {
+function assertShotProductionPackCurrent(db, owner, shot, options = {}) {
   const pack = parseJson(shot.compiled_prompt_json, null, 'compiled_prompt_json');
   const hasVersionBinding = HEX_64.test(String(shot.version_blueprint_hash || ''))
     || HEX_64.test(String(shot.version_localization_hash || ''));
@@ -493,6 +511,7 @@ function assertShotProductionPackCurrent(db, owner, shot) {
     throw codedError('REDRAW_PRODUCTION_PACK_STALE', '逐镜生产包已变化，请重新锁定本地化并刷新生成准备');
   }
   assertPreparationSnapshotCurrent(snapshot, pack, version, blueprintRow);
+  assertSourceDialogueGeneratable(db, owner, version, blueprint, options, String(shot.shot_id || ''));
   assertNoSourceLanguageText({
     characters: pack.characters,
     dialogue: pack.dialogue,

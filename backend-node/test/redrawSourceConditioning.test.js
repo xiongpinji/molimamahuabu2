@@ -254,6 +254,7 @@ test('pre-auth provider asset handler 只读发送有效 MP4 且坏 HMAC 不暴�
     ttlSeconds: 300,
   });
   const handler = createProviderAssetHandler({
+    cfg: {},
     storageRoot,
     storageBaseUrl: 'https://media.example.test/static',
     signingSecret: SIGNING_SECRET,
@@ -263,10 +264,10 @@ test('pre-auth provider asset handler 只读发送有效 MP4 且坏 HMAC 不暴�
     return {
       statusCode: 200,
       headers: {},
-      sentFile: null,
+      sentBytes: null,
       status(code) { this.statusCode = code; return this; },
       set(values) { Object.assign(this.headers, values); return this; },
-      sendFile(value) { this.sentFile = value; return this; },
+      send(value) { this.sentBytes = value; return this; },
       json(value) { this.body = value; return this; },
     };
   }
@@ -283,7 +284,9 @@ test('pre-auth provider asset handler 只读发送有效 MP4 且坏 HMAC 不暴�
     socket: { remoteAddress: '127.0.0.1' },
   }, validRes);
   assert.equal(validRes.statusCode, 200);
-  assert.equal(validRes.sentFile, absolutePath);
+  assert.ok(Buffer.isBuffer(validRes.sentBytes));
+  assert.deepEqual(validRes.sentBytes, content);
+  assert.equal(crypto.createHash('sha256').update(validRes.sentBytes).digest('hex'), hash);
   assert.equal(validRes.headers['Cache-Control'], 'private, no-store, max-age=0');
   assert.equal(validRes.headers['Content-Type'], 'video/mp4');
 
@@ -300,5 +303,5 @@ test('pre-auth provider asset handler 只读发送有效 MP4 且坏 HMAC 不暴�
     socket: { remoteAddress: '127.0.0.1' },
   }, badRes);
   assert.equal(badRes.statusCode, 403);
-  assert.equal(badRes.sentFile, null);
+  assert.equal(badRes.sentBytes, null);
 });

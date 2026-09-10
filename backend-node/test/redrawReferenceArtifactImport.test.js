@@ -10,6 +10,10 @@ const sharp = require('sharp');
 
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const { getFfmpegPath } = require('../src/utils/ffmpegPath');
+const identityService = require('../src/services/redrawCharacterIdentityService');
+const redrawAssetService = require('../src/services/redrawAssetService');
+const redrawReviewService = require('../src/services/redrawReviewService');
+const createRedrawHandlers = require('../src/routes/redraw');
 const {
   bindReadyMotionReference,
   importCharacterReferenceArtifact,
@@ -221,6 +225,69 @@ function importInput(assetId, file, overrides = {}) {
   };
 }
 
+function currentCharacter(fixture) {
+  return fixture.db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(fixture.assetId);
+}
+
+function invokeIdentityHandler(fixture, name, body = {}) {
+  const response = {
+    statusCode: null,
+    body: null,
+    status(code) { this.statusCode = code; return this; },
+    json(value) { this.body = value; return this; },
+  };
+  const handlers = createRedrawHandlers(fixture.db, fixture.ctx.log, {
+    cfg: { storage: { local_path: fixture.storageRoot } },
+  });
+  handlers[name]({
+    params: { id: String(name === 'listVersionAssets' ? fixture.versionId : fixture.assetId) },
+    tenant: { id: OWNER.tenantId },
+    user: { id: OWNER.userId },
+    body,
+  }, response);
+  return response;
+}
+
+function saveAndApproveIdentity(fixture, wardrobeAssetId) {
+  const ownsReadableArtifact = (asset) => {
+    const metadata = JSON.parse(asset?.metadata || '{}');
+    return metadata.tenant_id === OWNER.tenantId && metadata.user_id === OWNER.userId
+      && fs.existsSync(storagePath(fixture.storageRoot, asset.local_path));
+  };
+  const saved = identityService.saveIdentityPack({
+    ...fixture.ctx,
+    assetReader: { owns: ownsReadableArtifact, canRead: ownsReadableArtifact },
+  }, fixture.assetId, {
+    expected_updated_at: currentCharacter(fixture).updated_at,
+    target_actor_label: 'Main character',
+    confirmed_views: ['front', 'profile', 'full_body'],
+    live_action_human_confirmed: true,
+    adult_status: 'verified_18_plus',
+    identity_consistency_confirmed: true,
+    wardrobe_reference_asset_id: wardrobeAssetId,
+    wardrobe_consistency_confirmed: true,
+  });
+  assert.equal(saved.identity_pack_status.ready, true);
+  assert.equal(saved.identity_pack.artifact.asset_id, currentCharacter(fixture).asset_id);
+  const approved = invokeIdentityHandler(fixture, 'reviewRedrawAsset', {
+    action: 'approved', expected_updated_at: saved.updated_at,
+  });
+  assert.equal(approved.statusCode, 200);
+  assert.equal(approved.body.data.asset.approval_status, 'approved');
+  return saved.identity_pack;
+}
+
+async function createApprovedIdentityFixture(t) {
+  const fixture = createFixture(t);
+  fixture.db.prepare("UPDATE redraw_versions SET market = 'US' WHERE id = ?")
+    .run(fixture.versionId);
+  const file = await makeImageFile({ width: 48, height: 64 });
+  const input = importInput(fixture.assetId, file, { idempotencyKey: 'identity-original' });
+  const imported = await importCharacterReferenceArtifact(fixture.ctx, input);
+  const pack = saveAndApproveIdentity(fixture, imported.asset.id);
+  return { ...fixture, file, input, imported, pack };
+}
+
 test('reference artifact import migration creates scoped idempotency table', (t) => {
   const db = new Database(':memory:');
   t.after(() => db.close());
@@ -372,12 +439,15 @@ test('reference artifact import service exposes narrow public API', async () => 
     'importCharacterReferenceArtifact',
     'importMotionReferenceArtifact',
   ];
-  assert.deepEqual(Object.keys(service).sort(), publicFunctions.slice().sort());
+  assert.deepEqual(Object.keys(service).sort(), [...publicFunctions, 'prepareMotionReferenceCandidate'].sort());
   for (const functionName of publicFunctions) {
     await assert.rejects(service[functionName](), {
       code: 'REDRAW_REFERENCE_ARTIFACT_INPUT_INVALID',
     });
   }
+  await assert.rejects(service.prepareMotionReferenceCandidate(), {
+    code: 'REDRAW_MOTION_CANDIDATE_INPUT_INVALID',
+  });
 });
 
 test('identity import stores image asset and binds current character', async (t) => {
@@ -705,6 +775,209 @@ test('identity import rejects mismatched pre-existing content-addressed file wit
   );
   assert.deepEqual(fs.readFileSync(absolutePath), mismatched);
   assert.equal(fixture.db.prepare('SELECT COUNT(*) AS count FROM assets').get().count, 0);
+});
+
+test('identity replacement requires a new real identity pack before read list and review are ready', async (t) => {
+  const fixture = await createApprovedIdentityFixture(t);
+  const originalAsset = fixture.db.prepare('SELECT * FROM assets WHERE id = ?')
+    .get(fixture.imported.asset.id);
+  const sourceMetadata = {
+    source_ref: { source_character_key: 'character-main', label: 'source character' },
+    source: { legacy: 'keep source alias' },
+    snapshot: { expression: 'neutral', identity_pack: { historical_note: 'keep nested data' } },
+    custom_metadata: ['untouched', { value: 7 }],
+  };
+  fixture.db.prepare('UPDATE redraw_assets SET source_ref_json = ? WHERE id = ?')
+    .run(JSON.stringify({ ...sourceMetadata, identity_pack: fixture.pack }), fixture.assetId);
+  const replacementFile = await makeImageFile({ width: 48, height: 64, color: '#df1f7f' });
+  const replacement = await importCharacterReferenceArtifact(fixture.ctx,
+    importInput(fixture.assetId, replacementFile, {
+      idempotencyKey: 'identity-replacement',
+      expectedUpdatedAt: currentCharacter(fixture).updated_at,
+    }));
+  const pending = currentCharacter(fixture);
+
+  assert.notEqual(replacement.asset.id, fixture.imported.asset.id);
+  assert.equal(pending.asset_id, replacement.asset.id);
+  assert.equal(pending.approval_status, 'pending');
+  assert.equal(identityService.readIdentityPack(pending), null);
+  assert.equal(identityService.identityPackStatus(pending).ready, false);
+  assert.deepEqual(JSON.parse(pending.source_ref_json), sourceMetadata);
+  const dto = redrawAssetService.rowToAsset(pending);
+  assert.equal(dto.identity_pack, null);
+  assert.equal(dto.identity_pack_status.has_identity_pack, false);
+  assert.equal(dto.identity_pack_status.ready, false);
+  const listed = invokeIdentityHandler(fixture, 'listVersionAssets');
+  assert.equal(listed.statusCode, 200);
+  assert.equal(listed.body.data.length, 1);
+  assert.equal(listed.body.data[0].identity_pack, null);
+  assert.equal(listed.body.data[0].identity_pack_status.ready, false);
+  assert.throws(() => redrawReviewService.reviewAsset(fixture.db, fixture.assetId, {
+    ...OWNER, reviewerId: OWNER.userId, action: 'approved', expected_updated_at: pending.updated_at,
+  }), { code: 'REDRAW_CHARACTER_IDENTITY_REQUIRED' });
+  const rejected = invokeIdentityHandler(fixture, 'reviewRedrawAsset', {
+    action: 'approved', expected_updated_at: pending.updated_at,
+  });
+  assert.equal(rejected.statusCode, 409);
+  assert.equal(rejected.body.error.code, 'REDRAW_CHARACTER_IDENTITY_REQUIRED');
+  assert.equal(rejected.body.error.message, '角色资产必须先完成真人身份包审核');
+  assert.deepEqual(currentCharacter(fixture), pending);
+
+  const newPack = saveAndApproveIdentity(fixture, replacement.asset.id);
+  assert.equal(newPack.artifact.asset_id, replacement.asset.id);
+  assert.notEqual(newPack.pack_sha256, fixture.pack.pack_sha256);
+  assert.equal(currentCharacter(fixture).approval_status, 'approved');
+  assert.equal(redrawAssetService.rowToAsset(currentCharacter(fixture)).identity_pack_status.ready, true);
+  assert.deepEqual(fixture.db.prepare('SELECT * FROM assets WHERE id = ?')
+    .get(fixture.imported.asset.id), originalAsset);
+  for (const result of [fixture.imported, replacement]) {
+    assert.deepEqual(result.billing, { credits: 0, held: 0, charged: 0 });
+    const asset = fixture.db.prepare('SELECT * FROM assets WHERE id = ?').get(result.asset.id);
+    const decoded = await sharp(storagePath(fixture.storageRoot, asset.local_path)).raw().toBuffer({ resolveWithObject: true });
+    assert.equal(decoded.info.width, 48);
+    assert.equal(decoded.info.height, 64);
+    assert.ok(decoded.data.length > 0);
+  }
+  assert.equal(fixture.db.prepare('SELECT COUNT(*) AS count FROM credit_ledger').get().count, 0);
+  assert.equal(fixture.db.prepare('SELECT COUNT(*) AS count FROM tenant_credit_ledger').get().count, 0);
+});
+
+test('identity import without a pack preserves original source JSON bytes for both source aliases', async (t) => {
+  for (const sourceField of ['source_ref', 'source']) {
+    const fixture = createFixture(t);
+    const sourceJson = `{ "${sourceField}" : { "source_character_key" : "character-main" }, "custom" : [1, true] }\n`;
+    fixture.db.prepare('UPDATE redraw_assets SET source_ref_json = ? WHERE id = ?')
+      .run(sourceJson, fixture.assetId);
+    await importCharacterReferenceArtifact(fixture.ctx,
+      importInput(fixture.assetId, await makeImageFile()));
+    assert.equal(currentCharacter(fixture).source_ref_json, sourceJson);
+  }
+});
+
+test('identity import with a new operation key revokes confirmation even for identical image bytes', async (t) => {
+  const fixture = await createApprovedIdentityFixture(t);
+  const replacement = await importCharacterReferenceArtifact(fixture.ctx,
+    importInput(fixture.assetId, fixture.file, {
+      idempotencyKey: 'identity-same-bytes-new-operation',
+      expectedUpdatedAt: currentCharacter(fixture).updated_at,
+    }));
+  assert.notEqual(replacement.asset.id, fixture.imported.asset.id);
+  assert.equal(currentCharacter(fixture).approval_status, 'pending');
+  assert.equal(identityService.readIdentityPack(currentCharacter(fixture)), null);
+  assert.equal(storedArtifactFiles(fixture.storageRoot).length, 1);
+});
+
+test('wardrobe import preserves the entire approved character row including its real identity pack', async (t) => {
+  const fixture = await createApprovedIdentityFixture(t);
+  const before = currentCharacter(fixture);
+  await importCharacterReferenceArtifact(fixture.ctx,
+    importInput(fixture.assetId, await makeImageFile({ color: '#123456' }), {
+      purpose: 'wardrobe', idempotencyKey: 'wardrobe-with-ready-identity',
+      expectedUpdatedAt: before.updated_at,
+    }));
+  assert.deepEqual(currentCharacter(fixture), before);
+  assert.equal(identityService.identityPackStatus(currentCharacter(fixture)).ready, true);
+});
+
+test('identity idempotency replay does not revoke a later saved and approved replacement pack', async (t) => {
+  const fixture = await createApprovedIdentityFixture(t);
+  const replacementInput = importInput(fixture.assetId, await makeImageFile({ color: '#654321' }), {
+    idempotencyKey: 'identity-replay-later-pack',
+    expectedUpdatedAt: currentCharacter(fixture).updated_at,
+  });
+  const replacement = await importCharacterReferenceArtifact(fixture.ctx, replacementInput);
+  saveAndApproveIdentity(fixture, replacement.asset.id);
+  const before = currentCharacter(fixture);
+  for (const input of [replacementInput, fixture.input]) {
+    await importCharacterReferenceArtifact(fixture.ctx, input);
+    assert.deepEqual(currentCharacter(fixture), before);
+  }
+  assert.equal(fixture.db.prepare('SELECT COUNT(*) AS count FROM assets').get().count, 2);
+  assert.equal(fixture.db.prepare('SELECT COUNT(*) AS count FROM redraw_reference_artifact_imports').get().count, 2);
+});
+
+test('identity import rejection preserves the old pack for owner version CAS source and media failures', async (t) => {
+  const cases = [
+    ['owner', { userId: 'another-user' }, {}, null, 'REDRAW_REFERENCE_ARTIFACT_NOT_FOUND'],
+    ['version', { versionId: 99999 }, {}, null, 'REDRAW_REFERENCE_ARTIFACT_NOT_FOUND'],
+    ['CAS', {}, { expectedUpdatedAt: INITIAL_UPDATED_AT }, null, 'REDRAW_REFERENCE_ARTIFACT_CONFLICT'],
+    ['media', {}, {}, null, 'REDRAW_REFERENCE_ARTIFACT_MEDIA_INVALID'],
+    ['source-key', {}, {}, (payload) => JSON.stringify({ ...payload, source_ref: {} }), 'REDRAW_REFERENCE_ARTIFACT_INPUT_INVALID'],
+    ['malformed-source', {}, {}, () => '{"identity_pack":', 'REDRAW_REFERENCE_ARTIFACT_INPUT_INVALID'],
+  ];
+  for (const [name, context, overrides, changeSource, code] of cases) {
+    await t.test(name, async (subtest) => {
+      const fixture = await createApprovedIdentityFixture(subtest);
+      if (changeSource) {
+        fixture.db.prepare('UPDATE redraw_assets SET source_ref_json = ? WHERE id = ?')
+          .run(changeSource(JSON.parse(currentCharacter(fixture).source_ref_json)), fixture.assetId);
+      }
+      const before = currentCharacter(fixture);
+      const file = await makeImageFile({ color: '#112233' });
+      if (name === 'media') file.mimetype = 'image/jpeg';
+      await assert.rejects(importCharacterReferenceArtifact({ ...fixture.ctx, ...context },
+        importInput(fixture.assetId, file, {
+          idempotencyKey: `identity-reject-${name}`, expectedUpdatedAt: before.updated_at, ...overrides,
+        })), { code });
+      assert.deepEqual(currentCharacter(fixture), before);
+      assert.equal(fixture.db.prepare('SELECT COUNT(*) AS count FROM assets').get().count, 1);
+      assert.equal(fixture.db.prepare('SELECT COUNT(*) AS count FROM redraw_reference_artifact_imports').get().count, 1);
+      assert.equal(storedArtifactFiles(fixture.storageRoot).length, 1);
+    });
+  }
+});
+
+test('identity import revokes only the pack from transaction-current source metadata', async (t) => {
+  const fixture = await createApprovedIdentityFixture(t);
+  const file = await makeImageFile({ color: '#998877' });
+  const pending = importCharacterReferenceArtifact(fixture.ctx, importInput(fixture.assetId, file, {
+    idempotencyKey: 'identity-current-source-payload',
+    expectedUpdatedAt: currentCharacter(fixture).updated_at,
+  }));
+  const currentMetadata = {
+    source: { source_character_key: 'character-main', latest: true },
+    snapshot: { retained: 'written while image inspection awaited' },
+  };
+  fixture.db.prepare('UPDATE redraw_assets SET source_ref_json = ? WHERE id = ?')
+    .run(JSON.stringify({ ...currentMetadata, identity_pack: fixture.pack }), fixture.assetId);
+  await pending;
+  assert.deepEqual(JSON.parse(currentCharacter(fixture).source_ref_json), currentMetadata);
+});
+
+test('identity import rolls back pack revocation and the asset when the import record insert fails', async (t) => {
+  const fixture = await createApprovedIdentityFixture(t);
+  const before = currentCharacter(fixture);
+  const filesBefore = storedArtifactFiles(fixture.storageRoot);
+  fixture.db.exec(`
+    CREATE TRIGGER reject_replacement_import_record BEFORE INSERT ON redraw_reference_artifact_imports
+    BEGIN SELECT RAISE(ABORT, 'forced replacement import record failure'); END
+  `);
+  await assert.rejects(importCharacterReferenceArtifact(fixture.ctx,
+    importInput(fixture.assetId, await makeImageFile({ color: '#102030' }), {
+      idempotencyKey: 'identity-rollback-pack', expectedUpdatedAt: before.updated_at,
+    })), { code: 'REDRAW_REFERENCE_ARTIFACT_STORAGE_FAILED' });
+  assert.deepEqual(currentCharacter(fixture), before);
+  assert.equal(fixture.db.prepare('SELECT COUNT(*) AS count FROM assets').get().count, 1);
+  assert.equal(fixture.db.prepare('SELECT COUNT(*) AS count FROM redraw_reference_artifact_imports').get().count, 1);
+  assert.deepEqual(storedArtifactFiles(fixture.storageRoot), filesBefore);
+});
+
+test('identity import zero-row CAS update preserves the approved pack and rolls back the new asset', async (t) => {
+  const fixture = await createApprovedIdentityFixture(t);
+  const before = currentCharacter(fixture);
+  fixture.db.exec(`
+    CREATE TRIGGER ignore_replacement_CAS BEFORE UPDATE ON redraw_assets
+    WHEN NEW.asset_id <> OLD.asset_id
+    BEGIN SELECT RAISE(IGNORE); END
+  `);
+  await assert.rejects(importCharacterReferenceArtifact(fixture.ctx,
+    importInput(fixture.assetId, await makeImageFile({ color: '#203040' }), {
+      idempotencyKey: 'identity-zero-row-CAS', expectedUpdatedAt: before.updated_at,
+    })), { code: 'REDRAW_REFERENCE_ARTIFACT_CONFLICT' });
+  assert.deepEqual(currentCharacter(fixture), before);
+  assert.equal(fixture.db.prepare('SELECT COUNT(*) AS count FROM assets').get().count, 1);
+  assert.equal(fixture.db.prepare('SELECT COUNT(*) AS count FROM redraw_reference_artifact_imports').get().count, 1);
+  assert.equal(storedArtifactFiles(fixture.storageRoot).length, 1);
 });
 
 test('motion import stores reviewed silent candidate without making shot reference_ready', async (t) => {

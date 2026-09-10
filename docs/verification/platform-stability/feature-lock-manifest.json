@@ -1184,19 +1184,31 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-09-04 一键转绘完整主线本地合入最新 main 获批",
+          "approvedBy": "product-owner 2026-09-04 redraw-complete-local-main-merge",
+          "impactTests": [
+            "backend-node/test/fuminVideoClient.test.js",
+            "backend-node/test/fuminReferenceAssetService.test.js",
+            "backend-node/test/videoGenerationRequestSnapshot.test.js",
+            "backend-node/test/redrawGeneration.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-04 一键转绘完整主线本地合入最新 main 获批",
-        "approvedBy": "product-owner 2026-09-04 redraw-complete-local-main-merge",
+        "reason": "2026-09-07 通用一键转绘 G4.3 同单元任务与积分预留原子绑定及旧启动/超时结算隔离；仅合成账户与隔离本地数据库 TDD，未知保持待核对，保留普通生成原合同；不读真实 Key、不联网、不调用供应商、不付费、不提交推送、不运行 CI、不部署、不写生产/shared",
+        "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-07 继续",
         "impactTests": [
-          "backend-node/test/fuminVideoClient.test.js",
-          "backend-node/test/fuminReferenceAssetService.test.js",
-          "backend-node/test/videoGenerationRequestSnapshot.test.js",
-          "backend-node/test/redrawGeneration.test.js",
-          "backend-node/test/videoBilling.test.js",
-          "backend-node/test/featureLockManifest.test.js",
-          "backend-node/test/incrementalReleaseScope.test.js"
+          "backend-node/test/redrawExecutionTaskBinding.test.js",
+          "backend-node/test/redrawExecutionRun.test.js",
+          "backend-node/test/redrawExecutionClaim.test.js",
+          "backend-node/test/taskService.test.js",
+          "backend-node/test/providerReconciliation.test.js",
+          "backend-node/test/featureLockManifest.test.js"
         ]
       }
     },
@@ -1547,22 +1559,185 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-09-05 ToAPIs 官方域名迁移至 .cn 获批",
+          "approvedBy": "product-owner 2026-09-05 toapis-cn-domain-migration",
+          "impactTests": [
+            "backend-node/test/aiConfigService.test.js",
+            "backend-node/test/externalModelEvidenceBinding.test.js",
+            "backend-node/test/sharedExternalModelReleaseGuard.test.js",
+            "backend-node/test/toapisVideoClient.test.js",
+            "backend-node/test/toapisVideoVerification.test.js",
+            "backend-node/test/toapisWan3Verification.test.js",
+            "frontweb/test/aiConfigProviderPresets.test.js",
+            "frontweb/test/toapisVideoProviderConfig.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-05 通用一键转绘版本级动态执行计划只读预览；零任务零冻结，不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 开始下一项",
+          "impactTests": [
+            "backend-node/test/redrawExecutionPlan.test.js",
+            "backend-node/test/redrawExecutionPlanPreview.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/redrawSourceDialogueGuards.test.js",
+            "backend-node/test/redrawLocalization.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-05 通用一键转绘页面计划审核与版本绑定保存；仅本地不可变快照与回归，零生成零冻结，不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 开始下一项",
+          "impactTests": [
+            "backend-node/test/redrawExecutionPlanReview.test.js",
+            "backend-node/test/redrawExecutionPlanPreview.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "frontweb/test/redrawExecutionPlanReview.test.js",
+            "frontweb/e2e/redraw-workspace.spec.js"
+          ]
+        },
+        {
+          "reason": "2026-09-05 通用一键转绘待就绪执行队列登记与恢复读取；仅本地队列，零调度零生成零冻结，不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 规划好剩余任务设立目标 开始推进",
+          "impactTests": [
+            "backend-node/test/redrawExecutionQueue.test.js",
+            "backend-node/test/redrawExecutionPlanReview.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "frontweb/test/redrawExecutionQueue.test.js",
+            "frontweb/e2e/redraw-workspace.spec.js"
+          ]
+        },
+        {
+          "reason": "2026-09-05 通用一键转绘母本鉴权回放连接；仅本地 owner 与源哈希绑定只读媒体及回归，零业务写入零生成零冻结，不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 规划好剩余任务设立目标 开始推进",
+          "impactTests": [
+            "backend-node/test/redrawSourceVideo.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/redrawSourceAudioEvidence.test.js",
+            "backend-node/test/redrawDialogueCorrection.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-06 通用一键转绘动作草片鉴权裁片与预览连接；仅本地 owner/镜头/源哈希绑定、静音草片和 TDD，零业务写入零审核零生成；不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 规划好剩余任务设立目标 开始推进",
+          "impactTests": [
+            "backend-node/test/redrawMotionDraft.test.js",
+            "backend-node/test/redrawSourceVideo.test.js",
+            "backend-node/test/redrawSourceConditioning.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-06 通用一键转绘当前动作候选恢复与鉴权媒体读取；仅本地 owner/CAS/导入 SHA 绑定和 TDD，零业务写入零审核零生成；不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 规划好剩余任务设立目标 开始推进",
+          "impactTests": [
+            "backend-node/test/redrawMotionCandidate.test.js",
+            "backend-node/test/redrawReferenceArtifactImport.test.js",
+            "backend-node/test/redrawMotionDraft.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-06 通用一键转绘 G1.3a 本地动作处理响应及可选报告导入与准备绑定；仅本地 owner/CAS/真实媒体 TDD，保留人工确认及旧手工候选；不读 Key、不调用供应商、不付费、不提交推送、不部署、不写生产/shared",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进",
+          "impactTests": [
+            "backend-node/test/redrawMotionProcessing.test.js",
+            "backend-node/test/redrawMotionObscuration.test.js",
+            "backend-node/test/redrawMotionCandidate.test.js",
+            "backend-node/test/redrawReferenceArtifactImport.test.js",
+            "backend-node/test/redrawReferencePreparationOrchestration.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-07 通用一键转绘 G4.0e 普通页面单元素材 GET 检查与显式本地 prepare、API/UI 绑定；仅隔离本地真实媒体 TDD，不读真实 Key、不联网、不调用供应商、不付费、不生成、不提交推送、不运行 CI、不部署、不写生产/shared",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-07 继续",
+          "impactTests": [
+            "backend-node/test/redrawUnitReferenceRoutes.test.js",
+            "backend-node/test/redrawSourceVideo.test.js",
+            "backend-node/test/redrawPreparedUnitReference.test.js",
+            "backend-node/test/redrawUnitReferenceDerivation.test.js",
+            "backend-node/test/redrawExecutionQueue.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "frontweb/test/redrawUnitReferenceMaterials.test.js",
+            "frontweb/test/redrawExecutionPlanReview.test.js",
+            "frontweb/test/redrawExecutionQueue.test.js",
+            "frontweb/e2e/redraw-unit-reference-materials.spec.js"
+          ]
+        },
+        {
+          "reason": "2026-09-08 通用一键转绘 G3 项目多作品只读列表与显式选择、新建入口及路由访问隔离；仅本地 SQLite/Vue TDD，保留纯 owner 变化的 pending/unknown 实例，不读 Key、不联网、不调用供应商、不付费、不提交推送、不运行 CI、不部署、不写生产/shared",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-08 继续",
+          "impactTests": [
+            "backend-node/test/redrawProjectWorks.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "frontweb/test/redrawProjectWorksRuntime.test.js",
+            "frontweb/test/redrawWorkspaceRuntime.test.js",
+            "frontweb/test/redrawSourceRuntime.test.js",
+            "frontweb/test/redrawExecutionRunParent.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-09 通用一键转绘 G5.5a 执行单元导出只读 list/get/download GET 接线及真实 JWT/owner 校验、四文件 FD 下载；保留 v1，不改 POST、模型或生产；仅本地 synthetic SQLite/loopback/已安装 FFmpeg TDD，零供应商、零付费，不读真实 Key、不提交推送、不运行 CI、不部署、不写生产/shared 或 Git",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-09 继续",
+          "impactTests": [
+            "backend-node/test/redrawExecutionUnitExportHttp.test.js",
+            "backend-node/test/redrawExport.test.js",
+            "backend-node/test/redrawCompositionRoutes.test.js",
+            "backend-node/test/redrawExecutionUnitCandidateMedia.test.js",
+            "backend-node/test/redrawProjectWorks.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-09 通用一键转绘 G5.5b 仅在 backend-node/src/routes/redraw.js 与 index.js 接通既有 POST /redraw/versions/:id/compose 的 unit 五键 HTTP 到六键 service、已鉴权 URL version 与 canReadArtifact、真实本地 scheduler、membership 拒绝零重建、错误映射与幂等防重；三个既有 Composition/Dispatch/Derivation fixture 仅 test-only owner 参数贯通；保留旧 v1/release/readiness/UI，不改模型；仅本地 synthetic SQLite/loopback/已安装 FFmpeg TDD，零供应商、零付费，不读真实 Key、不提交推送、不运行 CI、不部署、不写生产/shared 或 Git",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-09 继续",
+          "impactTests": [
+            "backend-node/test/redrawExecutionUnitCompositionHttp.test.js",
+            "backend-node/test/redrawExecutionUnitComposition.test.js",
+            "backend-node/test/redrawExecutionUnitDispatch.test.js",
+            "backend-node/test/redrawUnitReferenceDerivation.test.js",
+            "backend-node/test/redrawCompositionRoutes.test.js",
+            "backend-node/test/redrawComposition.test.js",
+            "backend-node/test/redrawExecutionUnitExportHttp.test.js",
+            "backend-node/test/redrawExport.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-09 通用一键转绘 G6.COMPOSE_PERMISSION_DURING_AWAIT 仅在 backend-node/src/routes/index.js 的 unit compose POST 保存同步只读 JWT、active user/token_version、active membership/tenant 复核闭包，经 backend-node/src/routes/redraw.js 的 unit ctx 传入 backend-node/src/services/redrawCompositionService.js，在既有创建事务 BEGIN 后、replay/INSERT 前复核；精确映射 UNAUTHORIZED 为 401，成员或租户撤权保持 REDRAW_VERSION_NOT_FOUND 404，拒绝必须零新增 export/assets/调度/provider；保留原 request_hash、幂等、GET、旧 v1 与服务无 HTTP ctx 调用，不改 schema/UI/模型/全局鉴权；仅本地 synthetic SQLite/loopback/已安装 FFmpeg TDD，零供应商、零付费，不读真实 Key、不提交推送、不运行 CI、不部署、不写生产/shared 或 Git",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-09 继续",
+          "impactTests": [
+            "backend-node/test/redrawExecutionUnitCompositionHttp.test.js",
+            "backend-node/test/redrawExecutionUnitComposition.test.js",
+            "backend-node/test/redrawComposition.test.js",
+            "backend-node/test/redrawCompositionRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-05 ToAPIs 官方域名迁移至 .cn 获批",
-        "approvedBy": "product-owner 2026-09-05 toapis-cn-domain-migration",
+        "reason": "2026-09-09 通用一键转绘 G2.SEAM_READ：仅从当前 owner/work/task/source 的持久接缝候选独立重建原始窗口和冲突原因，核对候选摘要及源文件 SHA，在 await 后复核当前任务、素材、reservation 与时间快照，提供一个严格只读 GET 的完整段候选和后继 CAS 令牌；不自动裁句、不改原文或精度、不把普通 unknown 当可审核、不写库/续跑/重识别/扣退。复用既有 SourceAudio 校验、仅新增对应路由，不改模型或线上合同。仅本地合成 SQLite/文件 TDD，禁止 Key/默认库配置/真实 Worker/供应商/付费/联网安装/commit/push/CI/生产/shared/部署",
+        "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-09 采用，冲突时人工确认",
         "impactTests": [
-          "backend-node/test/aiConfigService.test.js",
-          "backend-node/test/externalModelEvidenceBinding.test.js",
-          "backend-node/test/sharedExternalModelReleaseGuard.test.js",
-          "backend-node/test/toapisVideoClient.test.js",
-          "backend-node/test/toapisVideoVerification.test.js",
-          "backend-node/test/toapisWan3Verification.test.js",
-          "frontweb/test/aiConfigProviderPresets.test.js",
-          "frontweb/test/toapisVideoProviderConfig.test.js",
-          "backend-node/test/featureLockManifest.test.js",
-          "backend-node/test/incrementalReleaseScope.test.js"
+          "backend-node/test/redrawSourceAudioSeamReviewRead.test.js",
+          "backend-node/test/redrawSourceAudioSeamCandidate.test.js",
+          "backend-node/test/redrawSourceAudioV2Review.test.js",
+          "backend-node/test/redrawAnalysisTaskBinding.test.js",
+          "backend-node/test/redrawSourceAudioWindowAggregation.test.js",
+          "backend-node/test/featureLockManifest.test.js"
         ]
       }
     },
@@ -2231,26 +2406,271 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-09-03 母本蓝图优先一键转绘任务 1-9 获批",
+          "approvedBy": "product-owner 2026-09-03 episode-blueprint-first-redraw",
+          "impactTests": [
+            "backend-node/test/redrawEpisodeBlueprint.test.js",
+            "backend-node/test/redrawSourceAudioEvidence.test.js",
+            "backend-node/test/redrawEvidenceFusion.test.js",
+            "backend-node/test/redrawBlueprintWorkflow.test.js",
+            "backend-node/test/redrawLocalization.test.js",
+            "backend-node/test/redrawShotProductionPack.test.js",
+            "backend-node/test/redrawGeneration.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "frontweb/e2e/redraw-workspace.spec.js",
+            "frontweb/e2e/redraw-backend-integration.spec.js",
+            "frontweb/scripts/run-redraw-episode-blueprint-live.test.mjs",
+            "workers/redraw-locale-verifier/tests/test_source_evidence.py",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-05 通用一键转绘主线完整源对白证据、跨镜回放及本地化和生成前校验；不改模型、不调用供应商、不付费、不推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 开始进行下一项",
+          "impactTests": [
+            "backend-node/test/redrawSourceDialogue.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/redrawLocalization.test.js",
+            "backend-node/test/redrawLocalizationOrchestration.test.js",
+            "backend-node/test/redrawShotProductionPack.test.js",
+            "backend-node/test/redrawDialogue.test.js",
+            "backend-node/test/redrawDialogueOrchestrator.test.js",
+            "backend-node/test/redrawGeneration.test.js",
+            "frontweb/test/redrawDialogueSourceReview.test.js",
+            "frontweb/e2e/redraw-workspace.spec.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-05 通用一键转绘长输入分窗分析与默认产品链本地回归；不改模型、不调用供应商、不付费、不推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 开始推进下一项",
+          "impactTests": [
+            "backend-node/test/redrawAnalysisWindows.test.js",
+            "backend-node/test/redrawNativeSourceAnalysis.test.js",
+            "backend-node/test/redrawWindowedProductAnalysis.test.js",
+            "backend-node/test/redrawAnalysis.test.js",
+            "backend-node/test/redrawEvidenceFusion.test.js",
+            "backend-node/test/redrawBlueprintWorkflow.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/redrawSourceDialogue.test.js",
+            "backend-node/test/redrawSourceDialogueGuards.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-05 通用一键转绘版本级动态执行计划只读预览；零任务零冻结，不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 开始下一项",
+          "impactTests": [
+            "backend-node/test/redrawExecutionPlan.test.js",
+            "backend-node/test/redrawExecutionPlanPreview.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/redrawSourceDialogueGuards.test.js",
+            "backend-node/test/redrawLocalization.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-05 通用一键转绘页面计划审核与版本绑定保存；仅本地不可变快照与回归，零生成零冻结，不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 开始下一项",
+          "impactTests": [
+            "backend-node/test/redrawExecutionPlanReview.test.js",
+            "backend-node/test/redrawExecutionPlanPreview.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "frontweb/test/redrawExecutionPlanReview.test.js",
+            "frontweb/e2e/redraw-workspace.spec.js"
+          ]
+        },
+        {
+          "reason": "2026-09-05 通用一键转绘待就绪执行队列登记与恢复读取；仅本地队列，零调度零生成零冻结，不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 规划好剩余任务设立目标 开始推进",
+          "impactTests": [
+            "backend-node/test/redrawExecutionQueue.test.js",
+            "backend-node/test/redrawExecutionPlanReview.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "frontweb/test/redrawExecutionQueue.test.js",
+            "frontweb/e2e/redraw-workspace.spec.js"
+          ]
+        },
+        {
+          "reason": "2026-09-05 通用一键转绘母本鉴权回放连接；仅本地 owner 与源哈希绑定只读媒体及回归，零业务写入零生成零冻结，不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 规划好剩余任务设立目标 开始推进",
+          "impactTests": [
+            "backend-node/test/redrawSourceVideo.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/redrawSourceAudioEvidence.test.js",
+            "backend-node/test/redrawDialogueCorrection.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-06 通用一键转绘源音频结果未知状态连接修复；仅本地隔离数据库 TDD，未知保持待核对及预留，明确失败释放，重复点击零新增分析；不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 规划好剩余任务设立目标 开始推进",
+          "impactTests": [
+            "backend-node/test/redrawWindowedProductAnalysis.test.js",
+            "backend-node/test/redrawSourceAudioEvidence.test.js",
+            "backend-node/test/redrawNativeSourceAnalysis.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-06 通用一键转绘动作草片鉴权裁片与预览连接；仅本地 owner/镜头/源哈希绑定、静音草片和 TDD，零业务写入零审核零生成；不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 规划好剩余任务设立目标 开始推进",
+          "impactTests": [
+            "backend-node/test/redrawMotionDraft.test.js",
+            "backend-node/test/redrawSourceVideo.test.js",
+            "backend-node/test/redrawSourceConditioning.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-06 通用一键转绘当前动作候选恢复与鉴权媒体读取；仅本地 owner/CAS/导入 SHA 绑定和 TDD，零业务写入零审核零生成；不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 规划好剩余任务设立目标 开始推进",
+          "impactTests": [
+            "backend-node/test/redrawMotionCandidate.test.js",
+            "backend-node/test/redrawReferenceArtifactImport.test.js",
+            "backend-node/test/redrawMotionDraft.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-06 通用一键转绘 G1.3a 本地动作处理响应及可选报告导入与准备绑定；仅本地 owner/CAS/真实媒体 TDD，保留人工确认及旧手工候选；不读 Key、不调用供应商、不付费、不提交推送、不部署、不写生产/shared",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进",
+          "impactTests": [
+            "backend-node/test/redrawMotionProcessing.test.js",
+            "backend-node/test/redrawMotionObscuration.test.js",
+            "backend-node/test/redrawMotionCandidate.test.js",
+            "backend-node/test/redrawReferenceArtifactImport.test.js",
+            "backend-node/test/redrawReferencePreparationOrchestration.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-07 通用一键转绘 G4.0e 普通页面单元素材 GET 检查与显式本地 prepare、API/UI 绑定；仅隔离本地真实媒体 TDD，不读真实 Key、不联网、不调用供应商、不付费、不生成、不提交推送、不运行 CI、不部署、不写生产/shared",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-07 继续",
+          "impactTests": [
+            "backend-node/test/redrawUnitReferenceRoutes.test.js",
+            "backend-node/test/redrawSourceVideo.test.js",
+            "backend-node/test/redrawPreparedUnitReference.test.js",
+            "backend-node/test/redrawUnitReferenceDerivation.test.js",
+            "backend-node/test/redrawExecutionQueue.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "frontweb/test/redrawUnitReferenceMaterials.test.js",
+            "frontweb/test/redrawExecutionPlanReview.test.js",
+            "frontweb/test/redrawExecutionQueue.test.js",
+            "frontweb/e2e/redraw-unit-reference-materials.spec.js"
+          ]
+        },
+        {
+          "reason": "2026-09-08 通用一键转绘 G3 项目多作品只读列表与显式选择、新建入口及路由访问隔离；仅本地 SQLite/Vue TDD，保留纯 owner 变化的 pending/unknown 实例，不读 Key、不联网、不调用供应商、不付费、不提交推送、不运行 CI、不部署、不写生产/shared",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-08 继续",
+          "impactTests": [
+            "backend-node/test/redrawProjectWorks.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "frontweb/test/redrawProjectWorksRuntime.test.js",
+            "frontweb/test/redrawWorkspaceRuntime.test.js",
+            "frontweb/test/redrawSourceRuntime.test.js",
+            "frontweb/test/redrawExecutionRunParent.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-09 通用一键转绘 G5.5a 执行单元导出只读 list/get/download GET 接线及真实 JWT/owner 校验、四文件 FD 下载；保留 v1，不改 POST、模型或生产；仅本地 synthetic SQLite/loopback/已安装 FFmpeg TDD，零供应商、零付费，不读真实 Key、不提交推送、不运行 CI、不部署、不写生产/shared 或 Git",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-09 继续",
+          "impactTests": [
+            "backend-node/test/redrawExecutionUnitExportHttp.test.js",
+            "backend-node/test/redrawExport.test.js",
+            "backend-node/test/redrawCompositionRoutes.test.js",
+            "backend-node/test/redrawExecutionUnitCandidateMedia.test.js",
+            "backend-node/test/redrawProjectWorks.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-09 通用一键转绘 G5.5b 仅在 backend-node/src/routes/redraw.js 与 index.js 接通既有 POST /redraw/versions/:id/compose 的 unit 五键 HTTP 到六键 service、已鉴权 URL version 与 canReadArtifact、真实本地 scheduler、membership 拒绝零重建、错误映射与幂等防重；三个既有 Composition/Dispatch/Derivation fixture 仅 test-only owner 参数贯通；保留旧 v1/release/readiness/UI，不改模型；仅本地 synthetic SQLite/loopback/已安装 FFmpeg TDD，零供应商、零付费，不读真实 Key、不提交推送、不运行 CI、不部署、不写生产/shared 或 Git",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-09 继续",
+          "impactTests": [
+            "backend-node/test/redrawExecutionUnitCompositionHttp.test.js",
+            "backend-node/test/redrawExecutionUnitComposition.test.js",
+            "backend-node/test/redrawExecutionUnitDispatch.test.js",
+            "backend-node/test/redrawUnitReferenceDerivation.test.js",
+            "backend-node/test/redrawCompositionRoutes.test.js",
+            "backend-node/test/redrawComposition.test.js",
+            "backend-node/test/redrawExecutionUnitExportHttp.test.js",
+            "backend-node/test/redrawExport.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-09 通用一键转绘 G6.COMPOSE_PERMISSION_DURING_AWAIT 仅在 backend-node/src/routes/index.js 的 unit compose POST 保存同步只读 JWT、active user/token_version、active membership/tenant 复核闭包，经 backend-node/src/routes/redraw.js 的 unit ctx 传入 backend-node/src/services/redrawCompositionService.js，在既有创建事务 BEGIN 后、replay/INSERT 前复核；精确映射 UNAUTHORIZED 为 401，成员或租户撤权保持 REDRAW_VERSION_NOT_FOUND 404，拒绝必须零新增 export/assets/调度/provider；保留原 request_hash、幂等、GET、旧 v1 与服务无 HTTP ctx 调用，不改 schema/UI/模型/全局鉴权；仅本地 synthetic SQLite/loopback/已安装 FFmpeg TDD，零供应商、零付费，不读真实 Key、不提交推送、不运行 CI、不部署、不写生产/shared 或 Git",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-09 继续",
+          "impactTests": [
+            "backend-node/test/redrawExecutionUnitCompositionHttp.test.js",
+            "backend-node/test/redrawExecutionUnitComposition.test.js",
+            "backend-node/test/redrawComposition.test.js",
+            "backend-node/test/redrawCompositionRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-09 通用一键转绘 G2.TASK_BINDING：仅沿服务器真实 async_task 为 Orchestrator、SourceAudio、Native 接入取消/替换及 owner/源绑定复核；异步返回、后续窗口与最终写入事务内拒绝迟到成功，保留已合法登记资产和已有回执；失效不落旧失败/unknown 收口，不覆盖新作品或误结算 reservation，取消 held 不自动退款/扣款。保留单窗 v1、无轨、内部 UUID、模型及现行有效任务计费，不新增 schema/取消平台/供应商合同；仅隔离 SQLite 和合成底层 doubles 本地 TDD，不读 Key、不联网、不调用供应商、不付费、不提交推送、不运行 CI、不部署、不写生产/shared",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-09 采用，冲突时人工确认",
+          "impactTests": [
+            "backend-node/test/redrawAnalysisTaskBinding.test.js",
+            "backend-node/test/redrawAnalysis.test.js",
+            "backend-node/test/redrawNativeSourceAnalysis.test.js",
+            "backend-node/test/redrawSourceAudioEvidence.test.js",
+            "backend-node/test/redrawSourceAudioWindows.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-09 通用一键转绘 G2.SEAM_CANDIDATE：仅将 SourceAudio 完整原窗接缝/语言冲突作为非成功候选绑定源快照与真实 async task，事务内当前任务复核后保存 async_tasks.result，保留 held、原回执与全段原文/时标；不创建成功资产/蓝图，不裁句，不重做 ASR 或结算，普通失败和未知语义不变。人审/继续接线后继实施；仅隔离 SQLite 与合成 PCM/底层 Worker double 本地 TDD，不读 Key、不联网、不调用供应商、不付费、不提交推送、不运行 CI、不部署、不写生产/shared",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-09 采用，冲突时人工确认",
+          "impactTests": [
+            "backend-node/test/redrawSourceAudioSeamCandidate.test.js",
+            "backend-node/test/redrawAnalysisTaskBinding.test.js",
+            "backend-node/test/redrawSourceAudioWindowAggregation.test.js",
+            "backend-node/test/redrawSourceAudioEvidence.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-09 通用一键转绘 G2.V2_REVIEW：仅接通经过完整重建及 owner/source/文件 SHA 校验的长音频 v2 到 AnalysisWindow、Fusion、Blueprint、Workflow 草稿创建保存与 SourceDialogue；按实际聚合资产引用传服务端精度上下文，保留原始全段与窗口人物，不全局放宽 v1/视觉整数，不新增模型或客户端权限；Orchestrator 传既有 storageRoot。v2 暂限草稿审核，未验证下游锁定/物化前明确拒绝；接缝候选人审和显式继续仍后继实施。仅本地合成与隔离 SQLite TDD，不读 Key/默认库配置、不联网安装、不真实 Worker/供应商/付费、不 commit/push/CI、不生产/shared/部署",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-09 采用，冲突时人工确认",
+          "impactTests": [
+            "backend-node/test/redrawSourceAudioV2Review.test.js",
+            "backend-node/test/redrawSourceDialogue.test.js",
+            "backend-node/test/redrawEvidenceFusion.test.js",
+            "backend-node/test/redrawAnalysisWindows.test.js",
+            "backend-node/test/redrawEpisodeBlueprint.test.js",
+            "backend-node/test/redrawDialogueCorrection.test.js",
+            "backend-node/test/redrawAnalysisTaskBinding.test.js",
+            "backend-node/test/redrawSourceAudioWindowAggregation.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-03 母本蓝图优先一键转绘任务 1-9 获批",
-        "approvedBy": "product-owner 2026-09-03 episode-blueprint-first-redraw",
+        "reason": "2026-09-09 通用一键转绘 G2.SEAM_READ：仅从当前 owner/work/task/source 的持久接缝候选独立重建原始窗口和冲突原因，核对候选摘要及源文件 SHA，在 await 后复核当前任务、素材、reservation 与时间快照，提供一个严格只读 GET 的完整段候选和后继 CAS 令牌；不自动裁句、不改原文或精度、不把普通 unknown 当可审核、不写库/续跑/重识别/扣退。复用既有 SourceAudio 校验、仅新增对应路由，不改模型或线上合同。仅本地合成 SQLite/文件 TDD，禁止 Key/默认库配置/真实 Worker/供应商/付费/联网安装/commit/push/CI/生产/shared/部署",
+        "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-09 采用，冲突时人工确认",
         "impactTests": [
-          "backend-node/test/redrawEpisodeBlueprint.test.js",
-          "backend-node/test/redrawSourceAudioEvidence.test.js",
-          "backend-node/test/redrawEvidenceFusion.test.js",
-          "backend-node/test/redrawBlueprintWorkflow.test.js",
-          "backend-node/test/redrawLocalization.test.js",
-          "backend-node/test/redrawShotProductionPack.test.js",
-          "backend-node/test/redrawGeneration.test.js",
-          "backend-node/test/redrawRoutes.test.js",
-          "frontweb/e2e/redraw-workspace.spec.js",
-          "frontweb/e2e/redraw-backend-integration.spec.js",
-          "frontweb/scripts/run-redraw-episode-blueprint-live.test.mjs",
-          "workers/redraw-locale-verifier/tests/test_source_evidence.py",
-          "backend-node/test/featureLockManifest.test.js",
-          "backend-node/test/incrementalReleaseScope.test.js"
+          "backend-node/test/redrawSourceAudioSeamReviewRead.test.js",
+          "backend-node/test/redrawSourceAudioSeamCandidate.test.js",
+          "backend-node/test/redrawSourceAudioV2Review.test.js",
+          "backend-node/test/redrawAnalysisTaskBinding.test.js",
+          "backend-node/test/redrawSourceAudioWindowAggregation.test.js",
+          "backend-node/test/featureLockManifest.test.js"
         ]
       }
     },
@@ -2376,26 +2796,250 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-09-03 母本蓝图优先一键转绘任务 1-9 获批",
+          "approvedBy": "product-owner 2026-09-03 episode-blueprint-first-redraw",
+          "impactTests": [
+            "backend-node/test/redrawEpisodeBlueprint.test.js",
+            "backend-node/test/redrawSourceAudioEvidence.test.js",
+            "backend-node/test/redrawEvidenceFusion.test.js",
+            "backend-node/test/redrawBlueprintWorkflow.test.js",
+            "backend-node/test/redrawLocalization.test.js",
+            "backend-node/test/redrawShotProductionPack.test.js",
+            "backend-node/test/redrawGeneration.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "frontweb/e2e/redraw-workspace.spec.js",
+            "frontweb/e2e/redraw-backend-integration.spec.js",
+            "frontweb/scripts/run-redraw-episode-blueprint-live.test.mjs",
+            "workers/redraw-locale-verifier/tests/test_source_evidence.py",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-05 通用一键转绘主线完整源对白证据、跨镜回放及本地化和生成前校验；不改模型、不调用供应商、不付费、不推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 开始进行下一项",
+          "impactTests": [
+            "backend-node/test/redrawSourceDialogue.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/redrawLocalization.test.js",
+            "backend-node/test/redrawLocalizationOrchestration.test.js",
+            "backend-node/test/redrawShotProductionPack.test.js",
+            "backend-node/test/redrawDialogue.test.js",
+            "backend-node/test/redrawDialogueOrchestrator.test.js",
+            "backend-node/test/redrawGeneration.test.js",
+            "frontweb/test/redrawDialogueSourceReview.test.js",
+            "frontweb/e2e/redraw-workspace.spec.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-05 通用一键转绘版本级动态执行计划只读预览；零任务零冻结，不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 开始下一项",
+          "impactTests": [
+            "backend-node/test/redrawExecutionPlan.test.js",
+            "backend-node/test/redrawExecutionPlanPreview.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/redrawSourceDialogueGuards.test.js",
+            "backend-node/test/redrawLocalization.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-05 通用一键转绘页面计划审核与版本绑定保存；仅本地不可变快照与回归，零生成零冻结，不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 开始下一项",
+          "impactTests": [
+            "backend-node/test/redrawExecutionPlanReview.test.js",
+            "backend-node/test/redrawExecutionPlanPreview.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "frontweb/test/redrawExecutionPlanReview.test.js",
+            "frontweb/e2e/redraw-workspace.spec.js"
+          ]
+        },
+        {
+          "reason": "2026-09-05 通用一键转绘待就绪执行队列登记与恢复读取；仅本地队列，零调度零生成零冻结，不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 规划好剩余任务设立目标 开始推进",
+          "impactTests": [
+            "backend-node/test/redrawExecutionQueue.test.js",
+            "backend-node/test/redrawExecutionPlanReview.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "frontweb/test/redrawExecutionQueue.test.js",
+            "frontweb/e2e/redraw-workspace.spec.js"
+          ]
+        },
+        {
+          "reason": "2026-09-05 通用一键转绘对白文本与完整时间人工修订，严格保留原 ASR 证据；仅本地草稿与下游回归，零生成零冻结，不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 规划好剩余任务设立目标 开始推进",
+          "impactTests": [
+            "backend-node/test/redrawDialogueCorrection.test.js",
+            "backend-node/test/redrawSourceDialogue.test.js",
+            "backend-node/test/redrawSourceDialogueGuards.test.js",
+            "backend-node/test/redrawBlueprintWorkflow.test.js",
+            "backend-node/test/redrawLocalization.test.js",
+            "backend-node/test/redrawExecutionPlanPreview.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-05 通用一键转绘母本鉴权回放连接；仅本地 owner 与源哈希绑定只读媒体及回归，零业务写入零生成零冻结，不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 规划好剩余任务设立目标 开始推进",
+          "impactTests": [
+            "backend-node/test/redrawSourceVideo.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/redrawSourceAudioEvidence.test.js",
+            "backend-node/test/redrawDialogueCorrection.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-06 通用一键转绘动作草片鉴权裁片与预览连接；仅本地 owner/镜头/源哈希绑定、静音草片和 TDD，零业务写入零审核零生成；不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 规划好剩余任务设立目标 开始推进",
+          "impactTests": [
+            "backend-node/test/redrawMotionDraft.test.js",
+            "backend-node/test/redrawSourceVideo.test.js",
+            "backend-node/test/redrawSourceConditioning.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-06 通用一键转绘当前动作候选恢复与鉴权媒体读取；仅本地 owner/CAS/导入 SHA 绑定和 TDD，零业务写入零审核零生成；不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 规划好剩余任务设立目标 开始推进",
+          "impactTests": [
+            "backend-node/test/redrawMotionCandidate.test.js",
+            "backend-node/test/redrawReferenceArtifactImport.test.js",
+            "backend-node/test/redrawMotionDraft.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-06 通用一键转绘 G1.3a 本地动作处理响应及可选报告导入与准备绑定；仅本地 owner/CAS/真实媒体 TDD，保留人工确认及旧手工候选；不读 Key、不调用供应商、不付费、不提交推送、不部署、不写生产/shared",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进",
+          "impactTests": [
+            "backend-node/test/redrawMotionProcessing.test.js",
+            "backend-node/test/redrawMotionObscuration.test.js",
+            "backend-node/test/redrawMotionCandidate.test.js",
+            "backend-node/test/redrawReferenceArtifactImport.test.js",
+            "backend-node/test/redrawReferencePreparationOrchestration.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-07 通用一键转绘 G4.0e 普通页面单元素材 GET 检查与显式本地 prepare、API/UI 绑定；仅隔离本地真实媒体 TDD，不读真实 Key、不联网、不调用供应商、不付费、不生成、不提交推送、不运行 CI、不部署、不写生产/shared",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-07 继续",
+          "impactTests": [
+            "backend-node/test/redrawUnitReferenceRoutes.test.js",
+            "backend-node/test/redrawSourceVideo.test.js",
+            "backend-node/test/redrawPreparedUnitReference.test.js",
+            "backend-node/test/redrawUnitReferenceDerivation.test.js",
+            "backend-node/test/redrawExecutionQueue.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "frontweb/test/redrawUnitReferenceMaterials.test.js",
+            "frontweb/test/redrawExecutionPlanReview.test.js",
+            "frontweb/test/redrawExecutionQueue.test.js",
+            "frontweb/e2e/redraw-unit-reference-materials.spec.js"
+          ]
+        },
+        {
+          "reason": "2026-09-08 通用一键转绘 G6 身份审批前置条件精确映射 HTTP 409；仅隔离本地 SQLite/图片及真实 HTTP TDD，不读 Key、不联网、不调用供应商、不付费、不提交推送、不运行 CI、不部署、不写生产/shared",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-08 继续",
+          "impactTests": [
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/redrawReferenceArtifactImport.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-08 通用一键转绘 G3 项目多作品只读列表与显式选择、新建入口及路由访问隔离；仅本地 SQLite/Vue TDD，保留纯 owner 变化的 pending/unknown 实例，不读 Key、不联网、不调用供应商、不付费、不提交推送、不运行 CI、不部署、不写生产/shared",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-08 继续",
+          "impactTests": [
+            "backend-node/test/redrawProjectWorks.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "frontweb/test/redrawProjectWorksRuntime.test.js",
+            "frontweb/test/redrawWorkspaceRuntime.test.js",
+            "frontweb/test/redrawSourceRuntime.test.js",
+            "frontweb/test/redrawExecutionRunParent.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-09 通用一键转绘 G5.5a 执行单元导出只读 list/get/download GET 接线及真实 JWT/owner 校验、四文件 FD 下载；保留 v1，不改 POST、模型或生产；仅本地 synthetic SQLite/loopback/已安装 FFmpeg TDD，零供应商、零付费，不读真实 Key、不提交推送、不运行 CI、不部署、不写生产/shared 或 Git",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-09 继续",
+          "impactTests": [
+            "backend-node/test/redrawExecutionUnitExportHttp.test.js",
+            "backend-node/test/redrawExport.test.js",
+            "backend-node/test/redrawCompositionRoutes.test.js",
+            "backend-node/test/redrawExecutionUnitCandidateMedia.test.js",
+            "backend-node/test/redrawProjectWorks.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-09 通用一键转绘 G5.5b 仅在 backend-node/src/routes/redraw.js 与 index.js 接通既有 POST /redraw/versions/:id/compose 的 unit 五键 HTTP 到六键 service、已鉴权 URL version 与 canReadArtifact、真实本地 scheduler、membership 拒绝零重建、错误映射与幂等防重；三个既有 Composition/Dispatch/Derivation fixture 仅 test-only owner 参数贯通；保留旧 v1/release/readiness/UI，不改模型；仅本地 synthetic SQLite/loopback/已安装 FFmpeg TDD，零供应商、零付费，不读真实 Key、不提交推送、不运行 CI、不部署、不写生产/shared 或 Git",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-09 继续",
+          "impactTests": [
+            "backend-node/test/redrawExecutionUnitCompositionHttp.test.js",
+            "backend-node/test/redrawExecutionUnitComposition.test.js",
+            "backend-node/test/redrawExecutionUnitDispatch.test.js",
+            "backend-node/test/redrawUnitReferenceDerivation.test.js",
+            "backend-node/test/redrawCompositionRoutes.test.js",
+            "backend-node/test/redrawComposition.test.js",
+            "backend-node/test/redrawExecutionUnitExportHttp.test.js",
+            "backend-node/test/redrawExport.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-09 通用一键转绘 G5.5c 仅在 backend-node/src/routes/redraw.js 的 executionUnitExportSummary 为合法 video/unit 导出追加 idempotency_key_sha256 只读投影；严格核验原 release 五键类型边界、request_hash、行版本与无损 UTF-8 幂等键，非法为 null，旧 v1 不新增字段；仅真实 JWT/隔离 SQLite/loopback 的 DTO 查询合同 TDD，不改 index、四个合成服务、schema、鉴权、模型、UI 或生产供应商，不冒称合成下载或页面恢复通过；零供应商、零付费，不读真实 Key、不提交推送、不运行 CI、不部署、不写生产/shared 或 Git",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-09 继续",
+          "impactTests": [
+            "backend-node/test/redrawExecutionUnitExportIdentityHttp.test.js",
+            "backend-node/test/redrawExecutionUnitExportHttp.test.js",
+            "backend-node/test/redrawExport.test.js",
+            "backend-node/test/redrawCompositionRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-09 通用一键转绘 G6.HTTP_EMPTY_ARRAY_GET_BODY 仅在 backend-node/src/routes/redraw.js 的 executionRunRequest 局部拒绝 GET 数组 body；低层真实 HTTP 空数组返回安全 JSON 400 且零 DML/transport，保留无 body 与空对象 GET、既有 JWT/tenant/owner 鉴权顺序；不改全局 parser、服务、POST、导出、UI、模型或其他 API 合同；仅本地 synthetic SQLite/loopback/已安装 FFmpeg TDD，零供应商、零付费，不读真实 Key、不提交推送、不运行 CI、不部署、不写生产/shared 或 Git",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-09 继续",
+          "impactTests": [
+            "backend-node/test/redrawExecutionRunEmptyArrayBodyHttp.test.js",
+            "backend-node/test/redrawExecutionRunRoutes.test.js",
+            "backend-node/test/redrawExecutionUnitCandidateMedia.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-09 通用一键转绘 G6.COMPOSE_PERMISSION_DURING_AWAIT 仅在 backend-node/src/routes/index.js 的 unit compose POST 保存同步只读 JWT、active user/token_version、active membership/tenant 复核闭包，经 backend-node/src/routes/redraw.js 的 unit ctx 传入 backend-node/src/services/redrawCompositionService.js，在既有创建事务 BEGIN 后、replay/INSERT 前复核；精确映射 UNAUTHORIZED 为 401，成员或租户撤权保持 REDRAW_VERSION_NOT_FOUND 404，拒绝必须零新增 export/assets/调度/provider；保留原 request_hash、幂等、GET、旧 v1 与服务无 HTTP ctx 调用，不改 schema/UI/模型/全局鉴权；仅本地 synthetic SQLite/loopback/已安装 FFmpeg TDD，零供应商、零付费，不读真实 Key、不提交推送、不运行 CI、不部署、不写生产/shared 或 Git",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-09 继续",
+          "impactTests": [
+            "backend-node/test/redrawExecutionUnitCompositionHttp.test.js",
+            "backend-node/test/redrawExecutionUnitComposition.test.js",
+            "backend-node/test/redrawComposition.test.js",
+            "backend-node/test/redrawCompositionRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-03 母本蓝图优先一键转绘任务 1-9 获批",
-        "approvedBy": "product-owner 2026-09-03 episode-blueprint-first-redraw",
+        "reason": "2026-09-09 通用一键转绘 G2.SEAM_READ：仅从当前 owner/work/task/source 的持久接缝候选独立重建原始窗口和冲突原因，核对候选摘要及源文件 SHA，在 await 后复核当前任务、素材、reservation 与时间快照，提供一个严格只读 GET 的完整段候选和后继 CAS 令牌；不自动裁句、不改原文或精度、不把普通 unknown 当可审核、不写库/续跑/重识别/扣退。复用既有 SourceAudio 校验、仅新增对应路由，不改模型或线上合同。仅本地合成 SQLite/文件 TDD，禁止 Key/默认库配置/真实 Worker/供应商/付费/联网安装/commit/push/CI/生产/shared/部署",
+        "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-09 采用，冲突时人工确认",
         "impactTests": [
-          "backend-node/test/redrawEpisodeBlueprint.test.js",
-          "backend-node/test/redrawSourceAudioEvidence.test.js",
-          "backend-node/test/redrawEvidenceFusion.test.js",
-          "backend-node/test/redrawBlueprintWorkflow.test.js",
-          "backend-node/test/redrawLocalization.test.js",
-          "backend-node/test/redrawShotProductionPack.test.js",
-          "backend-node/test/redrawGeneration.test.js",
-          "backend-node/test/redrawRoutes.test.js",
-          "frontweb/e2e/redraw-workspace.spec.js",
-          "frontweb/e2e/redraw-backend-integration.spec.js",
-          "frontweb/scripts/run-redraw-episode-blueprint-live.test.mjs",
-          "workers/redraw-locale-verifier/tests/test_source_evidence.py",
-          "backend-node/test/featureLockManifest.test.js",
-          "backend-node/test/incrementalReleaseScope.test.js"
+          "backend-node/test/redrawSourceAudioSeamReviewRead.test.js",
+          "backend-node/test/redrawSourceAudioSeamCandidate.test.js",
+          "backend-node/test/redrawSourceAudioV2Review.test.js",
+          "backend-node/test/redrawAnalysisTaskBinding.test.js",
+          "backend-node/test/redrawSourceAudioWindowAggregation.test.js",
+          "backend-node/test/featureLockManifest.test.js"
         ]
       }
     },
@@ -2447,18 +3091,35 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-08-28 clean provider 默认 adapter 与 legacy 双字段 P2 修复获批",
+          "approvedBy": "product-owner 2026-08-28 redraw-clean-adapter-legacy-fields-task-d-p2",
+          "impactTests": [
+            "backend-node/test/redrawAssets.test.js",
+            "backend-node/test/redrawProviderAdapters.test.js",
+            "backend-node/test/redrawReferencePreparationOrchestration.test.js",
+            "backend-node/test/redrawReferenceBundle.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-28 clean provider 默认 adapter 与 legacy 双字段 P2 修复获批",
-        "approvedBy": "product-owner 2026-08-28 redraw-clean-adapter-legacy-fields-task-d-p2",
+        "reason": "2026-09-05 通用一键转绘主线完整源对白证据、跨镜回放及本地化和生成前校验；不改模型、不调用供应商、不付费、不推送、不部署",
+        "approvedBy": "product-owner 2026-09-05 开始进行下一项",
         "impactTests": [
-          "backend-node/test/redrawAssets.test.js",
-          "backend-node/test/redrawProviderAdapters.test.js",
-          "backend-node/test/redrawReferencePreparationOrchestration.test.js",
-          "backend-node/test/redrawReferenceBundle.test.js",
-          "backend-node/test/featureLockManifest.test.js",
-          "backend-node/test/incrementalReleaseScope.test.js"
+          "backend-node/test/redrawSourceDialogue.test.js",
+          "backend-node/test/redrawRoutes.test.js",
+          "backend-node/test/redrawLocalization.test.js",
+          "backend-node/test/redrawLocalizationOrchestration.test.js",
+          "backend-node/test/redrawShotProductionPack.test.js",
+          "backend-node/test/redrawDialogue.test.js",
+          "backend-node/test/redrawDialogueOrchestrator.test.js",
+          "backend-node/test/redrawGeneration.test.js",
+          "frontweb/test/redrawDialogueSourceReview.test.js",
+          "frontweb/e2e/redraw-workspace.spec.js",
+          "backend-node/test/featureLockManifest.test.js"
         ]
       }
     },
@@ -2550,26 +3211,286 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-09-03 母本蓝图优先一键转绘任务 1-9 获批",
+          "approvedBy": "product-owner 2026-09-03 episode-blueprint-first-redraw",
+          "impactTests": [
+            "backend-node/test/redrawEpisodeBlueprint.test.js",
+            "backend-node/test/redrawSourceAudioEvidence.test.js",
+            "backend-node/test/redrawEvidenceFusion.test.js",
+            "backend-node/test/redrawBlueprintWorkflow.test.js",
+            "backend-node/test/redrawLocalization.test.js",
+            "backend-node/test/redrawShotProductionPack.test.js",
+            "backend-node/test/redrawGeneration.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "frontweb/e2e/redraw-workspace.spec.js",
+            "frontweb/e2e/redraw-backend-integration.spec.js",
+            "frontweb/scripts/run-redraw-episode-blueprint-live.test.mjs",
+            "workers/redraw-locale-verifier/tests/test_source_evidence.py",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-05 通用一键转绘主线完整源对白证据、跨镜回放及本地化和生成前校验；不改模型、不调用供应商、不付费、不推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 开始进行下一项",
+          "impactTests": [
+            "backend-node/test/redrawSourceDialogue.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/redrawLocalization.test.js",
+            "backend-node/test/redrawLocalizationOrchestration.test.js",
+            "backend-node/test/redrawShotProductionPack.test.js",
+            "backend-node/test/redrawDialogue.test.js",
+            "backend-node/test/redrawDialogueOrchestrator.test.js",
+            "backend-node/test/redrawGeneration.test.js",
+            "frontweb/test/redrawDialogueSourceReview.test.js",
+            "frontweb/e2e/redraw-workspace.spec.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-05 通用一键转绘版本级动态执行计划只读预览；零任务零冻结，不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 开始下一项",
+          "impactTests": [
+            "backend-node/test/redrawExecutionPlan.test.js",
+            "backend-node/test/redrawExecutionPlanPreview.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/redrawSourceDialogueGuards.test.js",
+            "backend-node/test/redrawLocalization.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-05 通用一键转绘页面计划审核与版本绑定保存；仅本地不可变快照与回归，零生成零冻结，不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 开始下一项",
+          "impactTests": [
+            "backend-node/test/redrawExecutionPlanReview.test.js",
+            "backend-node/test/redrawExecutionPlanPreview.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "frontweb/test/redrawExecutionPlanReview.test.js",
+            "frontweb/e2e/redraw-workspace.spec.js"
+          ]
+        },
+        {
+          "reason": "2026-09-05 通用一键转绘待就绪执行队列登记与恢复读取；仅本地队列，零调度零生成零冻结，不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 规划好剩余任务设立目标 开始推进",
+          "impactTests": [
+            "backend-node/test/redrawExecutionQueue.test.js",
+            "backend-node/test/redrawExecutionPlanReview.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "frontweb/test/redrawExecutionQueue.test.js",
+            "frontweb/e2e/redraw-workspace.spec.js"
+          ]
+        },
+        {
+          "reason": "2026-09-05 通用一键转绘对白文本与完整时间人工修订，严格保留原 ASR 证据；仅本地草稿与下游回归，零生成零冻结，不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 规划好剩余任务设立目标 开始推进",
+          "impactTests": [
+            "backend-node/test/redrawDialogueCorrection.test.js",
+            "backend-node/test/redrawSourceDialogue.test.js",
+            "backend-node/test/redrawSourceDialogueGuards.test.js",
+            "backend-node/test/redrawBlueprintWorkflow.test.js",
+            "backend-node/test/redrawLocalization.test.js",
+            "backend-node/test/redrawExecutionPlanPreview.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-05 通用一键转绘母本鉴权回放连接；仅本地 owner 与源哈希绑定只读媒体及回归，零业务写入零生成零冻结，不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 规划好剩余任务设立目标 开始推进",
+          "impactTests": [
+            "backend-node/test/redrawSourceVideo.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/redrawSourceAudioEvidence.test.js",
+            "backend-node/test/redrawDialogueCorrection.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-06 通用一键转绘动作草片鉴权裁片与预览连接；仅本地 owner/镜头/源哈希绑定、静音草片和 TDD，零业务写入零审核零生成；不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 规划好剩余任务设立目标 开始推进",
+          "impactTests": [
+            "backend-node/test/redrawMotionDraft.test.js",
+            "backend-node/test/redrawSourceVideo.test.js",
+            "backend-node/test/redrawSourceConditioning.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-06 通用一键转绘当前动作候选恢复与鉴权媒体读取；仅本地 owner/CAS/导入 SHA 绑定和 TDD，零业务写入零审核零生成；不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 规划好剩余任务设立目标 开始推进",
+          "impactTests": [
+            "backend-node/test/redrawMotionCandidate.test.js",
+            "backend-node/test/redrawReferenceArtifactImport.test.js",
+            "backend-node/test/redrawMotionDraft.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-06 通用一键转绘已确认动作候选真实参考包绑定与旧 ready 复用修复；仅本地隔离数据库和真实媒体 TDD，复用净景零供应商及零新增预留；不读 Key、不付费、不提交推送、不部署、不写生产",
+          "approvedBy": "product-owner 2026-09-05 规划好剩余任务设立目标 开始推进",
+          "impactTests": [
+            "backend-node/test/redrawReferencePreparationOrchestration.test.js",
+            "backend-node/test/redrawMotionCandidate.test.js",
+            "backend-node/test/redrawReferenceArtifactImport.test.js",
+            "backend-node/test/redrawReferenceBundle.test.js",
+            "backend-node/test/redrawPreparationGate.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-06 通用一键转绘 G1.1 当前镜头已批准覆盖的可信逐帧输入；仅本地 owner/CAS/源与区域哈希只读校验和 TDD，不处理像素、不自动审核、不读 Key、不调用供应商、不付费、不提交推送、不部署、不写生产",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进",
+          "impactTests": [
+            "backend-node/test/redrawMotionCoverage.test.js",
+            "backend-node/test/redrawReferenceBundle.test.js",
+            "backend-node/test/redrawCoverageRegistration.test.js",
+            "backend-node/test/redrawMotionDraft.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-06 通用一键转绘 G1.3a 本地动作处理响应及可选报告导入与准备绑定；仅本地 owner/CAS/真实媒体 TDD，保留人工确认及旧手工候选；不读 Key、不调用供应商、不付费、不提交推送、不部署、不写生产/shared",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进",
+          "impactTests": [
+            "backend-node/test/redrawMotionProcessing.test.js",
+            "backend-node/test/redrawMotionObscuration.test.js",
+            "backend-node/test/redrawMotionCandidate.test.js",
+            "backend-node/test/redrawReferenceArtifactImport.test.js",
+            "backend-node/test/redrawReferencePreparationOrchestration.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-07 通用一键转绘 G4.0b 当前执行单元只读审批父材料检查；复用覆盖、身份、服装、去字及当前动作验证，不依赖旧父对白包；仅隔离本地真实媒体 TDD，不衍生、不登记、不生成、不计费、不读 Key、不联网、不提交推送、不部署、不写生产/shared",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-07 继续",
+          "impactTests": [
+            "backend-node/test/redrawUnitReference.test.js",
+            "backend-node/test/redrawUnitProductionPack.test.js",
+            "backend-node/test/redrawReferenceBundle.test.js",
+            "backend-node/test/redrawMotionReference.test.js",
+            "backend-node/test/redrawMotionCandidate.test.js",
+            "backend-node/test/redrawExecutionQueue.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-07 通用一键转绘 G4.0e 普通页面单元素材 GET 检查与显式本地 prepare、API/UI 绑定；仅隔离本地真实媒体 TDD，不读真实 Key、不联网、不调用供应商、不付费、不生成、不提交推送、不运行 CI、不部署、不写生产/shared",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-07 继续",
+          "impactTests": [
+            "backend-node/test/redrawUnitReferenceRoutes.test.js",
+            "backend-node/test/redrawSourceVideo.test.js",
+            "backend-node/test/redrawPreparedUnitReference.test.js",
+            "backend-node/test/redrawUnitReferenceDerivation.test.js",
+            "backend-node/test/redrawExecutionQueue.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "frontweb/test/redrawUnitReferenceMaterials.test.js",
+            "frontweb/test/redrawExecutionPlanReview.test.js",
+            "frontweb/test/redrawExecutionQueue.test.js",
+            "frontweb/e2e/redraw-unit-reference-materials.spec.js"
+          ]
+        },
+        {
+          "reason": "2026-09-08 通用一键转绘 G6 身份审批前置条件精确映射 HTTP 409；仅隔离本地 SQLite/图片及真实 HTTP TDD，不读 Key、不联网、不调用供应商、不付费、不提交推送、不运行 CI、不部署、不写生产/shared",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-08 继续",
+          "impactTests": [
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/redrawReferenceArtifactImport.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-08 通用一键转绘 G3 项目多作品只读列表与显式选择、新建入口及路由访问隔离；仅本地 SQLite/Vue TDD，保留纯 owner 变化的 pending/unknown 实例，不读 Key、不联网、不调用供应商、不付费、不提交推送、不运行 CI、不部署、不写生产/shared",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-08 继续",
+          "impactTests": [
+            "backend-node/test/redrawProjectWorks.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "frontweb/test/redrawProjectWorksRuntime.test.js",
+            "frontweb/test/redrawWorkspaceRuntime.test.js",
+            "frontweb/test/redrawSourceRuntime.test.js",
+            "frontweb/test/redrawExecutionRunParent.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-09 通用一键转绘 G5.5a 执行单元导出只读 list/get/download GET 接线及真实 JWT/owner 校验、四文件 FD 下载；保留 v1，不改 POST、模型或生产；仅本地 synthetic SQLite/loopback/已安装 FFmpeg TDD，零供应商、零付费，不读真实 Key、不提交推送、不运行 CI、不部署、不写生产/shared 或 Git",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-09 继续",
+          "impactTests": [
+            "backend-node/test/redrawExecutionUnitExportHttp.test.js",
+            "backend-node/test/redrawExport.test.js",
+            "backend-node/test/redrawCompositionRoutes.test.js",
+            "backend-node/test/redrawExecutionUnitCandidateMedia.test.js",
+            "backend-node/test/redrawProjectWorks.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-09 通用一键转绘 G5.5b 仅在 backend-node/src/routes/redraw.js 与 index.js 接通既有 POST /redraw/versions/:id/compose 的 unit 五键 HTTP 到六键 service、已鉴权 URL version 与 canReadArtifact、真实本地 scheduler、membership 拒绝零重建、错误映射与幂等防重；三个既有 Composition/Dispatch/Derivation fixture 仅 test-only owner 参数贯通；保留旧 v1/release/readiness/UI，不改模型；仅本地 synthetic SQLite/loopback/已安装 FFmpeg TDD，零供应商、零付费，不读真实 Key、不提交推送、不运行 CI、不部署、不写生产/shared 或 Git",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-09 继续",
+          "impactTests": [
+            "backend-node/test/redrawExecutionUnitCompositionHttp.test.js",
+            "backend-node/test/redrawExecutionUnitComposition.test.js",
+            "backend-node/test/redrawExecutionUnitDispatch.test.js",
+            "backend-node/test/redrawUnitReferenceDerivation.test.js",
+            "backend-node/test/redrawCompositionRoutes.test.js",
+            "backend-node/test/redrawComposition.test.js",
+            "backend-node/test/redrawExecutionUnitExportHttp.test.js",
+            "backend-node/test/redrawExport.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-09 通用一键转绘 G5.5c 仅在 backend-node/src/routes/redraw.js 的 executionUnitExportSummary 为合法 video/unit 导出追加 idempotency_key_sha256 只读投影；严格核验原 release 五键类型边界、request_hash、行版本与无损 UTF-8 幂等键，非法为 null，旧 v1 不新增字段；仅真实 JWT/隔离 SQLite/loopback 的 DTO 查询合同 TDD，不改 index、四个合成服务、schema、鉴权、模型、UI 或生产供应商，不冒称合成下载或页面恢复通过；零供应商、零付费，不读真实 Key、不提交推送、不运行 CI、不部署、不写生产/shared 或 Git",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-09 继续",
+          "impactTests": [
+            "backend-node/test/redrawExecutionUnitExportIdentityHttp.test.js",
+            "backend-node/test/redrawExecutionUnitExportHttp.test.js",
+            "backend-node/test/redrawExport.test.js",
+            "backend-node/test/redrawCompositionRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-09 通用一键转绘 G6.HTTP_EMPTY_ARRAY_GET_BODY 仅在 backend-node/src/routes/redraw.js 的 executionRunRequest 局部拒绝 GET 数组 body；低层真实 HTTP 空数组返回安全 JSON 400 且零 DML/transport，保留无 body 与空对象 GET、既有 JWT/tenant/owner 鉴权顺序；不改全局 parser、服务、POST、导出、UI、模型或其他 API 合同；仅本地 synthetic SQLite/loopback/已安装 FFmpeg TDD，零供应商、零付费，不读真实 Key、不提交推送、不运行 CI、不部署、不写生产/shared 或 Git",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-09 继续",
+          "impactTests": [
+            "backend-node/test/redrawExecutionRunEmptyArrayBodyHttp.test.js",
+            "backend-node/test/redrawExecutionRunRoutes.test.js",
+            "backend-node/test/redrawExecutionUnitCandidateMedia.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-09 通用一键转绘 G6.COMPOSE_PERMISSION_DURING_AWAIT 仅在 backend-node/src/routes/index.js 的 unit compose POST 保存同步只读 JWT、active user/token_version、active membership/tenant 复核闭包，经 backend-node/src/routes/redraw.js 的 unit ctx 传入 backend-node/src/services/redrawCompositionService.js，在既有创建事务 BEGIN 后、replay/INSERT 前复核；精确映射 UNAUTHORIZED 为 401，成员或租户撤权保持 REDRAW_VERSION_NOT_FOUND 404，拒绝必须零新增 export/assets/调度/provider；保留原 request_hash、幂等、GET、旧 v1 与服务无 HTTP ctx 调用，不改 schema/UI/模型/全局鉴权；仅本地 synthetic SQLite/loopback/已安装 FFmpeg TDD，零供应商、零付费，不读真实 Key、不提交推送、不运行 CI、不部署、不写生产/shared 或 Git",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-09 继续",
+          "impactTests": [
+            "backend-node/test/redrawExecutionUnitCompositionHttp.test.js",
+            "backend-node/test/redrawExecutionUnitComposition.test.js",
+            "backend-node/test/redrawComposition.test.js",
+            "backend-node/test/redrawCompositionRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-03 母本蓝图优先一键转绘任务 1-9 获批",
-        "approvedBy": "product-owner 2026-09-03 episode-blueprint-first-redraw",
+        "reason": "2026-09-09 通用一键转绘 G2.SEAM_READ：仅从当前 owner/work/task/source 的持久接缝候选独立重建原始窗口和冲突原因，核对候选摘要及源文件 SHA，在 await 后复核当前任务、素材、reservation 与时间快照，提供一个严格只读 GET 的完整段候选和后继 CAS 令牌；不自动裁句、不改原文或精度、不把普通 unknown 当可审核、不写库/续跑/重识别/扣退。复用既有 SourceAudio 校验、仅新增对应路由，不改模型或线上合同。仅本地合成 SQLite/文件 TDD，禁止 Key/默认库配置/真实 Worker/供应商/付费/联网安装/commit/push/CI/生产/shared/部署",
+        "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-09 采用，冲突时人工确认",
         "impactTests": [
-          "backend-node/test/redrawEpisodeBlueprint.test.js",
-          "backend-node/test/redrawSourceAudioEvidence.test.js",
-          "backend-node/test/redrawEvidenceFusion.test.js",
-          "backend-node/test/redrawBlueprintWorkflow.test.js",
-          "backend-node/test/redrawLocalization.test.js",
-          "backend-node/test/redrawShotProductionPack.test.js",
-          "backend-node/test/redrawGeneration.test.js",
-          "backend-node/test/redrawRoutes.test.js",
-          "frontweb/e2e/redraw-workspace.spec.js",
-          "frontweb/e2e/redraw-backend-integration.spec.js",
-          "frontweb/scripts/run-redraw-episode-blueprint-live.test.mjs",
-          "workers/redraw-locale-verifier/tests/test_source_evidence.py",
-          "backend-node/test/featureLockManifest.test.js",
-          "backend-node/test/incrementalReleaseScope.test.js"
+          "backend-node/test/redrawSourceAudioSeamReviewRead.test.js",
+          "backend-node/test/redrawSourceAudioSeamCandidate.test.js",
+          "backend-node/test/redrawSourceAudioV2Review.test.js",
+          "backend-node/test/redrawAnalysisTaskBinding.test.js",
+          "backend-node/test/redrawSourceAudioWindowAggregation.test.js",
+          "backend-node/test/featureLockManifest.test.js"
         ]
       }
     },
@@ -2752,18 +3673,517 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-09-05 按用户确认的 .cn 入口同步 PR #217 整集隔离适配器",
+          "approvedBy": "product-owner 2026-09-05 pr217-toapis-cn-domain-sync",
+          "impactTests": [
+            "frontweb/scripts/episodeVideoProviderAdapter.test.mjs",
+            "frontweb/scripts/run-redraw-video-model-fallback-live.test.mjs",
+            "backend-node/test/toapisVideoClient.test.js",
+            "backend-node/test/toapisWan3VideoClient.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-05 执行主线计划任务 1-3 的本地首镜审核防重、CLI 脱敏与实际 SAR/DAR 校验修复；固定样片仅为回归，不扩展真实调用或上线授权",
+          "approvedBy": "product-owner 2026-09-05 开始推进1-3项；主线是一键转绘功能完整开发",
+          "impactTests": [
+            "frontweb/scripts/run-redraw-video-model-fallback-live.test.mjs",
+            "frontweb/scripts/run-redraw-episode-blueprint-live.test.mjs",
+            "frontweb/scripts/fuminEpisodeMediaPipeline.test.mjs",
+            "frontweb/scripts/fuminEpisodeProviderAdapter.test.mjs",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-05 通用一键转绘主线目标语言保留与源音轨无语音证据本地修复；不改模型、不调用供应商、不付费、不推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 开始推进主线剩余任务",
+          "impactTests": [
+            "frontweb/test/redrawGeneralProject.test.js",
+            "frontweb/test/redrawSourceRuntime.test.js",
+            "frontweb/e2e/redraw-workspace.spec.js",
+            "backend-node/test/redrawLocaleVerifierClient.test.js",
+            "backend-node/test/redrawSourceAudioEvidence.test.js",
+            "backend-node/test/redrawEvidenceFusion.test.js",
+            "workers/redraw-locale-verifier/tests/test_source_evidence.py",
+            "workers/redraw-locale-verifier/tests/test_server.py",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-05 通用一键转绘主线完整源对白证据、跨镜回放及本地化和生成前校验；不改模型、不调用供应商、不付费、不推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 开始进行下一项",
+          "impactTests": [
+            "backend-node/test/redrawSourceDialogue.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/redrawLocalization.test.js",
+            "backend-node/test/redrawLocalizationOrchestration.test.js",
+            "backend-node/test/redrawShotProductionPack.test.js",
+            "backend-node/test/redrawDialogue.test.js",
+            "backend-node/test/redrawDialogueOrchestrator.test.js",
+            "backend-node/test/redrawGeneration.test.js",
+            "frontweb/test/redrawDialogueSourceReview.test.js",
+            "frontweb/e2e/redraw-workspace.spec.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-05 通用一键转绘长输入分窗分析与默认产品链本地回归；不改模型、不调用供应商、不付费、不推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 开始推进下一项",
+          "impactTests": [
+            "backend-node/test/redrawAnalysisWindows.test.js",
+            "backend-node/test/redrawNativeSourceAnalysis.test.js",
+            "backend-node/test/redrawWindowedProductAnalysis.test.js",
+            "backend-node/test/redrawAnalysis.test.js",
+            "backend-node/test/redrawEvidenceFusion.test.js",
+            "backend-node/test/redrawBlueprintWorkflow.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/redrawSourceDialogue.test.js",
+            "backend-node/test/redrawSourceDialogueGuards.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-05 通用一键转绘版本级动态执行计划只读预览；零任务零冻结，不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 开始下一项",
+          "impactTests": [
+            "backend-node/test/redrawExecutionPlan.test.js",
+            "backend-node/test/redrawExecutionPlanPreview.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/redrawSourceDialogueGuards.test.js",
+            "backend-node/test/redrawLocalization.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-05 通用一键转绘页面计划审核与版本绑定保存；仅本地不可变快照与回归，零生成零冻结，不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 开始下一项",
+          "impactTests": [
+            "backend-node/test/redrawExecutionPlanReview.test.js",
+            "backend-node/test/redrawExecutionPlanPreview.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "frontweb/test/redrawExecutionPlanReview.test.js",
+            "frontweb/e2e/redraw-workspace.spec.js"
+          ]
+        },
+        {
+          "reason": "2026-09-05 通用一键转绘待就绪执行队列登记与恢复读取；仅本地队列，零调度零生成零冻结，不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 规划好剩余任务设立目标 开始推进",
+          "impactTests": [
+            "backend-node/test/redrawExecutionQueue.test.js",
+            "backend-node/test/redrawExecutionPlanReview.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "frontweb/test/redrawExecutionQueue.test.js",
+            "frontweb/e2e/redraw-workspace.spec.js"
+          ]
+        },
+        {
+          "reason": "2026-09-05 通用一键转绘逐句角色归属纠错与安全保存；仅本地草稿及原声证据回归，零生成零冻结，不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 规划好剩余任务设立目标 开始推进",
+          "impactTests": [
+            "backend-node/test/redrawSpeakerCorrection.test.js",
+            "backend-node/test/redrawBlueprintWorkflow.test.js",
+            "backend-node/test/redrawSourceDialogue.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "frontweb/test/redrawSpeakerCorrection.test.js",
+            "frontweb/e2e/redraw-workspace.spec.js"
+          ]
+        },
+        {
+          "reason": "2026-09-05 通用一键转绘对白文本与完整时间人工修订，严格保留原 ASR 证据；仅本地草稿与下游回归，零生成零冻结，不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 规划好剩余任务设立目标 开始推进",
+          "impactTests": [
+            "backend-node/test/redrawDialogueCorrection.test.js",
+            "backend-node/test/redrawSourceDialogue.test.js",
+            "backend-node/test/redrawSourceDialogueGuards.test.js",
+            "backend-node/test/redrawBlueprintWorkflow.test.js",
+            "backend-node/test/redrawLocalization.test.js",
+            "backend-node/test/redrawExecutionPlanPreview.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-05 通用一键转绘母本鉴权回放连接；仅本地 owner 与源哈希绑定只读媒体及回归，零业务写入零生成零冻结，不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 规划好剩余任务设立目标 开始推进",
+          "impactTests": [
+            "backend-node/test/redrawSourceVideo.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/redrawSourceAudioEvidence.test.js",
+            "backend-node/test/redrawDialogueCorrection.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-05 通用一键转绘页面鉴权母本回放与逐句文本及完整时间纠错；仅本地草稿和回归，保留原始识别，零生成零冻结，不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 规划好剩余任务设立目标 开始推进",
+          "impactTests": [
+            "backend-node/test/redrawSourceVideo.test.js",
+            "backend-node/test/redrawDialogueCorrection.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "frontweb/test/redrawDialogueCorrection.test.js",
+            "frontweb/test/redrawDialogueSourceReview.test.js",
+            "frontweb/test/redrawSpeakerCorrection.test.js",
+            "frontweb/e2e/redraw-workspace.spec.js"
+          ]
+        },
+        {
+          "reason": "2026-09-05 通用一键转绘镜头可见事实、场景与道具草稿编辑；仅本地保存及重新审核，保留原始素材与识别证据，零生成零冻结，不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 规划好剩余任务设立目标 开始推进",
+          "impactTests": [
+            "backend-node/test/redrawVisualFactCorrection.test.js",
+            "backend-node/test/redrawBlueprintWorkflow.test.js",
+            "backend-node/test/redrawDialogueCorrection.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "frontweb/test/redrawVisualFactCorrection.test.js",
+            "frontweb/test/redrawDialogueCorrection.test.js",
+            "frontweb/test/redrawSpeakerCorrection.test.js",
+            "frontweb/e2e/redraw-workspace.spec.js"
+          ]
+        },
+        {
+          "reason": "2026-09-06 通用一键转绘人工切镜来源标记及受影响对白保存锁定复核；仅本地 TDD，保留原始证据与旧稿兼容，零生成零冻结，不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 规划好剩余任务设立目标 开始推进",
+          "impactTests": [
+            "backend-node/test/redrawBoundaryCorrection.test.js",
+            "backend-node/test/redrawBlueprintWorkflow.test.js",
+            "backend-node/test/redrawSourceDialogue.test.js",
+            "backend-node/test/redrawSourceDialogueGuards.test.js",
+            "backend-node/test/redrawDialogueCorrection.test.js",
+            "backend-node/test/redrawVisualFactCorrection.test.js",
+            "backend-node/test/redrawLocalization.test.js",
+            "backend-node/test/redrawExecutionPlanPreview.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-06 通用一键转绘相邻切点与整句归属原子页面编辑及真实保存联测；仅本地 TDD 与重新审核，保留原始证据，零生成零冻结，不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 规划好剩余任务设立目标 开始推进",
+          "impactTests": [
+            "backend-node/test/redrawBoundaryCorrection.test.js",
+            "backend-node/test/redrawBlueprintWorkflow.test.js",
+            "backend-node/test/redrawSourceDialogueGuards.test.js",
+            "backend-node/test/redrawLocalization.test.js",
+            "backend-node/test/redrawExecutionPlanPreview.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "frontweb/test/redrawBoundaryCorrection.test.js",
+            "frontweb/test/redrawDialogueCorrection.test.js",
+            "frontweb/test/redrawSpeakerCorrection.test.js",
+            "frontweb/test/redrawVisualFactCorrection.test.js",
+            "frontweb/e2e/redraw-workspace.spec.js"
+          ]
+        },
+        {
+          "reason": "2026-09-06 通用一键转绘普通角色身份图上传与只读刷新重审；仅本地 TDD，复用 owner/CAS/媒体导入合同，零生成零冻结，不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 规划好剩余任务设立目标 开始推进",
+          "impactTests": [
+            "backend-node/test/redrawReferenceArtifactImport.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "frontweb/test/redrawIdentityUpload.test.js",
+            "frontweb/test/redrawCharacterIdentity.test.js",
+            "frontweb/test/redrawPreparationWorkspace.test.js",
+            "frontweb/e2e/redraw-workspace.spec.js"
+          ]
+        },
+        {
+          "reason": "2026-09-06 通用一键转绘源音频结果未知状态连接修复；仅本地隔离数据库 TDD，未知保持待核对及预留，明确失败释放，重复点击零新增分析；不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 规划好剩余任务设立目标 开始推进",
+          "impactTests": [
+            "backend-node/test/redrawWindowedProductAnalysis.test.js",
+            "backend-node/test/redrawSourceAudioEvidence.test.js",
+            "backend-node/test/redrawNativeSourceAnalysis.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-06 通用一键转绘动作草片鉴权裁片与预览连接；仅本地 owner/镜头/源哈希绑定、静音草片和 TDD，零业务写入零审核零生成；不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 规划好剩余任务设立目标 开始推进",
+          "impactTests": [
+            "backend-node/test/redrawMotionDraft.test.js",
+            "backend-node/test/redrawSourceVideo.test.js",
+            "backend-node/test/redrawSourceConditioning.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-06 通用一键转绘当前动作候选恢复与鉴权媒体读取；仅本地 owner/CAS/导入 SHA 绑定和 TDD，零业务写入零审核零生成；不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 规划好剩余任务设立目标 开始推进",
+          "impactTests": [
+            "backend-node/test/redrawMotionCandidate.test.js",
+            "backend-node/test/redrawReferenceArtifactImport.test.js",
+            "backend-node/test/redrawMotionDraft.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-06 通用一键转绘普通用户动作素材预览上传与刷新防重；仅本地页面、鉴权 Blob、确认及未知状态冻结和 TDD，不读 Key、不调用供应商、不付费、不提交推送、不部署",
+          "approvedBy": "product-owner 2026-09-05 规划好剩余任务设立目标 开始推进",
+          "impactTests": [
+            "frontweb/test/redrawMotionReferenceApi.test.js",
+            "frontweb/test/redrawMotionReferenceUpload.test.js",
+            "frontweb/e2e/redraw-workspace.spec.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-06 通用一键转绘 G1.3a 本地动作处理响应及可选报告导入与准备绑定；仅本地 owner/CAS/真实媒体 TDD，保留人工确认及旧手工候选；不读 Key、不调用供应商、不付费、不提交推送、不部署、不写生产/shared",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进",
+          "impactTests": [
+            "backend-node/test/redrawMotionProcessing.test.js",
+            "backend-node/test/redrawMotionObscuration.test.js",
+            "backend-node/test/redrawMotionCandidate.test.js",
+            "backend-node/test/redrawReferenceArtifactImport.test.js",
+            "backend-node/test/redrawReferencePreparationOrchestration.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-06 通用一键转绘 G1.3b 普通页面本地动作处理、预览、四项人工确认与可选报告导入；保留手工上传、防重及未知冻结；不读 Key、不调用供应商、不付费、不提交推送、不部署、不写生产/shared",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进",
+          "impactTests": [
+            "frontweb/test/redrawMotionReferenceApi.test.js",
+            "frontweb/test/redrawMotionReferenceUpload.test.js",
+            "frontweb/e2e/redraw-backend-integration.spec.js",
+            "backend-node/test/redrawMotionProcessing.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-07 通用一键转绘 G4.0e 普通页面单元素材 GET 检查与显式本地 prepare、API/UI 绑定；仅隔离本地真实媒体 TDD，不读真实 Key、不联网、不调用供应商、不付费、不生成、不提交推送、不运行 CI、不部署、不写生产/shared",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-07 继续",
+          "impactTests": [
+            "backend-node/test/redrawUnitReferenceRoutes.test.js",
+            "backend-node/test/redrawSourceVideo.test.js",
+            "backend-node/test/redrawPreparedUnitReference.test.js",
+            "backend-node/test/redrawUnitReferenceDerivation.test.js",
+            "backend-node/test/redrawExecutionQueue.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "frontweb/test/redrawUnitReferenceMaterials.test.js",
+            "frontweb/test/redrawExecutionPlanReview.test.js",
+            "frontweb/test/redrawExecutionQueue.test.js",
+            "frontweb/e2e/redraw-unit-reference-materials.spec.js"
+          ]
+        },
+        {
+          "reason": "2026-09-08 通用一键转绘 G6 身份审批前置条件精确映射 HTTP 409；仅隔离本地 SQLite/图片及真实 HTTP TDD，不读 Key、不联网、不调用供应商、不付费、不提交推送、不运行 CI、不部署、不写生产/shared",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-08 继续",
+          "impactTests": [
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/redrawReferenceArtifactImport.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-08 通用一键转绘 G3 上传、分析与本地化确认的页面访问隔离；仅真实 Vue 本地 TDD，保留既有读取防护，不读 Key、不联网、不调用供应商、不付费、不提交推送、不运行 CI、不部署、不写生产/shared",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-08 继续",
+          "impactTests": [
+            "frontweb/test/redrawWorkspaceRuntime.test.js",
+            "frontweb/test/redrawSourceRuntime.test.js",
+            "frontweb/test/redrawExecutionRunParent.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-08 通用一键转绘 G3 项目多作品只读列表与显式选择、新建入口及路由访问隔离；仅本地 SQLite/Vue TDD，保留纯 owner 变化的 pending/unknown 实例，不读 Key、不联网、不调用供应商、不付费、不提交推送、不运行 CI、不部署、不写生产/shared",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-08 继续",
+          "impactTests": [
+            "backend-node/test/redrawProjectWorks.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "frontweb/test/redrawProjectWorksRuntime.test.js",
+            "frontweb/test/redrawWorkspaceRuntime.test.js",
+            "frontweb/test/redrawSourceRuntime.test.js",
+            "frontweb/test/redrawExecutionRunParent.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-09 通用一键转绘 G5.5a 执行单元导出只读 list/get/download GET 接线及真实 JWT/owner 校验、四文件 FD 下载；保留 v1，不改 POST、模型或生产；仅本地 synthetic SQLite/loopback/已安装 FFmpeg TDD，零供应商、零付费，不读真实 Key、不提交推送、不运行 CI、不部署、不写生产/shared 或 Git",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-09 继续",
+          "impactTests": [
+            "backend-node/test/redrawExecutionUnitExportHttp.test.js",
+            "backend-node/test/redrawExport.test.js",
+            "backend-node/test/redrawCompositionRoutes.test.js",
+            "backend-node/test/redrawExecutionUnitCandidateMedia.test.js",
+            "backend-node/test/redrawProjectWorks.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-09 通用一键转绘 G5.5b 仅在 backend-node/src/routes/redraw.js 与 index.js 接通既有 POST /redraw/versions/:id/compose 的 unit 五键 HTTP 到六键 service、已鉴权 URL version 与 canReadArtifact、真实本地 scheduler、membership 拒绝零重建、错误映射与幂等防重；三个既有 Composition/Dispatch/Derivation fixture 仅 test-only owner 参数贯通；保留旧 v1/release/readiness/UI，不改模型；仅本地 synthetic SQLite/loopback/已安装 FFmpeg TDD，零供应商、零付费，不读真实 Key、不提交推送、不运行 CI、不部署、不写生产/shared 或 Git",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-09 继续",
+          "impactTests": [
+            "backend-node/test/redrawExecutionUnitCompositionHttp.test.js",
+            "backend-node/test/redrawExecutionUnitComposition.test.js",
+            "backend-node/test/redrawExecutionUnitDispatch.test.js",
+            "backend-node/test/redrawUnitReferenceDerivation.test.js",
+            "backend-node/test/redrawCompositionRoutes.test.js",
+            "backend-node/test/redrawComposition.test.js",
+            "backend-node/test/redrawExecutionUnitExportHttp.test.js",
+            "backend-node/test/redrawExport.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-09 通用一键转绘 G5.5c 仅在 backend-node/src/routes/redraw.js 的 executionUnitExportSummary 为合法 video/unit 导出追加 idempotency_key_sha256 只读投影；严格核验原 release 五键类型边界、request_hash、行版本与无损 UTF-8 幂等键，非法为 null，旧 v1 不新增字段；仅真实 JWT/隔离 SQLite/loopback 的 DTO 查询合同 TDD，不改 index、四个合成服务、schema、鉴权、模型、UI 或生产供应商，不冒称合成下载或页面恢复通过；零供应商、零付费，不读真实 Key、不提交推送、不运行 CI、不部署、不写生产/shared 或 Git",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-09 继续",
+          "impactTests": [
+            "backend-node/test/redrawExecutionUnitExportIdentityHttp.test.js",
+            "backend-node/test/redrawExecutionUnitExportHttp.test.js",
+            "backend-node/test/redrawExport.test.js",
+            "backend-node/test/redrawCompositionRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-09 通用一键转绘 G5.6 首片仅七个前端运行时文件的所选 unit run 至第四步只读 GET 核验与 owner/work/version/访问/策略 epoch 隔离；路由 query 仅定位 intent，允许 current_step=1 进入独立 unit 只读第四步但不写 current_step、不放宽旧 shot 生成步骤；unit 模式不初始化旧 readiness/TTS/compose/下载，后继合成提交、未知恢复和文件验收未实现；仅本地真实 Vue renderer TDD，不改 API、后端、全局 store、模型或媒体组件，不冒称浏览器或产品完成；零供应商、零付费，不读真实 Key、不联网、不提交推送、不运行 CI、不部署、不写生产/shared 或 Git",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-09 继续",
+          "impactTests": [
+            "frontweb/test/redrawUnitDeliveryContext.test.js",
+            "frontweb/test/redrawSourceRuntime.test.js",
+            "frontweb/test/redrawExecutionRunParent.test.js",
+            "frontweb/test/redrawExecutionRunPanel.test.js",
+            "frontweb/test/redrawExecutionRunLifecycle.test.js",
+            "frontweb/test/redrawExecutionRunCandidate.test.js",
+            "frontweb/test/redrawExecutionRunDefaultTenant.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-09 通用一键转绘 G6.HTTP_EMPTY_ARRAY_GET_BODY 仅在 backend-node/src/routes/redraw.js 的 executionRunRequest 局部拒绝 GET 数组 body；低层真实 HTTP 空数组返回安全 JSON 400 且零 DML/transport，保留无 body 与空对象 GET、既有 JWT/tenant/owner 鉴权顺序；不改全局 parser、服务、POST、导出、UI、模型或其他 API 合同；仅本地 synthetic SQLite/loopback/已安装 FFmpeg TDD，零供应商、零付费，不读真实 Key、不提交推送、不运行 CI、不部署、不写生产/shared 或 Git",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-09 继续",
+          "impactTests": [
+            "backend-node/test/redrawExecutionRunEmptyArrayBodyHttp.test.js",
+            "backend-node/test/redrawExecutionRunRoutes.test.js",
+            "backend-node/test/redrawExecutionUnitCandidateMedia.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-09 通用一键转绘 G6.COMPOSE_PERMISSION_DURING_AWAIT 仅在 backend-node/src/routes/index.js 的 unit compose POST 保存同步只读 JWT、active user/token_version、active membership/tenant 复核闭包，经 backend-node/src/routes/redraw.js 的 unit ctx 传入 backend-node/src/services/redrawCompositionService.js，在既有创建事务 BEGIN 后、replay/INSERT 前复核；精确映射 UNAUTHORIZED 为 401，成员或租户撤权保持 REDRAW_VERSION_NOT_FOUND 404，拒绝必须零新增 export/assets/调度/provider；保留原 request_hash、幂等、GET、旧 v1 与服务无 HTTP ctx 调用，不改 schema/UI/模型/全局鉴权；仅本地 synthetic SQLite/loopback/已安装 FFmpeg TDD，零供应商、零付费，不读真实 Key、不提交推送、不运行 CI、不部署、不写生产/shared 或 Git",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-09 继续",
+          "impactTests": [
+            "backend-node/test/redrawExecutionUnitCompositionHttp.test.js",
+            "backend-node/test/redrawExecutionUnitComposition.test.js",
+            "backend-node/test/redrawComposition.test.js",
+            "backend-node/test/redrawCompositionRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-09 通用一键转绘 G6.ENTRY_PRESENTATION 修复实际普通登录浏览器发现的局部展示回归：仅四个转绘 SFC 的新建弹窗直接标签主题色、源片/语言两列与比例满行、两处状态标签配色、空预算显示未设置且真实 0 保持；不改 API/DB/预算策略、全局主题、权限或模型；仅本地 TDD、编译和新合成素材浏览器复验，零供应商/付费，不读 Key、不提交推送、不运行 CI、不部署、不写生产/shared",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-09 继续",
+          "impactTests": [
+            "frontweb/test/redrawEntryPresentation.test.js",
+            "frontweb/test/redrawProjectWorksRuntime.test.js",
+            "frontweb/test/redrawSourceRuntime.test.js",
+            "frontweb/test/redrawExecutionRunParent.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-09 通用一键转绘 G3.NO_AUDIO_SOURCE 修复真实双作品默认分析 HTTP 无音轨分支 500：仅蓝图来源音频三字段精确全 null 时保留无音轨语义，部分缺失或非法值继续拒绝；无轨只允许 silent 与空对白，字幕文字保留为文字区域，不伪造音轨或识别；保留有轨校验、哈希和审核门禁。仅本地 TDD 与新合成素材隔离 HTTP 回归，不改模型、Worker、源快照或阈值；零供应商/付费，不读 Key，不提交推送、不运行 CI、不部署、不写生产/shared",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-09 继续",
+          "impactTests": [
+            "backend-node/test/redrawEpisodeBlueprint.test.js",
+            "backend-node/test/redrawEvidenceFusion.test.js",
+            "backend-node/test/redrawMultiInputProductAnalysisHttp.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-09 通用一键转绘 G2.RAW_SOURCE_EVIDENCE 仅在语言 Worker 客户端本地 preserveSourceEvidence 严格为 true 时返回已通过既有校验的原 result 值 rawSourceEvidence，完整保留秒级时间、原文本和声明 SHA；默认 DTO、单窗 v1、四字段 wire 请求、路径/大小/hash 校验及未知不重试保持，不修改 Worker、模型、阈值或其他消费者；仅合成字节与任务自有 named pipe 本地 TDD，不读 Key、不联网、不调用供应商、不付费、不提交推送、不运行 CI、不部署、不写生产/shared",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-09 采用，冲突时人工确认",
+          "impactTests": [
+            "backend-node/test/redrawLocaleVerifierClient.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-09 通用一键转绘 G2.PCM_WINDOWS：仅本地完成 SourceAudio 有界 PCM 分窗与严格 v2 聚合生产者，25 分钟提交窗加 30 秒重叠，每窗保持 64 MiB 限制且仅调用一次；保存全轨/各窗 SHA 和原回执，完整保留识别段、物理来源与逻辑提交归属分离，歧义保留非成功诊断等待人工确认，未知立即停止不重试；全窗与源 CAS 验证后一次登记，原单窗 v1 与无轨保持。不改 Worker、模型、限制或其他消费者，人工审核接线后继实施；仅既有合成媒体/隔离 SQLite/固定本地 FFmpeg/显式 Worker double TDD，不读 Key、不联网、不调用供应商、不付费、不提交推送、不运行 CI、不部署、不写生产/shared",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-09 采用，冲突时人工确认",
+          "impactTests": [
+            "backend-node/test/redrawSourceAudioWindows.test.js",
+            "backend-node/test/redrawSourceAudioWindowAggregation.test.js",
+            "backend-node/test/redrawSourceAudioEvidence.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-09 通用一键转绘 G2.TASK_BINDING：仅沿服务器真实 async_task 为 Orchestrator、SourceAudio、Native 接入取消/替换及 owner/源绑定复核；异步返回、后续窗口与最终写入事务内拒绝迟到成功，保留已合法登记资产和已有回执；失效不落旧失败/unknown 收口，不覆盖新作品或误结算 reservation，取消 held 不自动退款/扣款。保留单窗 v1、无轨、内部 UUID、模型及现行有效任务计费，不新增 schema/取消平台/供应商合同；仅隔离 SQLite 和合成底层 doubles 本地 TDD，不读 Key、不联网、不调用供应商、不付费、不提交推送、不运行 CI、不部署、不写生产/shared",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-09 采用，冲突时人工确认",
+          "impactTests": [
+            "backend-node/test/redrawAnalysisTaskBinding.test.js",
+            "backend-node/test/redrawAnalysis.test.js",
+            "backend-node/test/redrawNativeSourceAnalysis.test.js",
+            "backend-node/test/redrawSourceAudioEvidence.test.js",
+            "backend-node/test/redrawSourceAudioWindows.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-09 通用一键转绘 G2.SEAM_CANDIDATE：仅将 SourceAudio 完整原窗接缝/语言冲突作为非成功候选绑定源快照与真实 async task，事务内当前任务复核后保存 async_tasks.result，保留 held、原回执与全段原文/时标；不创建成功资产/蓝图，不裁句，不重做 ASR 或结算，普通失败和未知语义不变。人审/继续接线后继实施；仅隔离 SQLite 与合成 PCM/底层 Worker double 本地 TDD，不读 Key、不联网、不调用供应商、不付费、不提交推送、不运行 CI、不部署、不写生产/shared",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-09 采用，冲突时人工确认",
+          "impactTests": [
+            "backend-node/test/redrawSourceAudioSeamCandidate.test.js",
+            "backend-node/test/redrawAnalysisTaskBinding.test.js",
+            "backend-node/test/redrawSourceAudioWindowAggregation.test.js",
+            "backend-node/test/redrawSourceAudioEvidence.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-09 通用一键转绘 G2.V2_REVIEW：仅接通经过完整重建及 owner/source/文件 SHA 校验的长音频 v2 到 AnalysisWindow、Fusion、Blueprint、Workflow 草稿创建保存与 SourceDialogue；按实际聚合资产引用传服务端精度上下文，保留原始全段与窗口人物，不全局放宽 v1/视觉整数，不新增模型或客户端权限；Orchestrator 传既有 storageRoot。v2 暂限草稿审核，未验证下游锁定/物化前明确拒绝；接缝候选人审和显式继续仍后继实施。仅本地合成与隔离 SQLite TDD，不读 Key/默认库配置、不联网安装、不真实 Worker/供应商/付费、不 commit/push/CI、不生产/shared/部署",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-09 采用，冲突时人工确认",
+          "impactTests": [
+            "backend-node/test/redrawSourceAudioV2Review.test.js",
+            "backend-node/test/redrawSourceDialogue.test.js",
+            "backend-node/test/redrawEvidenceFusion.test.js",
+            "backend-node/test/redrawAnalysisWindows.test.js",
+            "backend-node/test/redrawEpisodeBlueprint.test.js",
+            "backend-node/test/redrawDialogueCorrection.test.js",
+            "backend-node/test/redrawAnalysisTaskBinding.test.js",
+            "backend-node/test/redrawSourceAudioWindowAggregation.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
+        },
+        {
+          "reason": "2026-09-09 通用一键转绘 G2.V2_REVIEW_UI：仅在既有审核页从唯一已保存对白及 resolved DTO、源身份和 manifest 绑定识别长音频 v2，保留完整原句与亚毫秒端点，允许修订、恢复和显式窗口人物映射后保存；旧 v1 三位秒数与镜头整数切点不变。允许人审保存但保留 v2 lock/Facts 暂时阻断，不伪称当前草稿已服务端重验；接缝人审和原任务继续仍后继实施。仅本地合成 Vue 组件 TDD/隔离回归，不读 Key/默认库配置、不联网安装、不真实 Worker/供应商/付费、不 commit/push/CI、不生产/shared/部署",
+          "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-09 采用，冲突时人工确认",
+          "impactTests": [
+            "frontweb/test/redrawAudioV2ReviewRuntime.test.js",
+            "frontweb/test/redrawDialogueSourceReview.test.js",
+            "frontweb/test/redrawDialogueCorrection.test.js",
+            "frontweb/test/redrawSpeakerCorrection.test.js",
+            "frontweb/test/redrawBoundaryCorrection.test.js",
+            "backend-node/test/redrawSourceAudioV2Review.test.js",
+            "backend-node/test/redrawDialogueCorrection.test.js",
+            "backend-node/test/redrawBoundaryCorrection.test.js",
+            "backend-node/test/redrawSpeakerCorrection.test.js",
+            "backend-node/test/featureLockManifest.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-05 按用户确认的 .cn 入口同步 PR #217 整集隔离适配器",
-        "approvedBy": "product-owner 2026-09-05 pr217-toapis-cn-domain-sync",
+        "reason": "2026-09-09 通用一键转绘 G2.SEAM_READ：仅从当前 owner/work/task/source 的持久接缝候选独立重建原始窗口和冲突原因，核对候选摘要及源文件 SHA，在 await 后复核当前任务、素材、reservation 与时间快照，提供一个严格只读 GET 的完整段候选和后继 CAS 令牌；不自动裁句、不改原文或精度、不把普通 unknown 当可审核、不写库/续跑/重识别/扣退。复用既有 SourceAudio 校验、仅新增对应路由，不改模型或线上合同。仅本地合成 SQLite/文件 TDD，禁止 Key/默认库配置/真实 Worker/供应商/付费/联网安装/commit/push/CI/生产/shared/部署",
+        "approvedBy": "product-owner 2026-09-06 规划好剩余6项-工作 全量推进；2026-09-09 采用，冲突时人工确认",
         "impactTests": [
-          "frontweb/scripts/episodeVideoProviderAdapter.test.mjs",
-          "frontweb/scripts/run-redraw-video-model-fallback-live.test.mjs",
-          "backend-node/test/toapisVideoClient.test.js",
-          "backend-node/test/toapisWan3VideoClient.test.js",
-          "backend-node/test/featureLockManifest.test.js",
-          "backend-node/test/incrementalReleaseScope.test.js"
+          "backend-node/test/redrawSourceAudioSeamReviewRead.test.js",
+          "backend-node/test/redrawSourceAudioSeamCandidate.test.js",
+          "backend-node/test/redrawSourceAudioV2Review.test.js",
+          "backend-node/test/redrawAnalysisTaskBinding.test.js",
+          "backend-node/test/redrawSourceAudioWindowAggregation.test.js",
+          "backend-node/test/featureLockManifest.test.js"
         ]
       }
     },

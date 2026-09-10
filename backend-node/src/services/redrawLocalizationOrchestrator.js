@@ -158,7 +158,7 @@ function analysisGateQuote(db, input) {
   return null;
 }
 
-function buildLocalizationSnapshot(db, input = {}) {
+function buildLocalizationSnapshot(db, input = {}, deps = {}) {
   const normalized = {
     ...input,
     ...ownerFromInput(input),
@@ -242,6 +242,8 @@ function buildLocalizationSnapshot(db, input = {}) {
     localizationInput.blueprint_hash = blueprintHash;
     localizationInput.blueprint_revision = Number(blueprintRow.revision);
     localizationInput.blueprint = blueprint;
+    localizationInput.source_dialogue = localizationService.resolveLocalizationSourceDialogue(db, normalized,
+      normalized.workId, blueprint, deps.storageRoot || input.storageRoot);
   }
   return {
     input: localizationInput,
@@ -257,8 +259,8 @@ function buildLocalizationSnapshot(db, input = {}) {
   };
 }
 
-function quoteLocalization(db, input = {}, preparedSnapshot = null) {
-  const snapshot = preparedSnapshot || buildLocalizationSnapshot(db, input);
+function quoteLocalization(db, input = {}, preparedSnapshot = null, deps = {}) {
+  const snapshot = preparedSnapshot || buildLocalizationSnapshot(db, input, deps);
   const blocked = snapshot.blueprint_hash ? null : analysisGateQuote(db, input);
   if (blocked) return blocked;
   const capability = redrawCapability.resolveVerifiedLocaleCapability(db, {
@@ -476,26 +478,22 @@ function getExistingStart(db, input) {
   if (!draft) return null;
   const snapshot = parseJson(draft.localization_model_snapshot_json, {});
   const storedInput = snapshot?.input || null;
+  if (!storedInput || typeof storedInput !== 'object' || Array.isArray(storedInput)) {
+    throw codedError('REDRAW_LOCALIZATION_IDEMPOTENCY_CONFLICT', '旧本地化任务缺少可验证的持久化输入，无法安全回读');
+  }
   const requestComparable = {
     locale: input.locale,
     market: input.market,
     localization_level: input.localizationLevel,
   };
-  const storedComparable = storedInput ? {
+  const storedComparable = {
     locale: trim(storedInput.locale),
     market: trim(storedInput.market),
     localization_level: trim(storedInput.localization_level) || 'faithful',
-  } : null;
-  const rebuiltInput = storedInput ? null : buildLocalizationSnapshot(db, input).input;
-  const inputHash = storedInput ? stableHash(storedInput) : stableHash(rebuiltInput);
-  const comparable = storedComparable || {
-    locale: trim(rebuiltInput.locale),
-    market: trim(rebuiltInput.market),
-    localization_level: trim(rebuiltInput.localization_level) || 'faithful',
   };
   if (
-    draft.localization_input_hash !== inputHash
-    || stableHash(comparable) !== stableHash(requestComparable)
+    draft.localization_input_hash !== stableHash(storedInput)
+    || stableHash(storedComparable) !== stableHash(requestComparable)
   ) {
     throw codedError('REDRAW_LOCALIZATION_IDEMPOTENCY_CONFLICT', '相同本地化幂等键对应的输入已变化');
   }
@@ -684,6 +682,13 @@ function runLocalizationJob(db, records, deps) {
       if (typeof deps.provider !== 'function') {
         throw codedError('REDRAW_LOCALIZATION_PROVIDER_REQUIRED', '缺少本地化供应商');
       }
+      if (quote.snapshot.blueprint) {
+        const currentSources = localizationService.resolveLocalizationSourceDialogue(db, quote.snapshot.input,
+          quote.snapshot.input.workId, quote.snapshot.blueprint, deps.storageRoot);
+        if (stableHash(currentSources) !== stableHash(quote.snapshot.input.source_dialogue)) {
+          throw codedError('LOCALIZATION_SOURCE_DIALOGUE_UNRESOLVED', '完整源对白证据已变化，请重新确认本地化');
+        }
+      }
       let providerResult;
       try {
         providerResult = await deps.provider({
@@ -716,6 +721,7 @@ function runLocalizationJob(db, records, deps) {
           ...(episodeBlueprint ? {
             blueprintHash: quote.snapshot.blueprint_hash,
             validateTargetText: deps.validateTargetText,
+            sourceDialogue: quote.snapshot.input.source_dialogue,
           } : {}),
         },
       );
@@ -730,6 +736,7 @@ function runLocalizationJob(db, records, deps) {
             owner,
             draftVersionId,
             normalized,
+            { storageRoot: deps.storageRoot },
           );
           taskService.updateTaskResult(db, taskId, {
             status: 'completed',
@@ -804,14 +811,15 @@ function normalizeScheduled(value) {
 
 function startLocalization(db, log, input = {}, deps = {}) {
   const normalized = normalizeStartInput(input);
-  const snapshot = buildLocalizationSnapshot(db, normalized);
   const existing = getExistingStart(db, normalized);
   if (existing) return existing;
+  const storageDeps = { ...deps, storageRoot: deps.storageRoot || input.storageRoot };
+  const snapshot = buildLocalizationSnapshot(db, normalized, storageDeps);
   if (snapshot.blueprint_hash && typeof deps.validateTargetText !== 'function') {
     throw codedError('LOCALIZATION_LANGUAGE_GATE_REQUIRED', '缺少目标文本语言验证器');
   }
 
-  const quote = quoteLocalization(db, normalized, snapshot);
+  const quote = quoteLocalization(db, normalized, snapshot, storageDeps);
   if (!quote.priced) throw codedError(quote.code, '本地化模型暂不可报价', { quote });
   if (normalized.quoteHash !== quote.quote_hash) {
     throw codedError('REDRAW_LOCALIZATION_QUOTE_CHANGED', '本地化报价已变化，请重新确认', { quote });
@@ -826,7 +834,7 @@ function startLocalization(db, log, input = {}, deps = {}) {
   };
   const schedule = typeof deps.schedule === 'function' ? deps.schedule : defaultSchedule;
   let completion;
-  const job = () => runLocalizationJob(db, records, deps);
+  const job = () => runLocalizationJob(db, records, storageDeps);
   try {
     completion = normalizeScheduled(schedule(job));
   } catch (error) {

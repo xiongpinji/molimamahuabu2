@@ -1,0 +1,2581 @@
+{
+  "schema_version": "redraw-motion-obscuration-report-v1",
+  "approval_status": "pending",
+  "owner": {
+    "tenant_id": "tenant-redraw-local",
+    "user_id": "user-redraw-local"
+  },
+  "work_id": 1,
+  "version_id": 2,
+  "shot_id": 4,
+  "source_shot_id": "shot-1",
+  "shot": {
+    "expected_updated_at": "2026-09-06T14:22:56.240Z",
+    "start_ms": 0,
+    "end_ms": 4000
+  },
+  "facts_hash": "1d7199aba071c3f6bae182c33f3230c56ab8a78dfc1e0e969a68072630e68468",
+  "source_asset_id": 2,
+  "source_fingerprint": "5a9da811e0c63d7283e1487d61cdc2d8ecff41f8c1de0244af580486c0694932",
+  "source_size": 352114,
+  "coverage": {
+    "analysis_sha256": "de8b59bf753056234d7843cefe7558a463883352042230df2ffa60d5362e9fe1",
+    "file_sha256": "f80242a457337118aa3dc65ede5822afbff7275f76f92f11178a0ef798626b07",
+    "approved_by": "user-redraw-local",
+    "approved_at": "2026-09-06T14:23:56.615Z"
+  },
+  "input_binding_sha256": "f117150b1fc3a9da4abb1a2c99a0ea3457ed787b46f4e7f0f01d4134737b8b99",
+  "input_frame_mask_set_sha256": "4f19cd56990d19a3466154e0e01af2f48e2ab80dffc9d8121034c52db7eb3cac",
+  "processing": {
+    "method": "conservative_mask_union_gaussian_detail_reduction",
+    "sigma_px": 12,
+    "mask_scope": "all_story_role_background_extra_and_text",
+    "empty_region_behavior": "unchanged_rgb",
+    "codec": "h264",
+    "pixel_format": "yuv420p",
+    "preset": "ultrafast",
+    "crf": 18,
+    "b_frames": 0,
+    "audio": false
+  },
+  "source_probe": {
+    "origin": "sha256_bound_private_source_snapshot",
+    "width": 320,
+    "height": 180,
+    "sample_aspect_ratio": "1:1",
+    "display_aspect_ratio": "16:9",
+    "rotation": 0,
+    "time_base": {
+      "numerator": 1,
+      "denominator": 12288
+    },
+    "duration_ticks": 147456,
+    "duration_ms": 12000,
+    "duration_tolerance_ms": 1
+  },
+  "timing": {
+    "timescale": 1536000,
+    "frames": [
+      {
+        "frame_index": 0,
+        "pts": 0,
+        "duration": 128000,
+        "concat_start_us": 0,
+        "concat_duration_us": 83333
+      },
+      {
+        "frame_index": 1,
+        "pts": 128000,
+        "duration": 128000,
+        "concat_start_us": 83333,
+        "concat_duration_us": 83334
+      },
+      {
+        "frame_index": 2,
+        "pts": 256000,
+        "duration": 128000,
+        "concat_start_us": 166667,
+        "concat_duration_us": 83333
+      },
+      {
+        "frame_index": 3,
+        "pts": 384000,
+        "duration": 128000,
+        "concat_start_us": 250000,
+        "concat_duration_us": 83333
+      },
+      {
+        "frame_index": 4,
+        "pts": 512000,
+        "duration": 128000,
+        "concat_start_us": 333333,
+        "concat_duration_us": 83334
+      },
+      {
+        "frame_index": 5,
+        "pts": 640000,
+        "duration": 128000,
+        "concat_start_us": 416667,
+        "concat_duration_us": 83333
+      },
+      {
+        "frame_index": 6,
+        "pts": 768000,
+        "duration": 128000,
+        "concat_start_us": 500000,
+        "concat_duration_us": 83333
+      },
+      {
+        "frame_index": 7,
+        "pts": 896000,
+        "duration": 128000,
+        "concat_start_us": 583333,
+        "concat_duration_us": 83334
+      },
+      {
+        "frame_index": 8,
+        "pts": 1024000,
+        "duration": 128000,
+        "concat_start_us": 666667,
+        "concat_duration_us": 83333
+      },
+      {
+        "frame_index": 9,
+        "pts": 1152000,
+        "duration": 128000,
+        "concat_start_us": 750000,
+        "concat_duration_us": 83333
+      },
+      {
+        "frame_index": 10,
+        "pts": 1280000,
+        "duration": 128000,
+        "concat_start_us": 833333,
+        "concat_duration_us": 83334
+      },
+      {
+        "frame_index": 11,
+        "pts": 1408000,
+        "duration": 128000,
+        "concat_start_us": 916667,
+        "concat_duration_us": 83333
+      },
+      {
+        "frame_index": 12,
+        "pts": 1536000,
+        "duration": 128000,
+        "concat_start_us": 1000000,
+        "concat_duration_us": 83333
+      },
+      {
+        "frame_index": 13,
+        "pts": 1664000,
+        "duration": 128000,
+        "concat_start_us": 1083333,
+        "concat_duration_us": 83334
+      },
+      {
+        "frame_index": 14,
+        "pts": 1792000,
+        "duration": 128000,
+        "concat_start_us": 1166667,
+        "concat_duration_us": 83333
+      },
+      {
+        "frame_index": 15,
+        "pts": 1920000,
+        "duration": 128000,
+        "concat_start_us": 1250000,
+        "concat_duration_us": 83333
+      },
+      {
+        "frame_index": 16,
+        "pts": 2048000,
+        "duration": 128000,
+        "concat_start_us": 1333333,
+        "concat_duration_us": 83334
+      },
+      {
+        "frame_index": 17,
+        "pts": 2176000,
+        "duration": 128000,
+        "concat_start_us": 1416667,
+        "concat_duration_us": 83333
+      },
+      {
+        "frame_index": 18,
+        "pts": 2304000,
+        "duration": 128000,
+        "concat_start_us": 1500000,
+        "concat_duration_us": 83333
+      },
+      {
+        "frame_index": 19,
+        "pts": 2432000,
+        "duration": 128000,
+        "concat_start_us": 1583333,
+        "concat_duration_us": 83334
+      },
+      {
+        "frame_index": 20,
+        "pts": 2560000,
+        "duration": 128000,
+        "concat_start_us": 1666667,
+        "concat_duration_us": 83333
+      },
+      {
+        "frame_index": 21,
+        "pts": 2688000,
+        "duration": 128000,
+        "concat_start_us": 1750000,
+        "concat_duration_us": 83333
+      },
+      {
+        "frame_index": 22,
+        "pts": 2816000,
+        "duration": 128000,
+        "concat_start_us": 1833333,
+        "concat_duration_us": 83334
+      },
+      {
+        "frame_index": 23,
+        "pts": 2944000,
+        "duration": 128000,
+        "concat_start_us": 1916667,
+        "concat_duration_us": 83333
+      },
+      {
+        "frame_index": 24,
+        "pts": 3072000,
+        "duration": 128000,
+        "concat_start_us": 2000000,
+        "concat_duration_us": 83333
+      },
+      {
+        "frame_index": 25,
+        "pts": 3200000,
+        "duration": 128000,
+        "concat_start_us": 2083333,
+        "concat_duration_us": 83334
+      },
+      {
+        "frame_index": 26,
+        "pts": 3328000,
+        "duration": 128000,
+        "concat_start_us": 2166667,
+        "concat_duration_us": 83333
+      },
+      {
+        "frame_index": 27,
+        "pts": 3456000,
+        "duration": 128000,
+        "concat_start_us": 2250000,
+        "concat_duration_us": 83333
+      },
+      {
+        "frame_index": 28,
+        "pts": 3584000,
+        "duration": 128000,
+        "concat_start_us": 2333333,
+        "concat_duration_us": 83334
+      },
+      {
+        "frame_index": 29,
+        "pts": 3712000,
+        "duration": 128000,
+        "concat_start_us": 2416667,
+        "concat_duration_us": 83333
+      },
+      {
+        "frame_index": 30,
+        "pts": 3840000,
+        "duration": 128000,
+        "concat_start_us": 2500000,
+        "concat_duration_us": 83333
+      },
+      {
+        "frame_index": 31,
+        "pts": 3968000,
+        "duration": 128000,
+        "concat_start_us": 2583333,
+        "concat_duration_us": 83334
+      },
+      {
+        "frame_index": 32,
+        "pts": 4096000,
+        "duration": 128000,
+        "concat_start_us": 2666667,
+        "concat_duration_us": 83333
+      },
+      {
+        "frame_index": 33,
+        "pts": 4224000,
+        "duration": 128000,
+        "concat_start_us": 2750000,
+        "concat_duration_us": 83333
+      },
+      {
+        "frame_index": 34,
+        "pts": 4352000,
+        "duration": 128000,
+        "concat_start_us": 2833333,
+        "concat_duration_us": 83334
+      },
+      {
+        "frame_index": 35,
+        "pts": 4480000,
+        "duration": 128000,
+        "concat_start_us": 2916667,
+        "concat_duration_us": 83333
+      },
+      {
+        "frame_index": 36,
+        "pts": 4608000,
+        "duration": 128000,
+        "concat_start_us": 3000000,
+        "concat_duration_us": 83333
+      },
+      {
+        "frame_index": 37,
+        "pts": 4736000,
+        "duration": 128000,
+        "concat_start_us": 3083333,
+        "concat_duration_us": 83334
+      },
+      {
+        "frame_index": 38,
+        "pts": 4864000,
+        "duration": 128000,
+        "concat_start_us": 3166667,
+        "concat_duration_us": 83333
+      },
+      {
+        "frame_index": 39,
+        "pts": 4992000,
+        "duration": 128000,
+        "concat_start_us": 3250000,
+        "concat_duration_us": 83333
+      },
+      {
+        "frame_index": 40,
+        "pts": 5120000,
+        "duration": 128000,
+        "concat_start_us": 3333333,
+        "concat_duration_us": 83334
+      },
+      {
+        "frame_index": 41,
+        "pts": 5248000,
+        "duration": 128000,
+        "concat_start_us": 3416667,
+        "concat_duration_us": 83333
+      },
+      {
+        "frame_index": 42,
+        "pts": 5376000,
+        "duration": 128000,
+        "concat_start_us": 3500000,
+        "concat_duration_us": 83333
+      },
+      {
+        "frame_index": 43,
+        "pts": 5504000,
+        "duration": 128000,
+        "concat_start_us": 3583333,
+        "concat_duration_us": 83334
+      },
+      {
+        "frame_index": 44,
+        "pts": 5632000,
+        "duration": 128000,
+        "concat_start_us": 3666667,
+        "concat_duration_us": 83333
+      },
+      {
+        "frame_index": 45,
+        "pts": 5760000,
+        "duration": 128000,
+        "concat_start_us": 3750000,
+        "concat_duration_us": 83333
+      },
+      {
+        "frame_index": 46,
+        "pts": 5888000,
+        "duration": 128000,
+        "concat_start_us": 3833333,
+        "concat_duration_us": 83334
+      },
+      {
+        "frame_index": 47,
+        "pts": 6016000,
+        "duration": 128000,
+        "concat_start_us": 3916667,
+        "concat_duration_us": 83333
+      }
+    ],
+    "duration": 6144000,
+    "tolerance_ticks": 2,
+    "rounding": "absolute source boundaries rounded to nearest microsecond before differencing; at most one microsecond or one output tick"
+  },
+  "frames": [
+    {
+      "frame_index": 0,
+      "timestamp_ticks": 0,
+      "clip_interval": {
+        "start": {
+          "ticks": 0,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 1024,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "b48bc8b975a28922f7634ab8a955e6d91e5a7da2ab7edbf6822020d9e08a6751",
+      "masks": [
+        {
+          "region_id": "person-c1-0",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-0",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "0ea1e3e1077b333084a67e6890280b5f43bc0910bfe57873c648ab1f26e7ef2b",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 1,
+      "timestamp_ticks": 1024,
+      "clip_interval": {
+        "start": {
+          "ticks": 1024,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 2048,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "ae84c1d19ea0e4987ca8e54ea4ea5a31502c52c4499337fc9155df6c8ab541c4",
+      "masks": [
+        {
+          "region_id": "person-c1-1",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-1",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "78def68461bb6636d5f1a66a826e0bb2d5cf0ba01abe8b9db822d2ae2af74816",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 2,
+      "timestamp_ticks": 2048,
+      "clip_interval": {
+        "start": {
+          "ticks": 2048,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 3072,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "761d7649f0b20616d3670ab19ac58fd153ac82a2c14063adfe5ce8bc2ff14652",
+      "masks": [
+        {
+          "region_id": "person-c1-2",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-2",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "d8305922bb0a4714cbaa1e254ed52f4a61f6484656d0a429522a3fa76ed06a4d",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 3,
+      "timestamp_ticks": 3072,
+      "clip_interval": {
+        "start": {
+          "ticks": 3072,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 4096,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "4e487d3f25108f6d9df3954fabe57e05eebfdabaf7648b2c59482285f6b4b5ce",
+      "masks": [
+        {
+          "region_id": "person-c1-3",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-3",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "00c1bd6ddc3ac9e636f2d20e90e5e00853ff0f22a8f7e7aee552dcfbf6e1092d",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 4,
+      "timestamp_ticks": 4096,
+      "clip_interval": {
+        "start": {
+          "ticks": 4096,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 5120,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "5ae20f331158a872c4b1340b85a88ed9f1e681677e40b21e57b2c794584ac3ef",
+      "masks": [
+        {
+          "region_id": "person-c1-4",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-4",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "6867104c1d9e8850608f05aa8879679dd2babdc1014e4a630228940346970673",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 5,
+      "timestamp_ticks": 5120,
+      "clip_interval": {
+        "start": {
+          "ticks": 5120,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 6144,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "c64c4fad5d3ad943c23d5dfa35403d5efca99db6764404b007971429c620b692",
+      "masks": [
+        {
+          "region_id": "person-c1-5",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-5",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "421f46b2de7b0c7079f92798cc3429001d0f7116da3d1b2fc1ad26b49899ec0b",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 6,
+      "timestamp_ticks": 6144,
+      "clip_interval": {
+        "start": {
+          "ticks": 6144,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 7168,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "9274691fe0135efdaeb8a2d8d04d33165a5d3f84d70acbb90be79ac93e65ed6f",
+      "masks": [
+        {
+          "region_id": "person-c1-6",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-6",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "e47ac2b6fde04a8689767d065e41dc6bb5473f1356ad737c52cb004caaecbc60",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 7,
+      "timestamp_ticks": 7168,
+      "clip_interval": {
+        "start": {
+          "ticks": 7168,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 8192,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "3d231756908a61ce7172efcf75d5616a0fbcf08f7f51baecc57e15096fa56f39",
+      "masks": [
+        {
+          "region_id": "person-c1-7",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-7",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "3d79a2f5deb8724760cd55a3a170ccc6de497627a527dec90df2881f95064705",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 8,
+      "timestamp_ticks": 8192,
+      "clip_interval": {
+        "start": {
+          "ticks": 8192,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 9216,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "5dd73191a7670f122c1be7110805ebc30e2f33c19da54e4cafc5821f59859eb8",
+      "masks": [
+        {
+          "region_id": "person-c1-8",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-8",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "e0d3cccde0e785dabf8980c1784fa796553bd5f20715c0297c003d1aa957912a",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 9,
+      "timestamp_ticks": 9216,
+      "clip_interval": {
+        "start": {
+          "ticks": 9216,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 10240,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "e48d79cb75164a1d4b83afaf9447ab1a69986087a97b742cadff798eeadf5493",
+      "masks": [
+        {
+          "region_id": "person-c1-9",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-9",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "f46cff65b33d64315112a4df77820b837e88ecd4141c8c99211026f2f4867f13",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 10,
+      "timestamp_ticks": 10240,
+      "clip_interval": {
+        "start": {
+          "ticks": 10240,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 11264,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "b15a37c4d2b351bf8c99f7ebbccfbf060dfe8d0495c43bc853c01488bbb7b139",
+      "masks": [
+        {
+          "region_id": "person-c1-10",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-10",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "9207b3d91a8b40bffbeb32a2d8509a4d9f8ac164be0862377695c1a39e0916f6",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 11,
+      "timestamp_ticks": 11264,
+      "clip_interval": {
+        "start": {
+          "ticks": 11264,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 12288,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "f8eca383bb394b04f76c1c6210ae077ea053414f55a2ab4e60120885c403ca93",
+      "masks": [
+        {
+          "region_id": "person-c1-11",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-11",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "4b56860a96e705d3555b879f7eff992b6baeef6153658f0e9324c782aa9c7de3",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 12,
+      "timestamp_ticks": 12288,
+      "clip_interval": {
+        "start": {
+          "ticks": 12288,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 13312,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "41a7e0a36edf58b8ed63701e9c8fc2a237d80515aa2fc6dceac7241da4e00b2c",
+      "masks": [
+        {
+          "region_id": "person-c1-12",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-12",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "95eceac9717daeda5f0b3adc601043824baf7310717a97f8ebe77a6b44416d35",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 13,
+      "timestamp_ticks": 13312,
+      "clip_interval": {
+        "start": {
+          "ticks": 13312,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 14336,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "7ff87fa6592170d68fddddcd18ba8f1f98cbf624d1b4a00f62026a9bb7b7fde4",
+      "masks": [
+        {
+          "region_id": "person-c1-13",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-13",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "a0f1298ff87eeb73f5fc71a49bb7ae782e395cdeec14ba809b582bf0817b8a4d",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 14,
+      "timestamp_ticks": 14336,
+      "clip_interval": {
+        "start": {
+          "ticks": 14336,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 15360,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "fc5361ef36f2c18803d930abd9a6b0f5da2fc7569d15afcec6897a0504809931",
+      "masks": [
+        {
+          "region_id": "person-c1-14",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-14",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "bdeff243d37f6d6931f0f92da9b048b333bbeb6b2e57375c47768c6f4f9bc269",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 15,
+      "timestamp_ticks": 15360,
+      "clip_interval": {
+        "start": {
+          "ticks": 15360,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 16384,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "509de6a4e27e6119979739deee00ffe728041253d2bc142611cfa4be141ad587",
+      "masks": [
+        {
+          "region_id": "person-c1-15",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-15",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "9e5b65d329b809a1f655d9aa016d3714ba5fcf9663db3d4a2a956c2549ca9c41",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 16,
+      "timestamp_ticks": 16384,
+      "clip_interval": {
+        "start": {
+          "ticks": 16384,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 17408,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "a5b85d8a3e51de302b3ac9ad78b38161168a119b38f5e64355a02572cd49b21e",
+      "masks": [
+        {
+          "region_id": "person-c1-16",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-16",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "b76aecf9ee186e508611bad8d605ea264d6bb8ca6fb195bdb24cc27969e0ef27",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 17,
+      "timestamp_ticks": 17408,
+      "clip_interval": {
+        "start": {
+          "ticks": 17408,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 18432,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "9d27da858dd1a9c04516b5e49895bc6d5650e60e081bae0fe7bcdedded34f39e",
+      "masks": [
+        {
+          "region_id": "person-c1-17",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-17",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "9adf24b8904e481bd13aec17b8a7c87e4599af76cffb6a83e7336c77fb65cf90",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 18,
+      "timestamp_ticks": 18432,
+      "clip_interval": {
+        "start": {
+          "ticks": 18432,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 19456,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "8b5486c029ff149f87f18c9913541b5d9b1eb3f896b4a3ebe6d639c1e6e7b386",
+      "masks": [
+        {
+          "region_id": "person-c1-18",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-18",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "762a774cb4c1c7c8a94b6d5bd29347cf8f385d2d38db41cc7a5ce06b81d855fc",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 19,
+      "timestamp_ticks": 19456,
+      "clip_interval": {
+        "start": {
+          "ticks": 19456,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 20480,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "06a647a53a4bf931c957bdbc84c19464ec0e655df74ae470b61ffdf35ee48d34",
+      "masks": [
+        {
+          "region_id": "person-c1-19",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-19",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "5ea619e45a95b608eb53d752e1cb891f60f93ba5f955454582c805b9bc73d313",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 20,
+      "timestamp_ticks": 20480,
+      "clip_interval": {
+        "start": {
+          "ticks": 20480,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 21504,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "1201ad9042debd0310cc0f651614471d3330f21c380e5f5d984f8fbe0c830180",
+      "masks": [
+        {
+          "region_id": "person-c1-20",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-20",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "e5953274d4f5e428e5a2a47d09f5aeebd750a9c5962bd76aa6953a09db9a6f46",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 21,
+      "timestamp_ticks": 21504,
+      "clip_interval": {
+        "start": {
+          "ticks": 21504,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 22528,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "ac4a64b9e72fb4aa764ca2f4cc1dc13ad00b9a5c9b17ad17ead072c6c7ebe77c",
+      "masks": [
+        {
+          "region_id": "person-c1-21",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-21",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "851312877091856384a50f705fe21310dac7543f4f2fbff6361bb3fb925c02a9",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 22,
+      "timestamp_ticks": 22528,
+      "clip_interval": {
+        "start": {
+          "ticks": 22528,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 23552,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "e772d17612a448df01f9f4f5e458a020e372383214ed68402db057dc294d57ba",
+      "masks": [
+        {
+          "region_id": "person-c1-22",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-22",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "6b7993957c6422acd2fe42ebec375a01426c5363cb0c8dc5815a21eed1aa0cc0",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 23,
+      "timestamp_ticks": 23552,
+      "clip_interval": {
+        "start": {
+          "ticks": 23552,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 24576,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "140f3407598e8ec2b9d37d2bb641edb5d719f2ebb6a33e9d711c6844ebf9b719",
+      "masks": [
+        {
+          "region_id": "person-c1-23",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-23",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "ee8b7f2596053cb5521f2f017323be154289ee95c13a6f116b3349e4a8f9c73e",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 24,
+      "timestamp_ticks": 24576,
+      "clip_interval": {
+        "start": {
+          "ticks": 24576,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 25600,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "134f546f3da7ade8aacdb0aa41fa1f8679b06af65fb735e150c71bafbc253c55",
+      "masks": [
+        {
+          "region_id": "person-c1-24",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-24",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "9dc6eed6c79ff1794922e801d9208c1e9315396fa180f3de0b6a01be506ea26a",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 25,
+      "timestamp_ticks": 25600,
+      "clip_interval": {
+        "start": {
+          "ticks": 25600,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 26624,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "ad98cad4a3d794156f914baea59cf9c93dff3a6ecdd45195c085ae6037cd6553",
+      "masks": [
+        {
+          "region_id": "person-c1-25",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-25",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "f52bb4bc301b839afb8cce562a1617ce965a245da0340dde709010304adca8b7",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 26,
+      "timestamp_ticks": 26624,
+      "clip_interval": {
+        "start": {
+          "ticks": 26624,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 27648,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "85ec3adf96c5b44c2ba8b8bbf2e2367a1d0c4be0f0accb7916e24f92667a61a1",
+      "masks": [
+        {
+          "region_id": "person-c1-26",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-26",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "6b32dcb11efa827318002eec1266c570ac3bea1980c733862cfef37c14505560",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 27,
+      "timestamp_ticks": 27648,
+      "clip_interval": {
+        "start": {
+          "ticks": 27648,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 28672,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "f1d1340de3875550383242112bea8fcae9a868fd9fc93ac266c123ddddd9f801",
+      "masks": [
+        {
+          "region_id": "person-c1-27",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-27",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "38f6e6b0482d967c40c1fcb0281831e1a0522fae902ac4607d19f04ff6b5588c",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 28,
+      "timestamp_ticks": 28672,
+      "clip_interval": {
+        "start": {
+          "ticks": 28672,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 29696,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "b06d4f6049a3d50ad207831a1fce94616d98787842da60f384aac1d14c9738b9",
+      "masks": [
+        {
+          "region_id": "person-c1-28",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-28",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "17ff3ff7782f1a9a074c0c2992c6c26e8a7576d02cf004be614ba3ac2e3f941f",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 29,
+      "timestamp_ticks": 29696,
+      "clip_interval": {
+        "start": {
+          "ticks": 29696,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 30720,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "4dec8bc59540f61687c4465ae991e17c7ea2fb2bcfdc2a45886cdee602439fda",
+      "masks": [
+        {
+          "region_id": "person-c1-29",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-29",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "dcb6750ddda302a842f88a15bdd08f8fcd4b0f3ef02e93896fa5a80686a4f16b",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 30,
+      "timestamp_ticks": 30720,
+      "clip_interval": {
+        "start": {
+          "ticks": 30720,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 31744,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "68bf4b675cfce89402410a32ed2ce2e43613ec004cdd6d9614ce0d7fa4ad0a79",
+      "masks": [
+        {
+          "region_id": "person-c1-30",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-30",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "6796cfbe356eb1abe0dc89c030b83fe0077a8133ae90a53a2346bc14a5995f58",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 31,
+      "timestamp_ticks": 31744,
+      "clip_interval": {
+        "start": {
+          "ticks": 31744,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 32768,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "79c6e2242df56eea4d81d6508e90aa9b5ada0b65340082b24f37825582e8d28d",
+      "masks": [
+        {
+          "region_id": "person-c1-31",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-31",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "5ebcfaac9356356e9fe42fe2c1c5be1403ec9dbd1466d0e56b38dfb9f89e23d2",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 32,
+      "timestamp_ticks": 32768,
+      "clip_interval": {
+        "start": {
+          "ticks": 32768,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 33792,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "43eb9e941ddec341c47fe02fd59d566d5b3ef2669392dcd0430f6b3a69ffedad",
+      "masks": [
+        {
+          "region_id": "person-c1-32",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-32",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "ebcbf7123756a276055c719b51110375d4b0a2248de32f618f523cf800ac2cbc",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 33,
+      "timestamp_ticks": 33792,
+      "clip_interval": {
+        "start": {
+          "ticks": 33792,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 34816,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "8c1b4a9bf58395f82a6b75224a7cccbe5c920c5f5542f46ed493e52b6ef707f8",
+      "masks": [
+        {
+          "region_id": "person-c1-33",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-33",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "e71efc8a605c9e5868423d27a75503a983333a82cbea17d4e0bd8e52f61b1f86",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 34,
+      "timestamp_ticks": 34816,
+      "clip_interval": {
+        "start": {
+          "ticks": 34816,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 35840,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "6223c022839cac091624ca0150fea886ac9a8e4d725b8e398bdc181059b3b03e",
+      "masks": [
+        {
+          "region_id": "person-c1-34",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-34",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "c55730bd5c95387520ea36bfda0915c014085b0558c4f0234e9cd7aa070d2723",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 35,
+      "timestamp_ticks": 35840,
+      "clip_interval": {
+        "start": {
+          "ticks": 35840,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 36864,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "18ea81c50bb6cf82bf83e71de3c985018a7494e1ef1ccc2a0844551667f99e80",
+      "masks": [
+        {
+          "region_id": "person-c1-35",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-35",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "86b1f206218a8103506859f710d04519afbe65c3c33674eadcf1996d64f9ad20",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 36,
+      "timestamp_ticks": 36864,
+      "clip_interval": {
+        "start": {
+          "ticks": 36864,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 37888,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "ce369c9e44a4b683dece1295bbb5ba8fdf8a9f436a61d990fc881753bfd06730",
+      "masks": [
+        {
+          "region_id": "person-c1-36",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-36",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "d41f7efb0b7f9f418878813397019551ebe235a75bef633198ac7aff7c4a4971",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 37,
+      "timestamp_ticks": 37888,
+      "clip_interval": {
+        "start": {
+          "ticks": 37888,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 38912,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "1785497bacc34a31a0999d0a581f3cac46185e509b4e56ad9a3517092abcf2e6",
+      "masks": [
+        {
+          "region_id": "person-c1-37",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-37",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "48bed2c9e52e486b278e60e0eea38287a9991aeb5330c121523b001ddf062423",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 38,
+      "timestamp_ticks": 38912,
+      "clip_interval": {
+        "start": {
+          "ticks": 38912,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 39936,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "880ed18234bf94dfc1474645e432639cd55aa898128d9723a7b4b65680f4b67a",
+      "masks": [
+        {
+          "region_id": "person-c1-38",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-38",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "6bdb83f7915254430fa3928128f1f6c3c54b43dcf8353ae0469c6829c3bab2ed",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 39,
+      "timestamp_ticks": 39936,
+      "clip_interval": {
+        "start": {
+          "ticks": 39936,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 40960,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "572c925efa3037aa57996ad2a5ecdf1306455b36a479aebc17606279266b7846",
+      "masks": [
+        {
+          "region_id": "person-c1-39",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-39",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "6aefdb55dc889a9027fabbee7c82d194455cfcd9612bbedd1c22fb16bbe13972",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 40,
+      "timestamp_ticks": 40960,
+      "clip_interval": {
+        "start": {
+          "ticks": 40960,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 41984,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "68df10c6f4c62757c42f095b72430f49b903793879d0d1ac747d1a78013a38ec",
+      "masks": [
+        {
+          "region_id": "person-c1-40",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-40",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "502ba0cf4a377f3ea6e5aba6688385dd5bee50e7f8952cd766b0a76d06e415f7",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 41,
+      "timestamp_ticks": 41984,
+      "clip_interval": {
+        "start": {
+          "ticks": 41984,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 43008,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "fbe430767c632c7d8e6e02cb3a8f1124e34de0a14c676741d11c63e1d4331742",
+      "masks": [
+        {
+          "region_id": "person-c1-41",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-41",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "663e64086c6a15cf1c2b868e63e5fe4932861351f55282c82a7866ab1f9d60b5",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 42,
+      "timestamp_ticks": 43008,
+      "clip_interval": {
+        "start": {
+          "ticks": 43008,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 44032,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "c618cf887dcb44c22cc111a6ab21a156add6d0e5ce06026957f6fe21b7974d7f",
+      "masks": [
+        {
+          "region_id": "person-c1-42",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-42",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "a16344a0dd78572ed6358df6ee0f551cdb46aeedcbc306576925af8d71a4d598",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 43,
+      "timestamp_ticks": 44032,
+      "clip_interval": {
+        "start": {
+          "ticks": 44032,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 45056,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "809e0746ed1be863fdd204026073d612152faa905cd247b5c727ce1faae754cf",
+      "masks": [
+        {
+          "region_id": "person-c1-43",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-43",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "44054e78662f0d46c84fa6786fef9601f01be6fa06d33ade1bb5189d19dd0363",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 44,
+      "timestamp_ticks": 45056,
+      "clip_interval": {
+        "start": {
+          "ticks": 45056,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 46080,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "022f000e182a27561d546728932c6c5c5b31d44cdfbaa4fa43eabe97e1ce9850",
+      "masks": [
+        {
+          "region_id": "person-c1-44",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-44",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "baf799f370c5db29a921494ce9e2dc1b265ff8efab083ad31b42a674728ce19a",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 45,
+      "timestamp_ticks": 46080,
+      "clip_interval": {
+        "start": {
+          "ticks": 46080,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 47104,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "313246c794041d8ede778d4a839100d02c316a59ee140d987fbe4da1d1dbce76",
+      "masks": [
+        {
+          "region_id": "person-c1-45",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-45",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "de1583f1e0a1db2fbb3f050dee08dfa582c58a4b4cbfcd7d1d02f1306674daec",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 46,
+      "timestamp_ticks": 47104,
+      "clip_interval": {
+        "start": {
+          "ticks": 47104,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 48128,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "e946c46816c7fb98cb85b44726e174b6bc6161c34c6f5777ce4cb9f71d252404",
+      "masks": [
+        {
+          "region_id": "person-c1-46",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-46",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "5025b83e89429490f55b9a8d491c144e5fabf0536f99c9552904621293fa4f45",
+      "unmasked_rgb_changed_samples": 0
+    },
+    {
+      "frame_index": 47,
+      "timestamp_ticks": 48128,
+      "clip_interval": {
+        "start": {
+          "ticks": 48128,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        },
+        "end": {
+          "ticks": 49152,
+          "time_base": {
+            "numerator": 1,
+            "denominator": 12288
+          }
+        }
+      },
+      "source_frame_sha256": "987c97b167ba4c97e8831a003f81877d3cfafac85a32debde90e642268a6add8",
+      "masks": [
+        {
+          "region_id": "person-c1-47",
+          "kind": "story_role",
+          "sha256": "53023da092940997e35fc3684f3f0d14cfef30c03e8034ddaa9a729feea9af00"
+        },
+        {
+          "region_id": "text-47",
+          "kind": "subtitle",
+          "sha256": "36560dcc9c706abdc81b99075b04d715357c2f73759330ce3f0273f41c665731"
+        }
+      ],
+      "union_mask_sha256": "9bd062747de87c3104f090d1870d1be66e5c4ebece35d1ee1bc273e620372393",
+      "union_white_pixels": 14904,
+      "processed_png_sha256": "08494439928d74bf03f5a8869979649c9db05e20b13c9577e53c4af807500edf",
+      "unmasked_rgb_changed_samples": 0
+    }
+  ],
+  "output_probe": {
+    "codec": "h264",
+    "pixel_format": "yuv420p",
+    "time_base": "1/1536000",
+    "frame_count": 48,
+    "packet_count": 48,
+    "start_pts": 0,
+    "duration_ticks": 6144001,
+    "frames": [
+      {
+        "pts": 0,
+        "duration": 127999
+      },
+      {
+        "pts": 127999,
+        "duration": 128002
+      },
+      {
+        "pts": 256001,
+        "duration": 127999
+      },
+      {
+        "pts": 384000,
+        "duration": 127999
+      },
+      {
+        "pts": 511999,
+        "duration": 128002
+      },
+      {
+        "pts": 640001,
+        "duration": 127999
+      },
+      {
+        "pts": 768000,
+        "duration": 127999
+      },
+      {
+        "pts": 895999,
+        "duration": 128002
+      },
+      {
+        "pts": 1024001,
+        "duration": 127999
+      },
+      {
+        "pts": 1152000,
+        "duration": 127999
+      },
+      {
+        "pts": 1279999,
+        "duration": 128002
+      },
+      {
+        "pts": 1408001,
+        "duration": 127999
+      },
+      {
+        "pts": 1536000,
+        "duration": 127999
+      },
+      {
+        "pts": 1663999,
+        "duration": 128002
+      },
+      {
+        "pts": 1792001,
+        "duration": 127999
+      },
+      {
+        "pts": 1920000,
+        "duration": 127999
+      },
+      {
+        "pts": 2047999,
+        "duration": 128002
+      },
+      {
+        "pts": 2176001,
+        "duration": 127999
+      },
+      {
+        "pts": 2304000,
+        "duration": 127999
+      },
+      {
+        "pts": 2431999,
+        "duration": 128002
+      },
+      {
+        "pts": 2560001,
+        "duration": 127999
+      },
+      {
+        "pts": 2688000,
+        "duration": 127999
+      },
+      {
+        "pts": 2815999,
+        "duration": 128002
+      },
+      {
+        "pts": 2944001,
+        "duration": 127999
+      },
+      {
+        "pts": 3072000,
+        "duration": 127999
+      },
+      {
+        "pts": 3199999,
+        "duration": 128002
+      },
+      {
+        "pts": 3328001,
+        "duration": 127999
+      },
+      {
+        "pts": 3456000,
+        "duration": 127999
+      },
+      {
+        "pts": 3583999,
+        "duration": 128002
+      },
+      {
+        "pts": 3712001,
+        "duration": 127999
+      },
+      {
+        "pts": 3840000,
+        "duration": 127999
+      },
+      {
+        "pts": 3967999,
+        "duration": 128002
+      },
+      {
+        "pts": 4096001,
+        "duration": 127999
+      },
+      {
+        "pts": 4224000,
+        "duration": 127999
+      },
+      {
+        "pts": 4351999,
+        "duration": 128002
+      },
+      {
+        "pts": 4480001,
+        "duration": 127999
+      },
+      {
+        "pts": 4608000,
+        "duration": 127999
+      },
+      {
+        "pts": 4735999,
+        "duration": 128002
+      },
+      {
+        "pts": 4864001,
+        "duration": 127999
+      },
+      {
+        "pts": 4992000,
+        "duration": 127999
+      },
+      {
+        "pts": 5119999,
+        "duration": 128002
+      },
+      {
+        "pts": 5248001,
+        "duration": 127999
+      },
+      {
+        "pts": 5376000,
+        "duration": 127999
+      },
+      {
+        "pts": 5503999,
+        "duration": 128002
+      },
+      {
+        "pts": 5632001,
+        "duration": 127999
+      },
+      {
+        "pts": 5760000,
+        "duration": 127999
+      },
+      {
+        "pts": 5887999,
+        "duration": 128002
+      },
+      {
+        "pts": 6016001,
+        "duration": 128000
+      }
+    ],
+    "packets": [
+      {
+        "pts": 0,
+        "duration": 127999
+      },
+      {
+        "pts": 127999,
+        "duration": 128002
+      },
+      {
+        "pts": 256001,
+        "duration": 127999
+      },
+      {
+        "pts": 384000,
+        "duration": 127999
+      },
+      {
+        "pts": 511999,
+        "duration": 128002
+      },
+      {
+        "pts": 640001,
+        "duration": 127999
+      },
+      {
+        "pts": 768000,
+        "duration": 127999
+      },
+      {
+        "pts": 895999,
+        "duration": 128002
+      },
+      {
+        "pts": 1024001,
+        "duration": 127999
+      },
+      {
+        "pts": 1152000,
+        "duration": 127999
+      },
+      {
+        "pts": 1279999,
+        "duration": 128002
+      },
+      {
+        "pts": 1408001,
+        "duration": 127999
+      },
+      {
+        "pts": 1536000,
+        "duration": 127999
+      },
+      {
+        "pts": 1663999,
+        "duration": 128002
+      },
+      {
+        "pts": 1792001,
+        "duration": 127999
+      },
+      {
+        "pts": 1920000,
+        "duration": 127999
+      },
+      {
+        "pts": 2047999,
+        "duration": 128002
+      },
+      {
+        "pts": 2176001,
+        "duration": 127999
+      },
+      {
+        "pts": 2304000,
+        "duration": 127999
+      },
+      {
+        "pts": 2431999,
+        "duration": 128002
+      },
+      {
+        "pts": 2560001,
+        "duration": 127999
+      },
+      {
+        "pts": 2688000,
+        "duration": 127999
+      },
+      {
+        "pts": 2815999,
+        "duration": 128002
+      },
+      {
+        "pts": 2944001,
+        "duration": 127999
+      },
+      {
+        "pts": 3072000,
+        "duration": 127999
+      },
+      {
+        "pts": 3199999,
+        "duration": 128002
+      },
+      {
+        "pts": 3328001,
+        "duration": 127999
+      },
+      {
+        "pts": 3456000,
+        "duration": 127999
+      },
+      {
+        "pts": 3583999,
+        "duration": 128002
+      },
+      {
+        "pts": 3712001,
+        "duration": 127999
+      },
+      {
+        "pts": 3840000,
+        "duration": 127999
+      },
+      {
+        "pts": 3967999,
+        "duration": 128002
+      },
+      {
+        "pts": 4096001,
+        "duration": 127999
+      },
+      {
+        "pts": 4224000,
+        "duration": 127999
+      },
+      {
+        "pts": 4351999,
+        "duration": 128002
+      },
+      {
+        "pts": 4480001,
+        "duration": 127999
+      },
+      {
+        "pts": 4608000,
+        "duration": 127999
+      },
+      {
+        "pts": 4735999,
+        "duration": 128002
+      },
+      {
+        "pts": 4864001,
+        "duration": 127999
+      },
+      {
+        "pts": 4992000,
+        "duration": 127999
+      },
+      {
+        "pts": 5119999,
+        "duration": 128002
+      },
+      {
+        "pts": 5248001,
+        "duration": 127999
+      },
+      {
+        "pts": 5376000,
+        "duration": 127999
+      },
+      {
+        "pts": 5503999,
+        "duration": 128002
+      },
+      {
+        "pts": 5632001,
+        "duration": 127999
+      },
+      {
+        "pts": 5760000,
+        "duration": 127999
+      },
+      {
+        "pts": 5887999,
+        "duration": 128002
+      },
+      {
+        "pts": 6016001,
+        "duration": 128000
+      }
+    ]
+  },
+  "output": {
+    "mime": "video/mp4",
+    "size": 252319,
+    "sha256": "197c85ce8648ee745365fb0a9ab777ef845db4e312524c7862de372cd8614e60"
+  },
+  "quality_review": "pending_human_review; lossy_encoding_is_not_pixel_identity_or_background_approval"
+}

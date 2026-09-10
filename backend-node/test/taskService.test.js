@@ -7,6 +7,34 @@ const providerRouteStability = require('../src/services/providerRouteStabilitySe
 const taskService = require('../src/services/taskService');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 
+it('startup preserves execution-unit tasks and held credits including damaged links, while ordinary 31-minute generation is refunded', () => {
+  const db = new Database(':memory:');
+  try {
+    runMigrationsAndEnsure(db); const log = { info() {}, warn() {}, error() {} };
+    creditLedgerService.setTenantAccountBalance(db, 'tenant-a', 100);
+    const old = new Date(Date.now() - 31 * 60 * 1000).toISOString();
+    const reservation = creditLedgerService.reserve(db, { tenantId: 'tenant-a', actorUserId: 'user-a', userId: 'user-a',
+      operationKey: 'startup-unit-protected', amount: 10, model: 'synthetic-unit-model', resourceType: 'redraw_execution_unit', resourceId: '1' });
+    const normal = creditLedgerService.reserve(db, { tenantId: 'tenant-a', actorUserId: 'user-a', userId: 'user-a',
+      operationKey: 'startup-ordinary-timeout', amount: 10, model: 'synthetic-image-model', resourceType: 'image_generation', resourceId: '2' });
+    db.prepare('UPDATE tenant_usage_reservations SET created_at=?,updated_at=?').run(old, old);
+    for (const [id, type, status, linked] of [
+      ['unit-pending', 'redraw_execution_unit', 'pending', reservation.id],
+      ['unit-damaged', 'redraw_execution_unit', 'processing', 'missing-reservation'],
+      ['unit-free', 'redraw_execution_unit', 'pending', null],
+      ['ordinary-image', 'image_generation', 'processing', normal.id],
+    ]) db.prepare(`INSERT INTO async_tasks(id,type,status,resource_id,tenant_id,user_id,model,metadata,credit_reservation_id,created_at,updated_at)
+      VALUES (?,?,?,'1','tenant-a','user-a','synthetic-unit-model','{',?,?,?)`).run(id, type, status, linked, old, old);
+    const before = db.prepare("SELECT * FROM async_tasks WHERE type='redraw_execution_unit' ORDER BY id").all();
+    taskService.failOrphanedAsyncTasksOnStartup(db, log);
+    assert.deepEqual(db.prepare("SELECT * FROM async_tasks WHERE type='redraw_execution_unit' ORDER BY id").all(), before);
+    assert.equal(creditLedgerService.getReservation(db, reservation.id).status, 'held');
+    assert.equal(creditLedgerService.getReservation(db, normal.id).status, 'refunded');
+    assert.equal(taskService.getTask(db, 'ordinary-image').status, 'failed');
+    assert.equal(db.prepare('SELECT held FROM tenant_credit_accounts WHERE tenant_id=?').get('tenant-a').held, 10);
+  } finally { db.close(); }
+});
+
 function createTestDb() {
   const db = new Database(':memory:');
   db.exec(`

@@ -27,6 +27,7 @@
           v-if="providerDeliveryState(shot).canRetry"
           size="small"
           :loading="retryingShotId === shot.shot_id"
+          :disabled="generationDisabled !== false || shot.motion_reference_ready === false"
           @click="$emit('retry', shot)"
         >
           下一次尝试 {{ shot.next_attempt }}
@@ -44,6 +45,7 @@ import { providerDeliveryState } from '@/utils/redrawShotState'
 const props = defineProps({
   summary: { type: Object, default: null },
   retryingShotId: { type: [String, Number], default: null },
+  generationDisabled: { type: Boolean, default: true },
 })
 
 defineEmits(['retry'])

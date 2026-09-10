@@ -235,8 +235,8 @@ h1 {
   gap: 8px;
 }
 
-.create-field span {
-  color: #d8d8d8;
+.create-field > span {
+  color: var(--el-text-color-regular);
   font-size: 13px;
 }
 

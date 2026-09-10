@@ -1120,7 +1120,7 @@ async function generateShot(ctx, input = {}) {
   rejectClientVideoConditioning(input);
   const shot = selectShot(db, ctx, input);
   const parsed = parseShotPayload(shot);
-  assertShotProductionPackCurrent(db, { tenantId: ctx.tenantId, userId: ctx.userId }, shot);
+  assertShotProductionPackCurrent(db, { tenantId: ctx.tenantId, userId: ctx.userId }, shot, { storageRoot: ctx.storageRoot });
   ensureGateOpen(db, ctx, shot.version_id, [shot.id]);
   const versionIdentity = {
     locale: shot.version_locale,
@@ -1258,7 +1258,7 @@ async function generateShot(ctx, input = {}) {
         referenceBundleCreateState(db, ctx, shot, requestSnapshot, referenceBundleCreateExpected);
       }
       const freshShot = selectShot(db, ctx, { shotId: shot.id });
-      assertShotProductionPackCurrent(db, { tenantId: ctx.tenantId, userId: ctx.userId }, freshShot);
+      assertShotProductionPackCurrent(db, { tenantId: ctx.tenantId, userId: ctx.userId }, freshShot, { storageRoot: ctx.storageRoot });
       ensureGateOpen(db, ctx, shot.version_id, [shot.id]);
       const transactionPolicy = evaluateShotGenerationPolicy(
         db,

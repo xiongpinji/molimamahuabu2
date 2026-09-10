@@ -72,8 +72,10 @@ function assertNonEmptyArray(value, name) {
   if (value.length === 0) throw new Error(`${name} 必须是非空数组`);
 }
 
-function numberMs(value, name) {
-  if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${name} 时间码无效`);
+function numberMs(value, name, allowFraction = false) {
+  if ((!allowFraction && !Number.isSafeInteger(value))
+    || (allowFraction && (!Number.isFinite(value) || !Number.isSafeInteger(value * 10000)))
+    || value < 0) throw new Error(`${name} 时间码无效`);
   return value;
 }
 
@@ -257,8 +259,8 @@ function normalizeDialogue(value, name, shot, visibleIds, knownCharacters, seenT
       'id', 'speaker_id', 'speaker_kind', 'off_screen', 'evidence_refs',
       'start_ms', 'end_ms', 'source_text',
     ]);
-    const start = numberMs(turn.start_ms, `${name}[${index}].start_ms`);
-    const end = numberMs(turn.end_ms, `${name}[${index}].end_ms`);
+    const start = numberMs(turn.start_ms, `${name}[${index}].start_ms`, true);
+    const end = numberMs(turn.end_ms, `${name}[${index}].end_ms`, true);
     if (end <= start || start < shot.start_ms || end > shot.end_ms) throw new Error(`${name}[${index}] dialogue 时间越界`);
     const speakerId = safeText(turn.speaker_id, `${name}[${index}].speaker_id`, 96);
     const speakerKind = turn.speaker_kind == null ? 'character' : turn.speaker_kind;

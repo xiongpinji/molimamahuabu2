@@ -298,6 +298,7 @@ async function setupFixture(t) {
   const sourceAssetId = insertAsset(db, {
     name: 'source.mp4', type: 'video', category: 'redraw_source', localPath: 'source/source.mp4',
     bytes: sourceBytes, mimeType: 'video/mp4', width: WIDTH, height: HEIGHT, duration: DURATION_MS / 1000,
+    metadata: { tenant_id: tenantId, user_id: userId },
   });
   const identityAssetId = insertAsset(db, {
     name: 'identity.png', type: 'image', localPath: 'seed/identity.png', bytes: identityBytes,

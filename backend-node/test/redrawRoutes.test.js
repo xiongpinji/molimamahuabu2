@@ -1673,6 +1673,66 @@ test('母本蓝图 GET PUT lock API 只把 owner 和精确 CAS 字段交给 work
   }
 });
 
+test('母本蓝图 GET 从当前证据文件回读完整跨镜对白且不信客户端或旧 sidecar', () => {
+  const db = createDb();
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-source-dialogue-route-'));
+  try {
+    const projectId = insertProject(db);
+    const workId = Number(insertWork(db, projectId));
+    const segment = { id: 'line-1', start_ms: 2500, end_ms: 4500, source_text: 'Do not open that door.', speaker_cluster_id: 'speaker-cluster-1', confidence: 0.9 };
+    const evidence = {
+      schema_version: 'redraw-source-audio-evidence-v1', task_id: 'audio-test', created_at: NOW,
+      tenant_id: 'tenant-a', user_id: 'user-a', work_id: workId, source_asset_id: 101,
+      source_video_sha256: 'f'.repeat(64), audio_sha256: 'a'.repeat(64), transcript_sha256: 'b'.repeat(64),
+      dialogue_mode: 'spoken', source_language: 'en', language_probability: 0.9, segments: [segment],
+    };
+    const bytes = Buffer.from(JSON.stringify(evidence));
+    fs.writeFileSync(path.join(storageRoot, 'audio.json'), bytes);
+    const hash = crypto.createHash('sha256').update(bytes).digest('hex');
+    const evidenceAssetId = Number(db.prepare(`INSERT INTO assets
+      (name, type, category, local_path, file_size, mime_type, metadata, created_at, updated_at)
+      VALUES ('test evidence', 'json', 'redraw_source_audio_evidence', 'audio.json', ?, 'application/json', ?, ?, ?)`)
+      .run(bytes.length, JSON.stringify({ ...evidence, evidence_sha256: hash }), NOW, NOW).lastInsertRowid);
+    const blueprint = {
+      schema_version: 'episode-blueprint-v1', blueprint_hash: 'd'.repeat(64),
+      source: { asset_id: 101, sha256: 'f'.repeat(64), duration_ms: 90000 },
+      evidence_manifest: { items: [{ id: 'asr-1', kind: 'asr', asset_id: evidenceAssetId, sha256: hash }] },
+      shots: [{ id: 'shot-2', start_ms: 3000, end_ms: 90000, dialogue: [{
+        id: segment.id, start_ms: 3000, end_ms: 4500, source_text: segment.source_text, source_language: 'en',
+        speaker_id: 'speaker-cluster-1', speaker_kind: 'voice_cluster', evidence_refs: ['asr-1'],
+      }] }],
+    };
+    db.prepare(`INSERT INTO redraw_episode_blueprints
+      (work_id, tenant_id, user_id, revision, status, blueprint_json, blueprint_hash, evidence_manifest_json, created_at, updated_at)
+      VALUES (?, 'tenant-a', 'user-a', 1, 'draft', ?, ?, ?, ?, ?)`)
+      .run(workId, JSON.stringify(blueprint), blueprint.blueprint_hash, JSON.stringify(blueprint.evidence_manifest), NOW, NOW);
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({ cfg: { storage: { local_path: storageRoot } } }));
+    const before = db.prepare('SELECT blueprint_json FROM redraw_episode_blueprints WHERE work_id = ?').get(workId).blueprint_json;
+    const read = captureResponse();
+    handlers.getBlueprint(request({ id: workId, body: { source_dialogue: [{ status: 'resolved', source_start_ms: 0 }] } }), read);
+    assert.equal(read.statusCode, 200);
+    assert.equal(read.body.data.source_dialogue?.[0]?.status, 'resolved');
+    assert.equal(read.body.data.source_dialogue[0].source_start_ms, 2500);
+    assert.equal(read.body.data.source_dialogue[0].projection_start_ms, 3000);
+    assert.equal(read.body.data.source_dialogue[0].cross_shot, true);
+    assert.equal(JSON.stringify(read.body).includes(storageRoot), false);
+    assert.equal(JSON.stringify(read.body.data.source_dialogue).includes('tenant-a'), false);
+    fs.writeFileSync(path.join(storageRoot, 'audio.json'), '{}');
+    const changed = captureResponse();
+    handlers.getBlueprint(request({ id: workId }), changed);
+    assert.equal(changed.statusCode, 200);
+    assert.equal(changed.body.data.source_dialogue[0].status, 'unresolved');
+    assert.equal(changed.body.data.source_dialogue[0].source_start_ms, undefined);
+    const foreign = captureResponse();
+    handlers.getBlueprint(request({ id: workId, userId: 'someone-else' }), foreign);
+    assert.equal(foreign.statusCode, 404);
+    assert.equal(db.prepare('SELECT blueprint_json FROM redraw_episode_blueprints WHERE work_id = ?').get(workId).blueprint_json, before);
+  } finally {
+    db.close();
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  }
+});
+
 test('母本蓝图 PUT 递归拒绝 URL 路径密钥 provider model generation 和包装字段', () => {
   const db = createDb();
   try {
@@ -1861,12 +1921,12 @@ test('本地化审核 GET PUT lock API 只把 owner、精确 CAS 和语言门禁
           calls.push(['get', database, currentOwner, id]);
           return record;
         },
-        saveLocalizationReview(database, currentOwner, id, input) {
-          calls.push(['save', database, currentOwner, id, input]);
+        saveLocalizationReview(database, currentOwner, id, input, deps) {
+          calls.push(['save', database, currentOwner, id, input, deps]);
           return { ...record, localization: input.localization };
         },
-        lockLocalizationReview(database, currentOwner, id, input) {
-          calls.push(['lock', database, currentOwner, id, input]);
+        lockLocalizationReview(database, currentOwner, id, input, deps) {
+          calls.push(['lock', database, currentOwner, id, input, deps]);
           return { ...record, status: 'locked', localization: { ...localization, review: { ...localization.review, status: 'locked' } } };
         },
       },
@@ -1897,6 +1957,8 @@ test('本地化审核 GET PUT lock API 只把 owner、精确 CAS 和语言门禁
     assert.equal(locked.body.data.status, 'locked');
 
     assert.equal(calls.length, 3);
+    assert.equal(calls[1][5]?.storageRoot, path.join(process.cwd(), 'data', 'storage'));
+    assert.equal(calls[2][5]?.storageRoot, path.join(process.cwd(), 'data', 'storage'));
     for (const call of calls) {
       assert.equal(call[1], db);
       assert.deepEqual(call[2], { tenantId: 'tenant-a', userId: 'user-a' });
@@ -1965,7 +2027,8 @@ test('本地化审核 API 严格拒绝危险字段并把并发与锁定冲突稳
     }
     assert.equal(calls, 0);
 
-    for (const code of ['LOCALIZATION_CAS_CONFLICT', 'LOCALIZATION_LOCKED', 'LOCALIZATION_HASH_MISMATCH', 'LOCALIZATION_REVIEW_REQUIRED', 'BLUEPRINT_HASH_MISMATCH']) {
+    for (const code of ['LOCALIZATION_CAS_CONFLICT', 'LOCALIZATION_LOCKED', 'LOCALIZATION_HASH_MISMATCH', 'LOCALIZATION_REVIEW_REQUIRED', 'BLUEPRINT_HASH_MISMATCH',
+      'LOCALIZATION_SOURCE_DIALOGUE_UNRESOLVED', 'SOURCE_DIALOGUE_EVIDENCE_INVALID', 'REDRAW_CROSS_SHOT_DIALOGUE_PLAN_REQUIRED']) {
       const conflictHandlers = redrawRoutes(db, { error() {} }, routeDeps({
         localizationReviewService: {
           saveLocalizationReview() { throw Object.assign(new Error('private conflict'), { code }); },
@@ -2338,11 +2401,13 @@ test('本地化报价只使用服务端 owner 与能力上下文并按租户隔�
     const workId = insertWork(db, projectId);
     const canReadArtifact = () => true;
     const calls = [];
+    const sourceDeps = [];
     const handlers = redrawRoutes(db, { error() {} }, routeDeps({
       canReadArtifact,
       localizationOrchestrator: {
-        quoteLocalization: (_db, input) => {
+        quoteLocalization: (_db, input, prepared, deps) => {
           calls.push(input);
+          sourceDeps.push({ prepared, deps });
           return { priced: true, credits: 7, model: 'gpt-localize', quote_hash: 'quote-ok' };
         },
         startLocalization: () => { throw new Error('should not start'); },
@@ -2361,6 +2426,8 @@ test('本地化报价只使用服务端 owner 与能力上下文并按租户隔�
     }), quoted);
     assert.equal(quoted.statusCode, 200);
     assert.equal(quoted.body.data.quote_hash, 'quote-ok');
+    assert.equal(sourceDeps[0].prepared, null);
+    assert.equal(sourceDeps[0].deps?.storageRoot, path.join(process.cwd(), 'data', 'storage'));
     assert.deepEqual(calls[0], {
       workId,
       tenantId: 'tenant-a',
@@ -2529,6 +2596,7 @@ test('本地化版本提交走异步 orchestrator 并返回 202 草稿版本和�
     assert.equal(calls[0].deps.schedule, schedule);
     assert.equal(calls[0].deps.canReadArtifact, canReadArtifact);
     assert.equal(calls[0].deps.validateTargetText, languageGate);
+    assert.equal(calls[0].deps.storageRoot, path.join(process.cwd(), 'data', 'storage'));
   } finally {
     db.close();
   }
@@ -4865,6 +4933,9 @@ test('参考包 API PUT 仅传递服务端 shot 身份并返回脱敏投影', as
         calls.push({ context, input: savedInput });
         return {
           shot_id: shotId,
+          version_id: Number(versionId),
+          shot_updated_at: '2026-08-06T00:01:00.000Z',
+          source_sha256: 'c'.repeat(64),
           reference_bundle_hash: 'a'.repeat(64),
           reference_bundle_updated_at: '2026-08-06T00:01:00.000Z',
           bundle: {
@@ -4901,6 +4972,9 @@ test('参考包 API PUT 仅传递服务端 shot 身份并返回脱敏投影', as
       'reference_bundle_hash',
       'reference_bundle_updated_at',
       'shot_id',
+      'shot_updated_at',
+      'source_sha256',
+      'version_id',
     ]);
     assert.equal(result.body.data.shot_id, Number(shotId));
     assert.equal(result.body.data.reference_bundle_hash, 'a'.repeat(64));
@@ -5064,6 +5138,9 @@ test('参考包 API GET 使用 service 同一读取快照且不二次读取 shot
             .run(concurrentUpdatedAt, shotId);
           return {
             shot_id: id,
+            version_id: Number(versionId),
+            shot_updated_at: 'shot-cas',
+            source_sha256: 'a'.repeat(64),
             reference_bundle_hash: 'b'.repeat(64),
             reference_bundle_updated_at: updatedAt,
             bundle: {
@@ -5085,6 +5162,9 @@ test('参考包 API GET 使用 service 同一读取快照且不二次读取 shot
     assert.equal(result.statusCode, 200);
     assert.deepEqual(result.body.data, {
       shot_id: Number(shotId),
+      version_id: Number(versionId),
+      shot_updated_at: 'shot-cas',
+      source_sha256: 'a'.repeat(64),
       reference_bundle_hash: 'b'.repeat(64),
       reference_bundle_updated_at: updatedAt,
       bundle: {
@@ -5187,6 +5267,8 @@ test('单镜生成错误保持结构化 code details 与规定 HTTP 状态', asy
       ['INSUFFICIENT_CREDITS', 402, undefined],
       ['REDRAW_SHOT_PRICING_UNCONFIGURED', 409, undefined],
       ['REDRAW_RETRY_UNCERTAIN', 409, undefined],
+      ['SOURCE_DIALOGUE_EVIDENCE_INVALID', 409, undefined],
+      ['REDRAW_CROSS_SHOT_DIALOGUE_PLAN_REQUIRED', 409, undefined],
       ['INVALID_REDRAW_GENERATION_INPUT', 400, undefined],
     ];
     for (const [code, expectedStatus, details] of failures) {
@@ -6771,6 +6853,27 @@ test('转绘图片预览仅返回当前 owner 的存储根内图片', () => {
   }
 });
 
+test('配音报价保留跨镜阻断说明，不提示用户缩写整句', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId, { current_version: 1 });
+    const versionId = insertVersion(db, workId);
+    const message = '完整对白跨越镜头，需先建立跨镜对白时间线；不能截句或按单镜时长配音';
+    const quote = { status: 'needs_rewrite', priced: false, total_credits: 0,
+      issues: [{ reason: 'REDRAW_CROSS_SHOT_DIALOGUE_PLAN_REQUIRED', message }] };
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      dialogueOrchestrator: { quoteDialogue: () => quote },
+    }));
+    const response = captureResponse();
+    handlers.dialogueQuote(request({ id: versionId, body: {} }), response);
+    assert.equal(response.statusCode, 409);
+    assert.equal(response.body.error.message, message);
+    assert.deepEqual(response.body.error.details.quote, quote);
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM async_tasks').get().count, 0);
+  } finally { db.close(); }
+});
+
 test('配音 quote/start/status 路由按版本 owner 接线且拒绝客户端模型积分字段', async () => {
   const db = createDb();
   try {
@@ -6813,6 +6916,7 @@ test('配音 quote/start/status 路由按版本 owner 接线且拒绝客户端�
     assert.equal(okQuote.body.data.quote_hash, 'a'.repeat(64));
     assert.equal(calls[0].input.versionId, versionId);
     assert.equal(calls[0].input.tenantId, 'tenant-a');
+    assert.equal(calls[0].input.storageRoot, path.join(process.cwd(), 'data', 'storage'));
 
     const badStart = captureResponse();
     await handlers.startDialogue(request({
@@ -6831,6 +6935,7 @@ test('配音 quote/start/status 路由按版本 owner 接线且拒绝客户端�
     assert.equal(start.body.data.task_id, 'task-dialogue-route');
     assert.equal(start.body.data.quote.quote_hash, 'a'.repeat(64));
     assert.deepEqual(calls[1].input, { quoteHash: 'a'.repeat(64), idempotencyKey: 'idem-route' });
+    assert.equal(calls[1].ctx.storageRoot, path.join(process.cwd(), 'data', 'storage'));
 
     const status = captureResponse();
     handlers.getDialogueTask({
@@ -7602,13 +7707,14 @@ test('reference artifact multipart limits keep character in memory and motion on
     }));
     const character = captured.find((config) => config?.limits?.fields === 2
       && config?.limits?.files === 1);
-    const motion = captured.find((config) => config?.limits?.fields === 5
+    const motion = captured.find((config) => config?.limits?.fields === 6
       && config?.limits?.files === 1);
     assert.equal(character.limits.fileSize, 20 * 1024 * 1024);
     assert.equal(character.storage.storage_kind, 'memory');
     assert.equal(motion.limits.fileSize, 200 * 1024 * 1024);
     assert.equal(motion.storage.storage_kind, 'disk');
-    assert.equal(motion.limits.parts, 7);
+    assert.equal(motion.limits.parts, 8);
+    assert.equal(motion.limits.fieldSize, 8 * 1024 * 1024);
     let generatedName;
     motion.storage.config.filename({}, { originalname: '../../client-name.mp4' }, (_error, value) => {
       generatedName = value;
@@ -8147,6 +8253,132 @@ function postJson(url, token, tenantId, body) {
     body: JSON.stringify(body),
   });
 }
+
+test('G6 identity review HTTP contract preserves identity preconditions, owner/CAS and unknown errors', async (t) => {
+  const fixture = referenceImportRouterFixture();
+  const { db, storageRoot, tenantId, user, versionId } = fixture;
+  const identityService = require('../src/services/redrawCharacterIdentityService');
+  try {
+    require('../src/services/tenantService').ensurePersonalTenant(db, user);
+    const dramaId = db.prepare(`INSERT INTO dramas (title, tenant_id, user_id)
+      VALUES ('G6 synthetic identity', ?, ?)`).run(tenantId, user.id).lastInsertRowid;
+    fs.mkdirSync(path.join(storageRoot, 'redraw-assets'));
+    for (const [id, name, color] of [[701, 'actor', '#315ace'], [702, 'wardrobe', '#834fa1']]) {
+      const bytes = await require('sharp')({
+        create: { width: 48, height: 64, channels: 3, background: color },
+      }).png().toBuffer();
+      const localPath = `redraw-assets/${name}.png`;
+      fs.writeFileSync(path.join(storageRoot, localPath), bytes);
+      db.prepare(`INSERT INTO assets
+        (id, drama_id, name, type, category, url, local_path, mime_type, width, height)
+        VALUES (?, ?, ?, 'image', 'redraw', ?, ?, 'image/png', 48, 64)`)
+        .run(id, dramaId, name, `/static/${localPath}`, localPath);
+    }
+    db.prepare("UPDATE redraw_assets SET approval_status = 'pending' WHERE id = ?").run(fixture.assetId);
+    const createIdentity = (input = {}) => {
+      const id = Number(insertRedrawAsset(db, versionId, {
+        tenant_id: tenantId, user_id: user.id, approval_status: 'pending',
+        source_ref_json: JSON.stringify({ source_ref: { stable_id: 'source-character-maya' } }),
+      }));
+      return identityService.saveIdentityPack({ db, storageRoot, tenantId, userId: user.id, versionId },
+        id, completeIdentityPackRequest(input));
+    };
+    const incomplete = createIdentity({ confirmed_views: ['front'] });
+    const invalidHash = createIdentity();
+    const valid = createIdentity();
+    assert.equal(incomplete.identity_pack_status.hash_valid, true);
+    assert.equal(incomplete.identity_pack_status.ready, false);
+    assert.equal(valid.identity_pack_status.ready, true);
+    const corrupted = JSON.parse(invalidHash.source_ref_json);
+    corrupted.identity_pack.pack_sha256 = '0'.repeat(64);
+    db.prepare('UPDATE redraw_assets SET source_ref_json = ? WHERE id = ?')
+      .run(JSON.stringify(corrupted), invalidHash.id);
+    const foreignUserId = Number(insertRedrawAsset(db, versionId, {
+      tenant_id: tenantId, user_id: 'other-synthetic-user', approval_status: 'pending',
+    }));
+    const foreignTenantId = Number(insertRedrawAsset(db, versionId, {
+      tenant_id: 'other-synthetic-tenant', user_id: user.id, approval_status: 'pending',
+    }));
+    const snapshot = () => ({
+      totalChanges: db.prepare('SELECT total_changes() AS value').get().value,
+      assets: db.prepare('SELECT * FROM redraw_assets ORDER BY id').all(),
+      versions: db.prepare('SELECT * FROM redraw_versions ORDER BY id').all(),
+      works: db.prepare('SELECT * FROM redraw_works ORDER BY id').all(),
+    });
+    const approveBody = (id) => ({
+      action: 'approved',
+      expected_updated_at: db.prepare('SELECT updated_at FROM redraw_assets WHERE id = ?').get(id).updated_at,
+    });
+    await withJsonRouteServer(fixture.router, async (baseUrl) => {
+      const review = (id, body) => postJson(`${baseUrl}/redraw/assets/${id}/review`,
+        fixture.token, tenantId, body);
+      const assertRejection = async (id, body, status, code, message) => {
+        const before = snapshot();
+        const response = await review(id, body);
+        const payload = await response.json();
+        assert.deepEqual(snapshot(), before, 'review rejection must not write any database row');
+        assert.equal(response.status, status);
+        assert.equal(payload.success, false);
+        assert.deepEqual(payload.error, { code, message });
+      };
+      for (const [name, id] of [
+        ['missing identity pack', fixture.assetId],
+        ['incomplete identity pack', incomplete.id],
+        ['invalid identity pack hash', invalidHash.id],
+      ]) {
+        await t.test(name, () => assertRejection(id, approveBody(id), 409,
+          'REDRAW_CHARACTER_IDENTITY_REQUIRED', '角色资产必须先完成真人身份包审核'));
+      }
+      for (const [name, id, body, status, code, message] of [
+        ['foreign user precedes invalid action/CAS/identity', foreignUserId,
+          { action: 'invalid', expected_updated_at: 'stale' }, 404, 'NOT_FOUND', '转绘资产不存在'],
+        ['foreign tenant precedes missing CAS/identity', foreignTenantId,
+          { action: 'approved' }, 404, 'NOT_FOUND', '转绘资产不存在'],
+        ['stale CAS precedes missing identity', fixture.assetId,
+          { action: 'approved', expected_updated_at: 'stale' }, 409, 'REDRAW_REVIEW_CONFLICT', '资产已被其他操作更新，请刷新后重试'],
+        ['invalid action stays 400', fixture.assetId,
+          { ...approveBody(fixture.assetId), action: 'invalid' }, 400, 'BAD_REQUEST', '审核动作只能是 approved 或 rejected'],
+        ['missing CAS stays 400', fixture.assetId,
+          { action: 'approved' }, 400, 'BAD_REQUEST', '缺少 expected_updated_at'],
+      ]) {
+        await t.test(name, () => assertRejection(id, body, status, code, message));
+      }
+      await t.test('valid real identity pack can be approved', async () => {
+        const response = await review(valid.id, approveBody(valid.id));
+        const payload = await response.json();
+        assert.equal(response.status, 200);
+        assert.equal(payload.success, true);
+        assert.equal(payload.data.asset.approval_status, 'approved');
+        const saved = db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(valid.id);
+        assert.equal(saved.approval_status, 'approved');
+        assert.equal(saved.approved_by, user.id);
+        assert.equal(identityService.identityPackStatus(saved).ready, true);
+      });
+      await t.test('missing identity pack can still be rejected', async () => {
+        const response = await review(fixture.assetId, { ...approveBody(fixture.assetId), action: 'rejected' });
+        const payload = await response.json();
+        assert.equal(response.status, 200);
+        assert.equal(payload.success, true);
+        assert.equal(payload.data.asset.approval_status, 'rejected');
+        const saved = db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(fixture.assetId);
+        assert.equal(saved.approval_status, 'rejected');
+        assert.equal(saved.status, 'needs_attention');
+        assert.equal(identityService.readIdentityPack(saved), null);
+      });
+      for (const code of [undefined, 'REDRAW_CHARACTER_UNEXPECTED']) {
+        await t.test(`unmapped ${code || 'ordinary error'} remains 500`, async (child) => {
+          child.mock.method(redrawReviewService, 'reviewAsset', () => {
+            throw Object.assign(new Error('synthetic unexpected review failure'), code ? { code } : {});
+          });
+          await assertRejection(valid.id, approveBody(valid.id), 500, 'INTERNAL_ERROR',
+            'synthetic unexpected review failure');
+        });
+      }
+    });
+  } finally {
+    fixture.close();
+  }
+});
 
 test('coverage version route authenticates tenant and owner before registration service', async () => {
   const calls = [];

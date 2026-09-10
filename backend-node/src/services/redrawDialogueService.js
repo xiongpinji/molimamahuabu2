@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const creditLedger = require('./creditLedgerService');
 const modelPrice = require('./modelPriceService');
 const redrawVoiceService = require('./redrawVoiceService');
+const { resolveBlueprintDialogueSources } = require('./redrawSourceDialogueService');
 
 const RESOURCE_TYPE = 'redraw_dialogue';
 
@@ -140,9 +141,45 @@ function normalizeTurn(shot, turn, index) {
   };
 }
 
+function sourceDialoguePlanIssues(db, input, version, shots) {
+  if (!version.blueprint_hash) return [];
+  const invalid = { reason: 'SOURCE_DIALOGUE_EVIDENCE_INVALID', message: '原始对白证据不可验证，请修复证据后重试' };
+  const row = db.prepare(`SELECT status, blueprint_json, blueprint_hash FROM redraw_episode_blueprints
+    WHERE work_id = ? AND tenant_id = ? AND user_id = ? AND revision = ? ORDER BY id DESC LIMIT 1`)
+    .get(Number(version.work_id), String(input.tenantId), String(input.userId), Number(version.version));
+  const blueprint = parseJson(row?.blueprint_json, null);
+  if (!row || row.status !== 'locked' || blueprint?.schema_version !== 'episode-blueprint-v1'
+    || row.blueprint_hash !== version.blueprint_hash || blueprint.blueprint_hash !== version.blueprint_hash) {
+    return [invalid];
+  }
+  return resolveBlueprintDialogueSources({ db, tenantId: input.tenantId, userId: input.userId,
+    storageRoot: input.storageRoot }, { workId: version.work_id, blueprint })
+    .filter((source) => source.status === 'unresolved' || (source.status === 'resolved' && source.cross_shot))
+    .map((source) => ({
+      ...(source.status === 'unresolved' ? invalid : {
+        reason: 'REDRAW_CROSS_SHOT_DIALOGUE_PLAN_REQUIRED',
+        message: '完整对白跨越镜头，需先建立跨镜对白时间线；不能截句或按单镜时长配音',
+      }),
+      shot_id: shots.find((shot) => String(shot.shot_id) === source.shot_id)?.id ?? null,
+      dialogue_id: source.dialogue_id,
+    }));
+}
+
+function blockedDialoguePlan(version, issues) {
+  return {
+    status: 'needs_rewrite',
+    version: { id: Number(version.id), locale: version.locale, market: version.market },
+    tracks: [],
+    segments: [],
+    issues,
+  };
+}
+
 function buildDialoguePlan(db, input = {}) {
   const version = getVersion(db, input);
   const shots = listShots(db, version, input);
+  const sourceIssues = sourceDialoguePlanIssues(db, input, version, shots);
+  if (sourceIssues.length) return blockedDialoguePlan(version, sourceIssues);
   const turns = [];
   const turnRefs = [];
   const issues = [];
@@ -198,17 +235,7 @@ function buildDialoguePlan(db, input = {}) {
   }));
 
   if (issues.length > 0) {
-    return {
-      status: 'needs_rewrite',
-      version: {
-        id: Number(version.id),
-        locale: version.locale,
-        market: version.market,
-      },
-      tracks: [],
-      segments: [],
-      issues,
-    };
+    return blockedDialoguePlan(version, issues);
   }
 
   const tracks = [];
@@ -272,6 +299,7 @@ function quoteDialoguePlan(db, input = {}) {
       segment_count: 0,
       total_credits: 0,
       models: [],
+      issues: plan.issues,
     };
     return { ...empty, quote_hash: sha256(stableJson(empty)) };
   }
@@ -510,7 +538,7 @@ async function synthesizeDialogueForVersion(ctx = {}, input = {}) {
   const quoteHash = String(input.quoteHash || '').trim();
   if (!idempotencyKey || !quoteHash) throw codedError('REDRAW_DIALOGUE_CONTEXT_INVALID', '缺少配音幂等参数');
   const plan = buildDialoguePlan(db, ctx);
-  if (plan.status !== 'ready') throw codedError('REDRAW_DIALOGUE_PLAN_NOT_READY', '配音计划需要重写');
+  if (plan.status !== 'ready') throw codedError('REDRAW_DIALOGUE_PLAN_NOT_READY', '配音计划未就绪，请先处理阻断原因', { issues: plan.issues });
   const quote = quoteDialoguePlan(db, ctx);
   if (quote.quote_hash !== quoteHash) throw codedError('REDRAW_DIALOGUE_QUOTE_MISMATCH', '配音报价已变化');
 

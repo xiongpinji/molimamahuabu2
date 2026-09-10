@@ -4,8 +4,10 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 const Database = require('better-sqlite3');
 const sharp = require('sharp');
+const { getFfmpegPath, getFfprobePath } = require('../src/utils/ffmpegPath');
 
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const {
@@ -34,6 +36,7 @@ const {
 } = require('../src/services/redrawReferenceBundleService');
 const {
   bindReadyMotionReference,
+  importMotionReferenceArtifact,
 } = require('../src/services/redrawReferenceArtifactImportService');
 const {
   prepareVersionReferences,
@@ -312,7 +315,9 @@ async function setupDefaultServerPath(options = {}) {
   const db = new Database(':memory:');
   runMigrationsAndEnsure(db);
   const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-reference-default-'));
-  const sourceSha = writeStoredFile(storageRoot, 'source/source.mp4', Buffer.from('source-video'));
+  const sourceSha = writeStoredFile(storageRoot, 'source/source.mp4', options.realMotion
+    ? makePreparationVideo(storageRoot, 'source', 'testsrc2=size=64x64:rate=25:duration=12')
+    : Buffer.from('source-video'));
   const identitySha = writeStoredFile(storageRoot, 'redraw/identity.png', Buffer.from('identity'));
   const wardrobeSha = writeStoredFile(storageRoot, 'redraw/wardrobe.png', Buffer.from('wardrobe'));
   const voiceSha = writeStoredFile(storageRoot, 'redraw/voice.mp3', Buffer.from('voice'));
@@ -351,6 +356,14 @@ async function setupDefaultServerPath(options = {}) {
     { id: 802, type: 'image', mimeType: 'image/png', localPath: `${evidenceBase}/masks/text-0.png`, sha256: maskSha },
     { id: 803, type: 'image', mimeType: 'image/png', localPath: `${evidenceBase}/masks/person-0.png`, sha256: personMaskSha },
   ]) insertStoredAsset(db, asset);
+  if (options.realMotion) {
+    db.prepare(`INSERT INTO tenants (id, name, slug, created_at, updated_at)
+      VALUES ('tenant-a', 'motion preparation', 'motion-preparation', ?, ?)`).run(NOW, NOW);
+    db.prepare(`INSERT INTO tenant_members (tenant_id, user_id, role, created_at, updated_at)
+      VALUES ('tenant-a', 'user-a', 'owner', ?, ?)`).run(NOW, NOW);
+    db.prepare('UPDATE assets SET width = 64, height = 64, metadata = ? WHERE id = 101')
+      .run(JSON.stringify({ sha256: sourceSha, tenant_id: 'tenant-a', user_id: 'user-a' }));
+  }
   db.prepare(`INSERT INTO redraw_projects
     (id, tenant_id, user_id, title, execution_mode, budget_limit_credits,
      max_auto_attempts_per_shot, policy_version, automation_policy_json, created_at, updated_at)
@@ -505,6 +518,10 @@ async function setupDefaultServerPath(options = {}) {
       video_codec: 'h264', audio_stream_count: 0,
     }),
   };
+  if (options.realMotion) {
+    delete ctx.probeRunner;
+    ctx.log = { info() {}, warn() {}, error() {} };
+  }
   const bindings = await buildCurrentReferenceBindings(ctx, {
     shot_id: 1,
     clean_results: includeText ? [{
@@ -541,6 +558,304 @@ async function setupDefaultServerPath(options = {}) {
     },
   };
 }
+
+function makePreparationVideo(root, name, source) {
+  const filename = path.join(root, `${name}.mp4`);
+  execFileSync(getFfmpegPath(), ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i',
+    source, '-an', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', filename],
+  { windowsHide: true, timeout: 20000 });
+  const probe = JSON.parse(execFileSync(getFfprobePath(), ['-v', 'error', '-show_streams',
+    '-show_format', '-of', 'json', filename], { windowsHide: true, timeout: 20000, encoding: 'utf8' }));
+  assert.equal(probe.streams.length, 1);
+  assert.equal(probe.streams[0].codec_name, 'h264');
+  assert.equal(Number(probe.format.duration), 12);
+  return fs.readFileSync(filename);
+}
+
+async function realMotionPreparationFixture(t) {
+  const state = await setupDefaultServerPath({ realMotion: true });
+  t.after(() => state.cleanup());
+  let providerCalls = 0;
+  const deps = {
+    quoteCleanRequirement: () => ({ priced: true, credits: 0 }),
+    provider: async () => {
+      providerCalls += 1;
+      assert.equal(providerCalls, 1, 'only the explicitly local initial clean fixture may call provider');
+      return {
+        status: 'completed', asset_id: 302, provider_task_id: 'local-motion-initial-clean',
+        quality: { width: 64, height: 64, mask_area_changed: true, non_mask_similarity: 0.99 },
+      };
+    },
+  };
+  return {
+    ...state, deps,
+    get providerCalls() { return providerCalls; },
+    get reservationCount() {
+      return state.db.prepare('SELECT COUNT(*) AS n FROM tenant_usage_reservations').get().n
+        + state.db.prepare('SELECT COUNT(*) AS n FROM usage_reservations').get().n;
+    },
+    shot: () => state.db.prepare('SELECT * FROM redraw_shots WHERE id = 1').get(),
+    async import(name) {
+      const buffer = makePreparationVideo(state.ctx.storageRoot, `motion-${name}`,
+        `color=c=${name === 'a' ? 'blue' : 'green'}:size=64x64:rate=25:duration=12`);
+      const result = await importMotionReferenceArtifact(state.ctx, {
+        shotId: 1,
+        expectedUpdatedAt: this.shot().updated_at,
+        idempotencyKey: `real-motion-${name}`,
+        fullFrameReviewed: true, sourceIdentityObscured: true,
+        sourceTextObscured: true, motionPreserved: true,
+        file: { buffer, size: buffer.length, originalname: `motion-${name}.mp4`, mimetype: 'video/mp4' },
+      });
+      const record = state.db.prepare('SELECT * FROM redraw_reference_artifact_imports ORDER BY id DESC LIMIT 1').get();
+      const asset = state.db.prepare('SELECT * FROM assets WHERE id = ?').get(result.asset.id);
+      assert.equal(record.status, 'completed');
+      assert.equal(record.stored_asset_id, result.asset.id);
+      assert.equal(record.file_sha256, sha256(buffer));
+      assert.equal(sha256(fs.readFileSync(path.join(state.ctx.storageRoot, asset.local_path))), record.file_sha256);
+      return { result, record, asset, buffer };
+    },
+    async prepare(key, quote = null, overrides = {}) {
+      const selectedDeps = { ...deps, ...overrides };
+      quote ||= await quoteVersionPreparation(state.ctx, { version_id: 1 }, selectedDeps);
+      return prepareVersionReferences(state.ctx, {
+        version_id: 1, idempotency_key: key, quote_hash: quote.quote_hash,
+      }, selectedDeps);
+    },
+    async readyA() {
+      const imported = await this.import('a');
+      const first = await this.prepare('real-a-clean');
+      assert.deepEqual(first.needs_attention_shot_ids, [1]);
+      const pending = JSON.parse(this.shot().preparation_snapshot_json).clean_results[0];
+      const asset = state.db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(pending.redraw_asset_id);
+      reviewAsset(state.db, asset.id, {
+        action: 'approved', reviewer_id: 'user-a', tenant_id: 'tenant-a', user_id: 'user-a',
+        expected_updated_at: asset.updated_at, preparationContext: state.ctx,
+      });
+      const result = await this.prepare('real-a-ready');
+      assert.deepEqual(result.prepared_shot_ids, [1]);
+      assertRealMotionReady(this, imported);
+      return imported;
+    },
+  };
+}
+
+function assertRealMotionReady(state, imported) {
+  const shot = state.shot();
+  const bundle = JSON.parse(shot.reference_bundle_json);
+  const snapshot = JSON.parse(shot.preparation_snapshot_json);
+  assert.equal(shot.preparation_state, 'reference_ready');
+  assert.equal(bundle.motion_reference.asset_id, imported.asset.id);
+  assert.equal(bundle.motion_reference.sha256, imported.record.file_sha256);
+  assert.equal(canonicalBundleHash(bundle), shot.reference_bundle_hash);
+  assert.equal(snapshot.status, 'completed');
+  assert.equal(snapshot.reference_bundle_hash, shot.reference_bundle_hash);
+  assert.equal(shot.preparation_evidence_hash, preparationEvidenceHash(shot));
+  const metadata = JSON.parse(state.db.prepare('SELECT metadata FROM assets WHERE id = ?').get(imported.asset.id).metadata);
+  assert.equal(metadata.redraw_motion_reference.file_sha256, imported.record.file_sha256);
+  assert.equal(metadata.redraw_motion_import.file_sha256, imported.record.file_sha256);
+  assert.equal(sha256(fs.readFileSync(path.join(state.ctx.storageRoot, imported.asset.local_path))), imported.record.file_sha256);
+  assert.equal(snapshot.clean_results.length, 1);
+  const gate = evaluatePreparationGate(state.ctx, 1);
+  assert.equal(gate.ok, true, JSON.stringify(gate));
+  return shot;
+}
+
+test('real motion import A reaches ready through default bind and bundle services and repeats without provider or reservations', async (t) => {
+  const state = await realMotionPreparationFixture(t);
+  const a = await state.readyA();
+  const before = assertRealMotionReady(state, a);
+  const providerCalls = state.providerCalls;
+  const reservations = state.reservationCount;
+  const quote = await quoteVersionPreparation(state.ctx, {}, state.deps);
+  assert.deepEqual(quote.reused_shot_ids, [1]);
+  assert.deepEqual((await state.prepare('real-a-repeat', quote)).reused_shot_ids, [1]);
+  assert.deepEqual(state.shot(), before);
+  assert.equal(state.providerCalls, providerCalls);
+  assert.equal(state.reservationCount, reservations);
+});
+
+test('real motion A-ready then B-import replaces the bundle using reusable clean results without provider or reservations', async (t) => {
+  const state = await realMotionPreparationFixture(t);
+  const a = await state.readyA();
+  const oldShot = state.shot();
+  const oldAsset = state.db.prepare('SELECT * FROM assets WHERE id = ?').get(a.asset.id);
+  const providerCalls = state.providerCalls;
+  const reservations = state.reservationCount;
+  const b = await state.import('b');
+  assert.notEqual(a.record.file_sha256, b.record.file_sha256);
+  assert.equal(state.shot().updated_at, oldShot.updated_at);
+  const pendingGate = evaluatePreparationGate(state.ctx, 1);
+  assert.equal(pendingGate.ok, false);
+  assert.ok(pendingGate.missing.some((item) => item.reason_code === 'motion_reference_not_current'));
+  const quote = await quoteVersionPreparation(state.ctx, {}, state.deps);
+  assert.deepEqual(quote.reused_shot_ids, [], 'new B must not be mistaken for the old ready A');
+  assert.deepEqual(quote.missing_shot_ids, [1]);
+  assert.deepEqual(quote.items, []);
+  assert.equal(quote.credits, 0);
+  assert.deepEqual((await state.prepare('real-b-ready', quote)).prepared_shot_ids, [1]);
+  const ready = assertRealMotionReady(state, b);
+  assert.notEqual(ready.reference_bundle_hash, oldShot.reference_bundle_hash);
+  assert.notEqual(ready.preparation_evidence_hash, oldShot.preparation_evidence_hash);
+  assert.deepEqual(state.db.prepare('SELECT * FROM assets WHERE id = ?').get(a.asset.id), oldAsset);
+  assert.deepEqual(fs.readFileSync(path.join(state.ctx.storageRoot, a.asset.local_path)), a.buffer);
+  assert.deepEqual((await state.prepare('real-b-repeat')).reused_shot_ids, [1]);
+  assert.equal(state.providerCalls, providerCalls);
+  assert.equal(state.reservationCount, reservations);
+});
+
+test('real motion quote for A cannot silently authorize B imported with the same shot CAS', async (t) => {
+  const state = await realMotionPreparationFixture(t);
+  await state.import('a');
+  const quote = await quoteVersionPreparation(state.ctx, {}, state.deps);
+  await state.import('b');
+  await assert.rejects(state.prepare('real-stale-motion-quote', quote),
+    { code: 'REDRAW_REFERENCE_PREPARATION_QUOTE_MISMATCH' });
+  assert.equal(state.providerCalls, 0);
+  assert.equal(state.reservationCount, 0);
+});
+
+test('real motion latest unavailable candidate never falls back to the ready A', async (t) => {
+  for (const failure of ['deleted', 'missing-file', 'corrupt-file']) {
+    await t.test(failure, async (subtest) => {
+      const state = await realMotionPreparationFixture(subtest);
+      const a = await state.readyA();
+      const b = await state.import('b');
+      const oldShot = state.shot();
+      const providerCalls = state.providerCalls;
+      const reservations = state.reservationCount;
+      const filename = path.join(state.ctx.storageRoot, b.asset.local_path);
+      if (failure === 'deleted') state.db.prepare('UPDATE assets SET deleted_at = ? WHERE id = ?').run(NEXT, b.asset.id);
+      else if (failure === 'missing-file') fs.unlinkSync(filename);
+      else fs.writeFileSync(filename, Buffer.alloc(b.buffer.length));
+      const quote = await quoteVersionPreparation(state.ctx, {}, state.deps);
+      assert.deepEqual(quote.reused_shot_ids, []);
+      assert.deepEqual(quote.needs_attention_shot_ids, [1]);
+      const result = await state.prepare(`real-b-${failure}`, quote);
+      assert.deepEqual(result.reused_shot_ids, []);
+      assert.deepEqual(result.prepared_shot_ids, []);
+      assert.deepEqual(result.needs_attention_shot_ids, [1]);
+      assert.deepEqual(state.shot(), oldShot);
+      assert.equal(JSON.parse(oldShot.reference_bundle_json).motion_reference.asset_id, a.asset.id);
+      assert.equal(state.providerCalls, providerCalls);
+      assert.equal(state.reservationCount, reservations);
+    });
+  }
+});
+
+test('real motion candidate changing during binding freezes preparation instead of completing the old quote', async (t) => {
+  const state = await realMotionPreparationFixture(t);
+  await state.readyA();
+  await state.import('b');
+  const before = state.shot();
+  const providerCalls = state.providerCalls;
+  const reservations = state.reservationCount;
+  const quote = await quoteVersionPreparation(state.ctx, {}, state.deps);
+  let bindCalls = 0;
+  await assert.rejects(state.prepare('real-bind-race', quote, {
+    async bindReadyMotionReference(ctx, input) {
+      bindCalls += 1;
+      await state.import('c');
+      return bindReadyMotionReference(ctx, input);
+    },
+  }), { code: 'REDRAW_REFERENCE_PREPARATION_DRIFT' });
+  assert.equal(bindCalls, 1);
+  const shot = state.shot();
+  assert.equal(shot.preparation_state, 'needs_attention');
+  assert.equal(shot.reference_bundle_hash, before.reference_bundle_hash);
+  assert.equal(JSON.parse(shot.preparation_snapshot_json).error_code, 'REDRAW_REFERENCE_PREPARATION_DRIFT');
+  assert.equal(state.providerCalls, providerCalls);
+  assert.equal(state.reservationCount, reservations);
+});
+
+test('real motion final reader cleanup cannot return stale candidate identity or scope as reused ready', async (t) => {
+  for (const change of ['new-import', 'shot-cas', 'source-owner']) {
+    await t.test(change, async (subtest) => {
+      const state = await realMotionPreparationFixture(subtest);
+      const a = await state.readyA();
+      const quote = await quoteVersionPreparation(state.ctx, {}, state.deps);
+      const motionPath = path.join(state.ctx.storageRoot, a.asset.local_path);
+      const originalOpen = fs.promises.open.bind(fs.promises);
+      const providerCalls = state.providerCalls;
+      const reservations = state.reservationCount;
+      let closes = 0;
+      let changed = false;
+      subtest.mock.method(fs.promises, 'open', async (filename, ...args) => {
+        const handle = await originalOpen(filename, ...args);
+        if (String(filename) === motionPath) {
+          const originalClose = handle.close.bind(handle);
+          handle.close = async () => {
+            await originalClose();
+            closes += 1;
+            if (closes === 2) {
+              if (change === 'new-import') await state.import('b');
+              else if (change === 'shot-cas') {
+                state.db.prepare('UPDATE redraw_shots SET updated_at = ? WHERE id = 1').run('2026-09-06T12:00:00.000Z');
+              } else {
+                const source = JSON.parse(state.db.prepare('SELECT metadata FROM assets WHERE id = 101').get().metadata);
+                source.user_id = 'other-user';
+                state.db.prepare('UPDATE assets SET metadata = ? WHERE id = 101').run(JSON.stringify(source));
+              }
+              changed = true;
+            }
+          };
+        }
+        return handle;
+      });
+      await assert.rejects(state.prepare(`real-cleanup-${change}`, quote),
+        { code: 'REDRAW_REFERENCE_PREPARATION_DRIFT' });
+      assert.equal(changed, true, 'the mutation must complete inside the last ready-reuse reader cleanup');
+      assert.equal(closes, 2, 'the last check must not reopen and rehash the media');
+      assert.equal(state.providerCalls, providerCalls);
+      assert.equal(state.reservationCount, reservations);
+    });
+  }
+});
+
+test('real motion trusted builder accepts only a valid explicit bound asset and retains legacy unique selection', async (t) => {
+  const state = await realMotionPreparationFixture(t);
+  const a = await state.readyA();
+  const input = { shot_id: 1, clean_results: JSON.parse(state.shot().preparation_snapshot_json).clean_results };
+  const legacy = await buildTrustedReferenceBundleInput(state.ctx, input);
+  assert.equal(legacy.motion_reference_asset_id, a.asset.id);
+  assert.deepEqual(await buildTrustedReferenceBundleInput(state.ctx, {
+    ...input, motion_reference_asset_id: a.asset.id,
+  }), legacy);
+  const b = await state.import('b');
+  const bound = await bindReadyMotionReference(state.ctx, input);
+  assert.equal(bound.motion_reference_asset_id, b.asset.id);
+  await assert.rejects(buildTrustedReferenceBundleInput(state.ctx, input),
+    { code: 'REDRAW_REFERENCE_BUNDLE_MOTION_REFERENCE_STALE' });
+  assert.equal((await buildTrustedReferenceBundleInput(state.ctx, {
+    ...input, motion_reference_asset_id: bound.motion_reference_asset_id,
+  })).motion_reference_asset_id, b.asset.id);
+  for (const id of [null, undefined, false, 0, -1, 1.5, '1', [], {}, Number.MAX_SAFE_INTEGER + 1]) {
+    await assert.rejects(buildTrustedReferenceBundleInput(state.ctx, { ...input, motion_reference_asset_id: id }),
+      { code: 'REDRAW_REFERENCE_BUNDLE_INPUT_INVALID' });
+  }
+  await assert.rejects(buildTrustedReferenceBundleInput(state.ctx, { ...input, motion_reference_asset_id: b.asset.id, extra: true }),
+    { code: 'REDRAW_REFERENCE_BUNDLE_INPUT_INVALID' });
+  for (const id of [999999, 301, 101]) {
+    await assert.rejects(buildTrustedReferenceBundleInput(state.ctx, { ...input, motion_reference_asset_id: id }),
+      { code: 'REDRAW_REFERENCE_BUNDLE_MOTION_REFERENCE_STALE' });
+  }
+  const asset = state.db.prepare('SELECT * FROM assets WHERE id = ?').get(b.asset.id);
+  for (const mutation of [
+    (value) => { value.redraw_motion_reference.tenant_id = 'other-tenant'; },
+    (value) => { value.redraw_motion_reference.user_id = 'other-user'; },
+    (value) => { value.redraw_motion_reference.shot_id = 99; },
+    (value) => { value.redraw_motion_reference.clean_binding_sha256 = '0'.repeat(64); },
+    (value) => { delete value.redraw_motion_reference; },
+  ]) {
+    const metadata = JSON.parse(asset.metadata);
+    mutation(metadata);
+    state.db.prepare('UPDATE assets SET metadata = ? WHERE id = ?').run(JSON.stringify(metadata), asset.id);
+    await assert.rejects(buildTrustedReferenceBundleInput(state.ctx, { ...input, motion_reference_asset_id: asset.id }),
+      { code: 'REDRAW_REFERENCE_BUNDLE_MOTION_REFERENCE_STALE' });
+  }
+  state.db.prepare('UPDATE assets SET metadata = ?, deleted_at = ? WHERE id = ?').run(asset.metadata, NEXT, asset.id);
+  await assert.rejects(buildTrustedReferenceBundleInput(state.ctx, { ...input, motion_reference_asset_id: asset.id }),
+    { code: 'REDRAW_REFERENCE_BUNDLE_MOTION_REFERENCE_STALE' });
+});
 
 async function createApprovedTextCleanResult(state, providerTaskId) {
   const coverage = await loadReviewedReferenceCoverage(state.ctx);
@@ -582,6 +897,18 @@ function installPendingMotionImport(state) {
   const asset = state.db.prepare('SELECT * FROM assets WHERE id = 601').get();
   const metadata = JSON.parse(asset.metadata);
   const fileSha256 = metadata.sha256;
+  Object.assign(metadata, {
+    source: 'redraw_motion_reference_import', tenant_id: 'tenant-a', user_id: 'user-a',
+    version_id: 1, scope_type: 'shot', scope_id: 1, purpose: 'motion',
+  });
+  state.db.prepare(`INSERT OR IGNORE INTO tenants (id, name, slug, created_at, updated_at)
+    VALUES ('tenant-a', 'legacy test', 'legacy-test', ?, ?)`).run(NOW, NOW);
+  state.db.prepare(`INSERT OR IGNORE INTO tenant_members (tenant_id, user_id, created_at, updated_at)
+    VALUES ('tenant-a', 'user-a', ?, ?)`).run(NOW, NOW);
+  const sourceMetadata = JSON.parse(state.db.prepare('SELECT metadata FROM assets WHERE id = 101').get().metadata);
+  Object.assign(sourceMetadata, { tenant_id: 'tenant-a', user_id: 'user-a' });
+  state.db.prepare('UPDATE assets SET width = 64, height = 64, metadata = ? WHERE id = 101')
+    .run(JSON.stringify(sourceMetadata));
   delete metadata.redraw_motion_reference;
   metadata.redraw_motion_import = {
     schema_version: 'redraw-motion-import-v1',
@@ -610,8 +937,8 @@ function installPendingMotionImport(state) {
       motion_preserved: true,
     },
   };
-  state.db.prepare('UPDATE assets SET metadata = ?, width = 64, height = 64 WHERE id = 601')
-    .run(JSON.stringify(metadata));
+  state.db.prepare('UPDATE assets SET metadata = ?, width = 64, height = 64, duration = 12, file_size = ? WHERE id = 601')
+    .run(JSON.stringify(metadata), fs.statSync(path.join(state.ctx.storageRoot, asset.local_path)).size);
   state.db.prepare(`INSERT INTO redraw_reference_artifact_imports (
     tenant_id, user_id, version_id, scope_type, scope_id, purpose,
     idempotency_hash, request_hash, file_sha256, stored_asset_id,
@@ -2445,4 +2772,115 @@ test('跨身份失效净景复用对原因、版本、策略、覆盖、物理�
       }
     });
   }
+});
+
+async function processedMotionPendingClean(t) {
+  const { processingPreparationFixture } = require('./helpers/redrawMotionProcessingPrepareFixture');
+  const state = await processingPreparationFixture(t, realMotionPreparationFixture);
+  const before = state.attachment();
+  const result = await state.prepare('processing-real-claim-persist');
+  assert.deepEqual(result.needs_attention_shot_ids, [1]);
+  assert.notEqual(state.shot().updated_at, before.report.shot.expected_updated_at);
+  const pending = JSON.parse(state.shot().preparation_snapshot_json).clean_results[0];
+  assert.equal(pending.status, 'unknown');
+  const asset = state.db.prepare('SELECT * FROM redraw_assets WHERE id = ?').get(pending.redraw_asset_id);
+  reviewAsset(state.db, asset.id, { action: 'approved', reviewer_id: 'user-a', tenant_id: 'tenant-a', user_id: 'user-a',
+    expected_updated_at: asset.updated_at, preparationContext: state.ctx });
+  assert.deepEqual(state.attachment(), before);
+  return state;
+}
+
+test('motion-processing attachment survives real claim persist and default bindReady with immutable material and original CAS', async (t) => {
+  const state = await processedMotionPendingClean(t);
+  const original = state.attachment();
+  const result = await state.prepare('processing-real-bind-ready');
+  assert.deepEqual(result.prepared_shot_ids, [1]);
+  assert.equal(state.shot().preparation_state, 'reference_ready');
+  assert.notEqual(state.shot().updated_at, original.report.shot.expected_updated_at);
+  assert.deepEqual(state.attachment(), original);
+  const bundle = JSON.parse(state.shot().reference_bundle_json);
+  assert.equal(bundle.motion_reference.asset_id, state.imported.asset.id);
+  const calls = state.providerCalls, reservations = state.reservationCount;
+  await state.import('b'); // Preserve the historical no-attachment path after a processed A.
+  const b = await state.prepare('processing-a-to-manual-b');
+  assert.deepEqual(b.prepared_shot_ids, [1]);
+  assert.equal(state.providerCalls, calls);
+  assert.equal(state.reservationCount, reservations);
+});
+
+test('motion-processing bindReady rejects changed coverage approval instead of relabeling an old processed video', async (t) => {
+  const state = await processedMotionPendingClean(t);
+  assert.deepEqual((await state.prepare('processing-ready-before-approval-drift')).prepared_shot_ids, [1]);
+  state.db.prepare("UPDATE redraw_assets SET approved_at = '2026-09-06T08:00:00.000Z' WHERE id = 204").run();
+  const before = sha256(state.db.serialize());
+  const clean = JSON.parse(state.shot().preparation_snapshot_json).clean_results;
+  await assert.rejects(bindReadyMotionReference(state.ctx, { shot_id: 1, clean_results: clean }),
+    { code: 'REDRAW_MOTION_REFERENCE_STALE' });
+  assert.equal(sha256(state.db.serialize()), before);
+});
+
+test('motion-processing bindReady rejects tampered server material hash', async (t) => {
+  const state = await processedMotionPendingClean(t);
+  assert.deepEqual((await state.prepare('processing-ready-before-material-tamper')).prepared_shot_ids, [1]);
+  const row = state.db.prepare('SELECT metadata FROM assets WHERE id = ?').get(state.imported.asset.id);
+  const metadata = JSON.parse(row.metadata);
+  metadata.redraw_motion_processing.verified.material_binding_sha256 = 'e'.repeat(64);
+  state.db.prepare('UPDATE assets SET metadata = ? WHERE id = ?').run(JSON.stringify(metadata), state.imported.asset.id);
+  const before = sha256(state.db.serialize());
+  await assert.rejects(bindReadyMotionReference(state.ctx, { shot_id: 1,
+    clean_results: JSON.parse(state.shot().preparation_snapshot_json).clean_results }), { code: 'REDRAW_MOTION_REFERENCE_STALE' });
+  assert.equal(sha256(state.db.serialize()), before);
+});
+
+test('motion-processing bindReady rejects current source facts frame and mask material changes', async (t) => {
+  for (const kind of ['source', 'facts', 'frame', 'mask']) await t.test(kind, async (t) => {
+    const state = await processedMotionPendingClean(t);
+    assert.deepEqual((await state.prepare(`processing-ready-${kind}`)).prepared_shot_ids, [1]);
+    const attachment = state.attachment();
+    if (kind === 'source') {
+      fs.appendFileSync(path.join(state.ctx.storageRoot, 'source/source.mp4'), 'changed');
+    } else if (kind === 'facts') {
+      const facts = JSON.parse(state.db.prepare('SELECT source_facts_json FROM redraw_versions WHERE id = 1').get().source_facts_json);
+      facts.processing_test_change = true;
+      const digest = sha256(stableJson(facts));
+      assert.throws(() => state.db.prepare('UPDATE redraw_versions SET source_facts_json = ?, facts_hash = ? WHERE id = 1')
+        .run(JSON.stringify(facts), digest), /redraw source facts immutable/);
+      // The version's immutable-facts gate remains active; stale coverage referencing other facts must also reject.
+      const ref = JSON.parse(state.db.prepare('SELECT source_ref_json FROM redraw_assets WHERE id = 204').get().source_ref_json);
+      ref.snapshot.facts_hash = digest;
+      state.db.prepare('UPDATE redraw_assets SET source_ref_json = ? WHERE id = 204').run(JSON.stringify(ref));
+    } else {
+      const file = kind === 'frame' ? state.manifest.frames[0] : state.manifest.text_tracks[0].regions[0].mask;
+      const filename = path.join(state.evidenceRoot, file.path);
+      const bytes = await sharp(fs.readFileSync(filename)).png({ compressionLevel: 0 }).toBuffer();
+      const digest = sha256(bytes);
+      assert.notEqual(digest, file.sha256);
+      fs.writeFileSync(filename, bytes);
+      file.sha256 = digest;
+      state.db.prepare('UPDATE assets SET metadata = ? WHERE local_path = ?').run(JSON.stringify({ sha256: digest }),
+        `redraw-full-frame/version-1/${file.path}`);
+      state.writeManifest();
+    }
+    const before = sha256(state.db.serialize());
+    await assert.rejects(bindReadyMotionReference(state.ctx, { shot_id: 1,
+      clean_results: JSON.parse(state.shot().preparation_snapshot_json).clean_results }), { code: 'REDRAW_MOTION_REFERENCE_STALE' });
+    assert.equal(sha256(state.db.serialize()), before);
+    assert.deepEqual(state.attachment(), attachment);
+  });
+});
+
+test('motion-processing equal material does not replace the original prepare business baseline', async (t) => {
+  const state = await processedMotionPendingClean(t);
+  state.db.exec(`CREATE TEMP TRIGGER processing_business_drift AFTER UPDATE OF preparation_snapshot_json ON redraw_shots
+    WHEN NEW.id = 1 AND json_extract(NEW.preparation_snapshot_json, '$.status') = 'processing'
+    BEGIN UPDATE redraw_shots SET prompt = 'concurrent user prompt edit' WHERE id = NEW.id; END`);
+  const before = state.attachment();
+  await assert.rejects(state.prepare('processing-business-baseline-drift'), { code: 'REDRAW_REFERENCE_PREPARATION_DRIFT' });
+  assert.equal(state.shot().preparation_state, 'needs_attention');
+  assert.equal(state.shot().reference_bundle_hash, null);
+  assert.deepEqual(state.attachment(), before);
+  const { assertStoredProcessingMaterial } = require('../src/services/redrawMotionProcessingReportService');
+  const metadata = JSON.parse(state.db.prepare('SELECT metadata FROM assets WHERE id = ?').get(state.imported.asset.id).metadata);
+  await assertStoredProcessingMaterial(state.ctx, { shot_id: 1, expected_updated_at: state.shot().updated_at },
+    before, metadata.redraw_motion_import); // Same material is insufficient to authorize ready.
 });

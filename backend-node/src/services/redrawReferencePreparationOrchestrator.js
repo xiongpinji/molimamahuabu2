@@ -19,6 +19,7 @@ const {
 } = require('./redrawReferenceBundleService');
 const {
   bindReadyMotionReference: defaultBindReadyMotionReference,
+  prepareMotionReferenceCandidate,
 } = require('./redrawReferenceArtifactImportService');
 const { appendWorkflowEvent } = require('./redrawWorkflowEventService');
 const taskService = require('./taskService');
@@ -273,8 +274,12 @@ function currentCoverageBinding(snapshot, descriptor) {
     && snapshot.coverage_requirement_hash === binding?.requirement_hash;
 }
 
-function isCurrentReady(row, shotPlanHash, descriptor) {
-  if (row.preparation_state !== 'reference_ready' || !parseBundle(row)) return false;
+function isCurrentReady(row, shotPlanHash, descriptor, motionCandidate) {
+  const bundle = parseBundle(row);
+  if (row.preparation_state !== 'reference_ready' || !bundle) return false;
+  if (motionCandidate && (motionCandidate.status !== 'available'
+    || bundle.motion_reference?.asset_id !== motionCandidate.stored_asset_id
+    || bundle.motion_reference?.sha256 !== motionCandidate.file_sha256)) return false;
   const snapshot = parseObject(row.preparation_snapshot_json, null);
   if (!snapshot
     || Number(snapshot.version_id) !== Number(row.version_id)
@@ -286,6 +291,66 @@ function isCurrentReady(row, shotPlanHash, descriptor) {
     || snapshot.status !== 'completed'
     || !currentCoverageBinding(snapshot, descriptor)) return false;
   return row.preparation_evidence_hash === preparationEvidenceHash(row);
+}
+
+async function currentMotionCandidate(ctx, shot, sourceFingerprint) {
+  const importStatement = ctx.db.prepare(`
+    SELECT id AS import_id, file_sha256, stored_asset_id
+    FROM redraw_reference_artifact_imports
+    WHERE tenant_id = ? AND user_id = ? AND version_id = ?
+      AND scope_type = 'shot' AND scope_id = ? AND purpose = 'motion' AND status = 'completed'
+    ORDER BY id DESC LIMIT 1
+  `);
+  const readImport = () => importStatement.get(ctx.tenantId, ctx.userId, ctx.versionId, Number(shot.id));
+  const imported = readImport();
+  // A legacy ready reference without an import receipt retains its existing contract.
+  if (!imported) return null;
+  // Equality snapshots only: owner/media validation remains in the shared candidate reader.
+  const readBinding = () => {
+    const scope = readScope(ctx);
+    return {
+      scope,
+      shot: ctx.db.prepare('SELECT * FROM redraw_shots WHERE id = ?').get(Number(shot.id)),
+      work: ctx.db.prepare('SELECT * FROM redraw_works WHERE id = ?').get(Number(scope.work_id)),
+      source: ctx.db.prepare('SELECT * FROM assets WHERE id = ?').get(Number(scope.source_asset_id)),
+      owner: ctx.db.prepare(`SELECT m.status AS member_status, t.status AS tenant_status
+        FROM tenant_members m JOIN tenants t ON t.id = m.tenant_id
+        WHERE m.tenant_id = ? AND m.user_id = ?`).get(ctx.tenantId, ctx.userId),
+      imported: readImport(),
+      asset: ctx.db.prepare('SELECT * FROM assets WHERE id = ?').get(imported.stored_asset_id),
+    };
+  };
+  const bindingHash = sha256(readBinding());
+  const prepared = await prepareMotionReferenceCandidate(ctx, {
+    tenantId: ctx.tenantId,
+    userId: ctx.userId,
+    shotId: Number(shot.id),
+    expectedUpdatedAt: shot.updated_at,
+    expectedSourceSha256: sourceFingerprint,
+  });
+  try {
+    prepared.assertCurrentBinding();
+    if (prepared.data.status === 'available'
+      && (prepared.data.candidate.import_id !== imported.import_id
+        || prepared.data.candidate.asset.id !== imported.stored_asset_id
+        || prepared.data.candidate.asset.sha256 !== imported.file_sha256)) {
+      throw codedError('REDRAW_REFERENCE_PREPARATION_DRIFT', '准备期间动作参考候选已变化');
+    }
+  } finally {
+    await prepared.cleanup();
+  }
+  if (sha256(readBinding()) !== bindingHash) {
+    throw codedError('REDRAW_REFERENCE_PREPARATION_DRIFT', '准备期间动作参考候选已变化');
+  }
+  return { ...imported, status: prepared.data.status };
+}
+
+async function assertMotionCandidateCurrent(ctx, built, shot) {
+  const current = await currentMotionCandidate(ctx, shot, built.scope.source_fingerprint);
+  if (stableJson(current) !== stableJson(built.motionCandidateByShot.get(Number(shot.id)))) {
+    throw codedError('REDRAW_REFERENCE_PREPARATION_DRIFT', '准备期间动作参考候选已变化');
+  }
+  return current;
 }
 
 function snapshotStatus(row) {
@@ -494,6 +559,7 @@ async function buildQuote(rawCtx, input = {}, deps = {}) {
   const reusableByShot = new Map();
   const shotPlanHashByShot = new Map();
   const cleanReuseHashByShot = new Map();
+  const motionCandidateByShot = new Map();
   let credits = 0;
   let priced = true;
   for (const shot of selected) {
@@ -505,7 +571,13 @@ async function buildQuote(rawCtx, input = {}, deps = {}) {
     const reusableHash = cleanReuseHash(scope, descriptor);
     shotPlanHashByShot.set(Number(shot.id), shotPlanHash);
     cleanReuseHashByShot.set(Number(shot.id), reusableHash);
-    if (isCurrentReady(shot, shotPlanHash, descriptor)) {
+    const motionCandidate = await currentMotionCandidate(ctx, shot, scope.source_fingerprint);
+    motionCandidateByShot.set(Number(shot.id), motionCandidate);
+    if (motionCandidate && motionCandidate.status !== 'available') {
+      needsAttention.push(Number(shot.id));
+      continue;
+    }
+    if (isCurrentReady(shot, shotPlanHash, descriptor, motionCandidate)) {
       reused.push(Number(shot.id));
       continue;
     }
@@ -565,6 +637,9 @@ async function buildQuote(rawCtx, input = {}, deps = {}) {
     items,
     priced,
     credits: priced ? credits : null,
+    motion_reference_candidates: selected.map((shot) => ({
+      shot_id: Number(shot.id), candidate: motionCandidateByShot.get(Number(shot.id)),
+    })),
   };
   return {
     ctx,
@@ -577,6 +652,7 @@ async function buildQuote(rawCtx, input = {}, deps = {}) {
     reusableByShot,
     shotPlanHashByShot,
     cleanReuseHashByShot,
+    motionCandidateByShot,
     quote: {
       ...quoteBody,
       confirmation_required: decision.action === 'needs_review',
@@ -760,6 +836,17 @@ async function executeShot(ctx, built, shot, descriptor, idempotencyKey, deps) {
   if (claim.status !== 'claimed') return claim.status;
   let currentUpdatedAt = claim.row.updated_at;
   const snapshot = claim.snapshot;
+  const assertMotionCurrent = async () => {
+    const current = ctx.db.prepare('SELECT * FROM redraw_shots WHERE id = ?').get(Number(shot.id));
+    try {
+      await assertMotionCandidateCurrent(ctx, built, current);
+    } catch (error) {
+      snapshot.status = 'needs_attention';
+      snapshot.error_code = 'REDRAW_REFERENCE_PREPARATION_DRIFT';
+      persistShotSnapshot(ctx, shot.id, current.updated_at, 'needs_attention', snapshot, 'motion_reference_binding_stale');
+      throw error;
+    }
+  };
   const completedKeys = new Set(snapshot.clean_results.map((item) => `${item.kind}:${item.key}`));
   for (const requirement of descriptor.requirements) {
     if (completedKeys.has(`${requirement.kind}:${requirement.key}`)) continue;
@@ -814,16 +901,19 @@ async function executeShot(ctx, built, shot, descriptor, idempotencyKey, deps) {
     persistShotSnapshot(ctx, shot.id, currentUpdatedAt, 'needs_attention', snapshot, 'upstream_version_drift');
     throw error;
   }
+  await assertMotionCurrent();
+  let boundMotionAssetId;
   if (typeof deps.bindReadyMotionReference === 'function'
     || typeof deps.buildReferenceBundleInput !== 'function') {
     const bindMotion = typeof deps.bindReadyMotionReference === 'function'
       ? deps.bindReadyMotionReference
       : defaultBindReadyMotionReference;
     try {
-      await bindMotion(ctx, {
+      const bound = await bindMotion(ctx, {
         shot_id: Number(shot.id),
         clean_results: snapshot.clean_results,
       });
+      boundMotionAssetId = bound?.motion_reference_asset_id;
     } catch (error) {
       if (!['REDRAW_MOTION_REFERENCE_BINDING_NOT_READY', 'REDRAW_MOTION_REFERENCE_STALE']
         .includes(trim(error?.code))) throw error;
@@ -842,6 +932,7 @@ async function executeShot(ctx, built, shot, descriptor, idempotencyKey, deps) {
       return 'needs_attention';
     }
   }
+  await assertMotionCurrent();
   const bundleInput = typeof deps.buildReferenceBundleInput === 'function'
     ? await deps.buildReferenceBundleInput({
         ctx,
@@ -853,7 +944,9 @@ async function executeShot(ctx, built, shot, descriptor, idempotencyKey, deps) {
     : await buildTrustedReferenceBundleInput(ctx, {
         shot_id: Number(shot.id),
         clean_results: snapshot.clean_results,
+        ...(boundMotionAssetId == null ? {} : { motion_reference_asset_id: boundMotionAssetId }),
       });
+  await assertMotionCurrent();
   if (!bundleInput || typeof bundleInput !== 'object' || Array.isArray(bundleInput)) {
     snapshot.status = 'failed';
     snapshot.error_code = 'REDRAW_REFERENCE_PREPARATION_BUNDLE_INPUT_REQUIRED';
@@ -866,6 +959,7 @@ async function executeShot(ctx, built, shot, descriptor, idempotencyKey, deps) {
     shot_id: Number(shot.id),
     expected_updated_at: currentUpdatedAt,
   });
+  await assertMotionCurrent();
   if (!saved || Number(saved.shot_id) !== Number(shot.id) || !HEX_64.test(trim(saved.reference_bundle_hash))) {
     snapshot.status = 'failed';
     snapshot.error_code = 'REDRAW_REFERENCE_PREPARATION_BUNDLE_INVALID';
@@ -951,7 +1045,12 @@ async function prepareVersionReferences(rawCtx, input = {}, deps = {}) {
   for (const original of built.selected) {
     const shot = built.ctx.db.prepare('SELECT * FROM redraw_shots WHERE id = ?').get(Number(original.id));
     const descriptor = built.coverage.byId.get(Number(shot.id));
-    if (isCurrentReady(shot, built.shotPlanHashByShot.get(Number(shot.id)), descriptor)) {
+    const motionCandidate = await assertMotionCandidateCurrent(built.ctx, built, shot);
+    if (motionCandidate && motionCandidate.status !== 'available') {
+      result.needs_attention_shot_ids.push(Number(shot.id));
+      continue;
+    }
+    if (isCurrentReady(shot, built.shotPlanHashByShot.get(Number(shot.id)), descriptor, motionCandidate)) {
       result.reused_shot_ids.push(Number(shot.id));
       continue;
     }

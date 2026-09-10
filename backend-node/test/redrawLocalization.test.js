@@ -1,6 +1,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const Database = require('better-sqlite3');
+const fs = require('node:fs');
+const { registerSourceDialogueEvidence } = require('./helpers/localizationSourceEvidence');
+const { resolveBlueprintDialogueSources } = require('../src/services/redrawSourceDialogueService');
+const { createRedrawProviderAdapters } = require('../src/services/redrawProviderAdapters');
 
 const {
   buildLocalizationInput,
@@ -293,6 +297,10 @@ function createDb(options = {}) {
       current_version INTEGER NOT NULL DEFAULT 0,
       current_step INTEGER NOT NULL DEFAULT 1,
       status TEXT NOT NULL DEFAULT 'fact_confirmed',
+      source_asset_id INTEGER,
+      source_fingerprint TEXT,
+      duration_ms INTEGER,
+      deleted_at TEXT,
       updated_at TEXT
     );
     CREATE TABLE redraw_versions (
@@ -681,6 +689,129 @@ test('episode 本地化严格拒绝蓝图漂移、不完整映射、源姓名残
     }), displayNameBlueprint, { ...options, validateTargetText: () => true }),
     (error) => error.code === 'LOCALIZATION_SOURCE_TEXT_REMAINS',
   );
+});
+
+test('episode adapter declared dialogue shape passes the real normalizer with server-owned projected timing', async (t) => {
+  const fixture = createEpisodeReviewDb();
+  t.after(() => fixture.db.close());
+  const evidence = registerSourceDialogueEvidence(t, fixture.db, fixture.blueprint, { crossShot: true });
+  const sourceDialogue = resolveBlueprintDialogueSources({ db: fixture.db, tenantId: 'tenant-a', userId: 'user-a', storageRoot: evidence.storageRoot },
+    { workId: 1, blueprint: fixture.blueprint });
+  const expected = episodeLocalizationProviderResult();
+  const adapter = createRedrawProviderAdapters({ aiClient: {
+    async generateText(_db, _log, _type, _user, system) {
+      const shape = system.match(/^dialogue must be (\[.*\])\.$/m);
+      assert.ok(shape, 'episode prompt must declare the nested dialogue output shape');
+      assert.doesNotMatch(system, /Preserve the original projected start_ms\/end_ms in the output/);
+      const example = JSON.parse(shape[1]);
+      return { ...expected, dialogue: expected.dialogue.map((row) => ({
+        ...example[0], shot_id: row.shot_id,
+        turns: row.turns.map((turn) => Object.fromEntries(Object.keys(example[0].turns[0]).map((key) => [key, turn[key] ?? '']))),
+      })) };
+    },
+  } });
+  const response = await adapter.localize({ model: 'verified-model', input: {
+    blueprint_hash: fixture.blueprint.blueprint_hash, source_facts: fixture.blueprint, source_dialogue: sourceDialogue,
+    locale: 'en-US', market: 'US',
+  } });
+  const normalized = normalizeLocalizationResultV2(response.result, fixture.blueprint, {
+    locale: 'en-US', market: 'US', blueprintHash: fixture.blueprint.blueprint_hash,
+    validateTargetText: acceptsEnglishTarget, sourceDialogue,
+  });
+  assert.deepEqual([normalized.dialogue_map[0].start_ms, normalized.dialogue_map[0].end_ms], [3000, 3500]);
+  assert.equal(normalized.dialogue_map[0].target_text, expected.dialogue[0].turns[0].target_text);
+});
+
+test('episode normalization cannot downgrade declared ASR with omitted or unavailable sidecars', () => {
+  for (const declaration of ['manifest', 'automatic-id']) {
+    for (const omitted of [true, false]) {
+      const blueprint = episodeBlueprintFacts();
+      const result = episodeLocalizationProviderResult();
+      if (declaration === 'manifest') {
+        blueprint.evidence_manifest = { items: [{ id: 'audio-source', kind: 'audio', sha256: 'a'.repeat(64) }] };
+      } else {
+        blueprint.shots[0].dialogue[0].id = 'audio-segment-1';
+        result.dialogue[0].turns[0].id = 'audio-segment-1';
+      }
+      const sourceDialogue = omitted ? undefined : blueprint.shots.flatMap((shot) => shot.dialogue.map((turn) => ({
+        shot_id: shot.id, dialogue_id: turn.id, status: 'not_available', reason: 'SOURCE_DIALOGUE_EVIDENCE_NOT_AVAILABLE',
+      })));
+      assert.throws(() => normalizeLocalizationResultV2(result, blueprint, {
+        locale: 'en-US', market: 'US', blueprintHash: blueprint.blueprint_hash,
+        validateTargetText: acceptsEnglishTarget, sourceDialogue,
+      }), (error) => error.code === 'LOCALIZATION_SOURCE_DIALOGUE_UNRESOLVED', `${declaration}, omitted=${omitted}`);
+    }
+  }
+});
+
+test('source dialogue review uses complete sentence duration and revalidates file before save and lock', (t) => {
+  const fixture = createEpisodeReviewDb();
+  t.after(() => fixture.db.close());
+  const owner = { tenantId: 'tenant-a', userId: 'user-a' };
+  const evidence = registerSourceDialogueEvidence(t, fixture.db, fixture.blueprint, { crossShot: true });
+  const sourceDialogue = resolveBlueprintDialogueSources({ db: fixture.db, ...owner, storageRoot: evidence.storageRoot },
+    { workId: 1, blueprint: fixture.blueprint });
+  assert.equal(sourceDialogue[0].status, 'resolved');
+  const normalized = normalizeLocalizationResultV2(episodeLocalizationProviderResult(), fixture.blueprint, {
+    locale: 'en-US', market: 'US', blueprintHash: fixture.blueprint.blueprint_hash,
+    validateTargetText: acceptsEnglishTarget, sourceDialogue,
+  });
+  assert.deepEqual([normalized.dialogue_map[0].start_ms, normalized.dialogue_map[0].end_ms], [3000, 3500]);
+  const generated = saveGeneratedLocalizationReview(fixture.db, owner, fixture.versionId, normalized,
+    { storageRoot: evidence.storageRoot });
+  const localization = structuredClone(generated.localization);
+  for (const [key, values] of Object.entries(localization.review)) {
+    if (key === 'status' || key === 'updated_at') continue;
+    for (const id of Object.keys(values)) values[id] = true;
+  }
+  const saved = saveLocalizationReview(fixture.db, owner, fixture.versionId, {
+    localization, expectedUpdatedAt: generated.updated_at, validateTargetText: acceptsEnglishTarget,
+  }, { storageRoot: evidence.storageRoot });
+  fs.appendFileSync(evidence.evidencePath, ' ');
+  const before = fixture.db.prepare('SELECT localization_review_json FROM redraw_versions WHERE id = ?').get(fixture.versionId);
+  assert.throws(() => saveLocalizationReview(fixture.db, owner, fixture.versionId, {
+    localization: saved.localization, expectedUpdatedAt: saved.updated_at, validateTargetText: acceptsEnglishTarget,
+    source_dialogue: sourceDialogue,
+  }, { storageRoot: evidence.storageRoot }), (error) => error.code === 'LOCALIZATION_SOURCE_DIALOGUE_UNRESOLVED');
+  assert.throws(() => lockLocalizationReview(fixture.db, owner, fixture.versionId, {
+    blueprintHash: fixture.blueprint.blueprint_hash, expectedLocalizationHash: saved.localization_hash,
+    expectedUpdatedAt: saved.updated_at, validateTargetText: acceptsEnglishTarget,
+    storageRoot: evidence.storageRoot, source_dialogue: sourceDialogue,
+  }), (error) => error.code === 'LOCALIZATION_SOURCE_DIALOGUE_UNRESOLVED');
+  assert.deepEqual(fixture.db.prepare('SELECT localization_review_json FROM redraw_versions WHERE id = ?').get(fixture.versionId), before);
+  assert.equal(fixture.db.prepare('SELECT current_step FROM redraw_works WHERE id = 1').get().current_step, 1);
+});
+
+test('same-shot verified source evidence can save and lock with input storageRoot reaching the real packs', (t) => {
+  const fixture = createEpisodeReviewDb();
+  t.after(() => fixture.db.close());
+  const owner = { tenantId: 'tenant-a', userId: 'user-a' };
+  const evidence = registerSourceDialogueEvidence(t, fixture.db, fixture.blueprint);
+  const sourceDialogue = resolveBlueprintDialogueSources({ db: fixture.db, ...owner, storageRoot: evidence.storageRoot },
+    { workId: 1, blueprint: fixture.blueprint });
+  const normalized = normalizeLocalizationResultV2(episodeLocalizationProviderResult(), fixture.blueprint, {
+    locale: 'en-US', market: 'US', blueprintHash: fixture.blueprint.blueprint_hash,
+    validateTargetText: acceptsEnglishTarget, sourceDialogue,
+  });
+  const generated = saveGeneratedLocalizationReview(fixture.db, owner, fixture.versionId, normalized,
+    { storageRoot: evidence.storageRoot });
+  const localization = structuredClone(generated.localization);
+  for (const [key, values] of Object.entries(localization.review)) {
+    if (key === 'status' || key === 'updated_at') continue;
+    for (const id of Object.keys(values)) values[id] = true;
+  }
+  const saved = saveLocalizationReview(fixture.db, owner, fixture.versionId, {
+    localization, expectedUpdatedAt: generated.updated_at, validateTargetText: acceptsEnglishTarget,
+    storageRoot: evidence.storageRoot,
+  });
+  const locked = lockLocalizationReview(fixture.db, owner, fixture.versionId, {
+    blueprintHash: fixture.blueprint.blueprint_hash, expectedLocalizationHash: saved.localization_hash,
+    expectedUpdatedAt: saved.updated_at, validateTargetText: acceptsEnglishTarget, storageRoot: evidence.storageRoot,
+  });
+  assert.equal(locked.status, 'locked');
+  const pack = JSON.parse(fixture.db.prepare('SELECT compiled_prompt_json FROM redraw_shots WHERE version_id = ?')
+    .get(fixture.versionId).compiled_prompt_json);
+  assert.equal(pack.schema_version, 'redraw-shot-production-pack-v1');
 });
 
 test('episode 本地化审核以 JSON CAS 保存且锁定后原子推进 asset_review', () => {

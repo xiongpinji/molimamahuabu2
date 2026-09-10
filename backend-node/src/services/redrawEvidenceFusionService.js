@@ -1,6 +1,8 @@
 const { createHash } = require('node:crypto');
 
 const { normalizeEpisodeBlueprint } = require('./redrawEpisodeBlueprintService');
+const { isDeepStrictEqual } = require('node:util');
+const { validatePersistedSourceAudioV2, readVerifiedSourceAudioContext } = require('./redrawSourceAudioEvidenceService');
 
 const AUDIO_EVIDENCE_KINDS = new Set(['asr', 'audio', 'audio_transcript', 'transcript']);
 const VISUAL_EVIDENCE_KINDS = new Set(['contact_sheet', 'video', 'visual', 'visual_analysis']);
@@ -167,7 +169,18 @@ function segmentId(segment, evidenceRef, sourceLanguage) {
   return `audio-segment-${createHash('sha256').update(canonical).digest('hex').slice(0, 24)}`;
 }
 
-function normalizeAudioEvidence(raw, sourceValue, evidenceItems, defaultEvidence) {
+function normalizeAudioEvidence(raw, sourceValue, evidenceItems, defaultEvidence, audioContext) {
+  const verified = readVerifiedSourceAudioContext(audioContext, defaultEvidence.id);
+  const isV2 = raw?.schema_version === 'redraw-source-audio-evidence-v2';
+  if (isV2 || verified) {
+    if (!isV2 || !verified || !sameAssetId(verified.assetId, defaultEvidence.asset_id)
+      || verified.sha256 !== defaultEvidence.sha256) fail('EVIDENCE_FUSION_AUDIO_INVALID', 'v2 音频缺少已验证资产上下文');
+    const { result_asset_id, evidence_sha256, evidence_ref, evidence_asset, source, ...persisted } = raw;
+    validatePersistedSourceAudioV2(persisted);
+    if (!isDeepStrictEqual(persisted, verified.evidence)) {
+      fail('EVIDENCE_FUSION_AUDIO_INVALID', 'v2 音频与实际资产内容不一致');
+    }
+  }
   if (!plainObject(raw)
     || !['spoken', 'silent'].includes(raw.dialogue_mode)
     || !Array.isArray(raw.segments)
@@ -188,25 +201,26 @@ function normalizeAudioEvidence(raw, sourceValue, evidenceItems, defaultEvidence
   const ids = new Set();
   let previousEnd = 0;
   const segments = raw.segments.map((segment, index) => {
-    const evidenceRef = segment?.evidence_ref || defaultEvidence.id;
+    const evidenceRef = isV2 ? defaultEvidence.id : segment?.evidence_ref || defaultEvidence.id;
     const evidence = manifest.get(evidenceRef);
     if (!evidence || !AUDIO_EVIDENCE_KINDS.has(evidence.kind)) {
       fail('EVIDENCE_FUSION_EVIDENCE_INVALID', `segments[${index}] 引用未知音频证据`);
     }
-    if (Number.isSafeInteger(segment?.start_ms)
-      && Number.isSafeInteger(segment?.end_ms)
+    const validTime = isV2 ? Number.isFinite : Number.isSafeInteger;
+    if (validTime(segment?.start_ms)
+      && validTime(segment?.end_ms)
       && (segment.start_ms >= sourceValue.duration_ms || segment.end_ms > sourceValue.duration_ms)) {
       fail('EVIDENCE_FUSION_SEGMENT_UNASSIGNED', `segments[${index}] 超出 source.duration_ms`);
     }
     if (!plainObject(segment)
-      || !Number.isSafeInteger(segment.start_ms)
-      || !Number.isSafeInteger(segment.end_ms)
+      || !validTime(segment.start_ms)
+      || !validTime(segment.end_ms)
       || segment.start_ms < 0
       || segment.end_ms <= segment.start_ms
       || segment.start_ms < previousEnd
       || typeof segment.source_text !== 'string'
       || !segment.source_text.trim()
-      || !/^speaker-cluster-[1-9][0-9]*$/.test(String(segment.speaker_cluster_id || ''))) {
+      || (!isV2 && !/^speaker-cluster-[1-9][0-9]*$/.test(String(segment.speaker_cluster_id || '')))) {
       fail('EVIDENCE_FUSION_AUDIO_INVALID', `segments[${index}] 无效`);
     }
     const id = segmentId(segment, evidenceRef, raw.source_language);
@@ -275,23 +289,24 @@ function sourceText(value, name) {
   return value.trim();
 }
 
-function statementId(prefix, index, text) {
+function statementId(prefix, index, text, preserveOrder) {
   const digest = createHash('sha256').update(`${prefix}\0${index}\0${text}`).digest('hex').slice(0, 16);
-  return `${prefix}-${digest}`;
+  const ordinal = preserveOrder ? `${String(index + 1).padStart(10, '0')}-` : '';
+  return `${prefix}-${ordinal}${digest}`;
 }
 
 function statementValue(item, field, name) {
   return sourceText(plainObject(item) ? item[field] : item, name);
 }
 
-function fuseEpisodeEvidence({ source, visualFacts, audioEvidence, evidenceAssets } = {}) {
+function fuseEpisodeEvidence({ source, visualFacts, audioEvidence, evidenceAssets, preserveNarrativeOrder = false } = {}, audioContext) {
   const sourceValue = normalizeSource(source);
   const evidenceItems = normalizeEvidenceAssets(evidenceAssets);
   const evidenceMap = new Map(evidenceItems.map((item) => [item.id, item]));
   const visualEvidence = resolveEvidence(evidenceItems, visualFacts, VISUAL_EVIDENCE_KINDS, 'visualFacts');
   const audioEvidenceAsset = resolveEvidence(evidenceItems, audioEvidence, AUDIO_EVIDENCE_KINDS, 'audioEvidence');
   const visualShots = normalizeVisualShots(visualFacts, sourceValue.duration_ms);
-  const audio = normalizeAudioEvidence(audioEvidence, sourceValue, evidenceItems, audioEvidenceAsset);
+  const audio = normalizeAudioEvidence(audioEvidence, sourceValue, evidenceItems, audioEvidenceAsset, audioContext);
 
   const dialogueByShot = new Map(visualShots.map((shot) => [shot.id, []]));
   for (const segment of audio.segments) {
@@ -419,7 +434,7 @@ function fuseEpisodeEvidence({ source, visualFacts, audioEvidence, evidenceAsset
         ? sourceText(item.effect, `causal_chain[${index}].effect`)
         : cause;
       return {
-        id: plainObject(item) && stableId(item.id) ? item.id : statementId('causal', index, `${cause}\0${effect}`),
+        id: plainObject(item) && stableId(item.id) ? item.id : statementId('causal', index, `${cause}\0${effect}`, preserveNarrativeOrder),
         cause,
         effect,
         evidence_refs: visualReference(plainObject(item) ? item : null),
@@ -429,7 +444,7 @@ function fuseEpisodeEvidence({ source, visualFacts, audioEvidence, evidenceAsset
     locked_facts: (visualFacts.locked_facts || []).map((item, index) => {
       const text = statementValue(item, 'text', `locked_facts[${index}].text`);
       return {
-        id: plainObject(item) && stableId(item.id) ? item.id : statementId('fact', index, text),
+        id: plainObject(item) && stableId(item.id) ? item.id : statementId('fact', index, text, preserveNarrativeOrder),
         text,
         evidence_refs: visualReference(plainObject(item) ? item : null),
         confidence: probability(item?.confidence, 0.5, `locked_facts[${index}].confidence`),
@@ -438,7 +453,7 @@ function fuseEpisodeEvidence({ source, visualFacts, audioEvidence, evidenceAsset
     reversals: (visualFacts.reversals || []).map((item, index) => {
       const text = statementValue(item, 'text', `reversals[${index}].text`);
       return {
-        id: plainObject(item) && stableId(item.id) ? item.id : statementId('reversal', index, text),
+        id: plainObject(item) && stableId(item.id) ? item.id : statementId('reversal', index, text, preserveNarrativeOrder),
         text,
         evidence_refs: visualReference(plainObject(item) ? item : null),
         confidence: probability(item?.confidence, 0.5, `reversals[${index}].confidence`),
@@ -452,9 +467,10 @@ function fuseEpisodeEvidence({ source, visualFacts, audioEvidence, evidenceAsset
     review: { status: 'needs_review' },
   };
 
-  return normalizeEpisodeBlueprint(blueprint);
+  return normalizeEpisodeBlueprint(blueprint, audioContext);
 }
 
 module.exports = {
   fuseEpisodeEvidence,
+  segmentId,
 };

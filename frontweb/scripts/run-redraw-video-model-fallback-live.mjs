@@ -17,6 +17,7 @@ const MAX_GENERATION_SUBMISSIONS = 31
 const EXPECTED_UNIT_COUNT = 28
 const GATE_UNIT_ID = 'shot-01.part-01'
 const HEX_40 = /^[a-f0-9]{40}$/iu
+const EXECUTION_LOCK_NAME = '.fallback-execution.lock'
 const ALLOWED_FLAGS = new Set([
   'episode-package',
   'state-dir',
@@ -58,9 +59,11 @@ function sanitizedReason(value) {
 }
 
 function publicManifest(manifest) {
+  const { stop_reason: _reason, gate_review: review, ...evidence } = manifest
   return {
-    ...manifest,
-    routes: manifest.routes.map(({ child_state_dir: _path, ...route }) => route),
+    ...evidence,
+    ...(review ? { gate_review: { status: review.status, binding: review.binding, reviewed_at: review.reviewed_at } } : {}),
+    routes: manifest.routes.map(({ child_state_dir: _path, error_reason: _errorReason, error_code: _errorCode, ...route }) => route),
   }
 }
 
@@ -73,21 +76,22 @@ function actualHead() {
   return execFileSync('git', ['rev-parse', 'HEAD'], {
     cwd: path.dirname(fileURLToPath(import.meta.url)),
     encoding: 'utf8',
+    stdio: 'pipe',
     windowsHide: true,
   }).trim()
 }
 
 function failureClass(error, childDir) {
+  if (error?.indeterminate === true || /UNKNOWN|TIMEOUT|NEEDS_ATTENTION/iu.test(String(error?.code || ''))) {
+    return 'indeterminate'
+  }
   const manifestPath = path.join(childDir, 'private-manifest.json')
   if (fs.existsSync(manifestPath)) {
     try {
       const child = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
       const recorded = child.tasks?.at(-1)?.failure_class
-      if (recorded) return recorded
+      if (['indeterminate', 'explicit_provider_failure', 'local_or_verification_failure'].includes(recorded)) return recorded
     } catch {}
-  }
-  if (error?.indeterminate === true || /UNKNOWN|TIMEOUT|NEEDS_ATTENTION/iu.test(String(error?.code || ''))) {
-    return 'indeterminate'
   }
   if (error?.provider_terminal_failure === true) return 'explicit_provider_failure'
   return 'local_or_verification_failure'
@@ -110,37 +114,176 @@ function childOptions(options, childDir, stage, unitId) {
 
 function aggregateVisualReviewStatus(verified) {
   const statuses = Array.isArray(verified?.tasks)
-    ? verified.tasks.map((task) => task?.visual_review_status
-      || task?.verify_reread?.role?.review_status
-      || task?.verification?.role?.review_status)
+    ? verified.tasks.flatMap((task) => {
+      const recorded = [task?.visual_review_status, task?.verify_reread?.role?.review_status, task?.verification?.role?.review_status].filter(Boolean)
+      return recorded.length > 0 ? recorded : ['not_recorded']
+    })
     : []
   if (statuses.includes('pending_external_review')) return 'pending_external_review'
   if (statuses.length > 0 && statuses.every((status) => status === 'not_applicable')) return 'not_required'
   return 'not_recorded'
 }
 
-export async function runFallbackEpisode(options, dependencies = {}) {
+function validateOptions(options, dependencies) {
   const sourceHead = String(options?.sourceHead || '').trim().toLowerCase()
   const currentHead = String((dependencies.currentHead || actualHead)()).trim().toLowerCase()
   if (!HEX_40.test(sourceHead)) fail('REDRAW_EPISODE_SOURCE_HEAD_INVALID', sourceHead)
   if (sourceHead !== currentHead) fail('REDRAW_EPISODE_SOURCE_HEAD_MISMATCH', `${sourceHead} != ${currentHead}`)
   if (!path.isAbsolute(String(options?.episodePackage || ''))) fail('REDRAW_EPISODE_PACKAGE_PATH_INVALID')
   if (!path.isAbsolute(String(options?.stateDir || ''))) fail('REDRAW_EPISODE_FALLBACK_STATE_PATH_INVALID')
+  return sourceHead
+}
+
+function stableStringify(value) {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+function canonicalHash(value, omittedKey) {
+  const copy = { ...value }
+  delete copy[omittedKey]
+  return crypto.createHash('sha256').update(stableStringify(copy)).digest('hex')
+}
+
+function assertNoSymlink(target) {
+  for (let current = path.resolve(target); ; current = path.dirname(current)) {
+    if (fs.existsSync(current) && fs.lstatSync(current).isSymbolicLink()) fail('REDRAW_EPISODE_GATE_REVIEW_BINDING_MISMATCH')
+    if (current === path.dirname(current)) break
+  }
+}
+
+async function withExecutionLock(options, dependencies, create, action) {
+  validateOptions(options, dependencies)
+  assertNoSymlink(options.stateDir)
+  if (create) {
+    requireNewStateDir(options.stateDir)
+    fs.mkdirSync(path.dirname(options.stateDir), { recursive: true })
+    try { fs.mkdirSync(options.stateDir) } catch (error) {
+      if (error.code === 'EEXIST') fail('REDRAW_EPISODE_FALLBACK_STATE_EXISTS')
+      throw error
+    }
+  }
+  const lockPath = path.join(options.stateDir, EXECUTION_LOCK_NAME)
+  let lock
+  try { lock = fs.openSync(lockPath, 'wx') } catch (error) {
+    if (error.code === 'EEXIST') fail('REDRAW_EPISODE_FALLBACK_EXECUTION_LOCKED')
+    throw error
+  }
+  try { return await action() } finally {
+    fs.closeSync(lock)
+    fs.unlinkSync(lockPath)
+  }
+}
+
+function persistManifest(stateDir, manifest, dependencies) {
+  manifest.updated_at = (dependencies.now || (() => new Date()))().toISOString()
+  atomicJson(path.join(stateDir, MANIFEST_NAME), manifest)
+  atomicJson(path.join(stateDir, PUBLIC_EVIDENCE_NAME), publicManifest(manifest))
+}
+
+function readReviewState(options) {
+  const manifest = JSON.parse(fs.readFileSync(path.join(options.stateDir, MANIFEST_NAME), 'utf8'))
+  if (manifest.status !== 'waiting_first_shot_review' || !manifest.run_id) fail('REDRAW_EPISODE_GATE_REVIEW_STATE_INVALID')
+  return manifest
+}
+
+// Bind approval to the actual persisted task and bytes, never just the shot return value.
+function gateBinding(options, manifest) {
+  try {
+    const route = manifest.routes.find((item) => item.id === manifest.winner_route_id)
+    if (!route || !/^[a-z0-9][a-z0-9.-]*$/u.test(route.id)
+      || route.child_state_dir !== path.join('routes', route.id)) throw new Error()
+    const childDir = path.join(options.stateDir, route.child_state_dir)
+    const childPath = path.join(childDir, 'private-manifest.json')
+    assertNoSymlink(childPath)
+    const child = JSON.parse(fs.readFileSync(childPath, 'utf8'))
+    const unit = child.execution_units?.[0]
+    const task = child.tasks?.[0]
+    if (manifest.source_head !== String(options.sourceHead).toLowerCase()
+      || manifest.package_sha256 !== sha256File(options.episodePackage)
+      || child.package_sha256 !== manifest.package_sha256 || route.package_sha256 !== manifest.package_sha256
+      || child.provider !== route.id || child.status !== 'in_progress'
+      || child.execution_plan_hash !== route.execution_plan_hash
+      || child.execution_plan_hash !== canonicalHash(child.execution_plan, 'execution_plan_hash')
+      || child.execution_plan.execution_plan_hash !== child.execution_plan_hash
+      || child.execution_units?.length !== EXPECTED_UNIT_COUNT
+      || stableStringify(child.execution_units) !== stableStringify(child.execution_plan.units.map((item) => ({ ...item, unit_hash: canonicalHash(item, 'unit_hash') })))
+      || unit.unit_id !== GATE_UNIT_ID || child.tasks?.length !== 1
+      || task.unit_id !== GATE_UNIT_ID || task.unit_hash !== unit.unit_hash
+      || task.status !== 'completed_verified' || task.verification?.role?.passed === false
+      || ['rejected', 'failed'].includes(task.visual_review_status)
+      || route.generation_submissions !== 1
+      || manifest.generation_attempts.filter((attempt) => attempt.route_id === route.id).length !== 1
+      || manifest.generation_attempts.find((attempt) => attempt.route_id === route.id)?.unit_id !== GATE_UNIT_ID) throw new Error()
+    const artifactId = task.artifact?.artifact_id
+    if (![`outputs/units/${GATE_UNIT_ID}.mp4`, `outputs/raw/${GATE_UNIT_ID}.mp4`].includes(artifactId)) throw new Error()
+    const artifactPath = path.join(childDir, artifactId)
+    assertNoSymlink(artifactPath)
+    if (!fs.lstatSync(artifactPath).isFile() || sha256File(artifactPath) !== task.artifact.sha256) throw new Error()
+    return {
+      run_id: manifest.run_id,
+      route_id: route.id,
+      source_head: manifest.source_head,
+      package_sha256: manifest.package_sha256,
+      execution_plan_hash: child.execution_plan_hash,
+      unit_id: GATE_UNIT_ID,
+      unit_hash: task.unit_hash,
+      artifact_id: artifactId,
+      artifact_sha256: task.artifact.sha256,
+    }
+  } catch {
+    fail('REDRAW_EPISODE_GATE_REVIEW_BINDING_MISMATCH')
+  }
+}
+
+function assertReviewBinding(options, manifest) {
+  const binding = gateBinding(options, manifest)
+  if (stableStringify(binding) !== stableStringify(manifest.gate_review?.binding)) fail('REDRAW_EPISODE_GATE_REVIEW_BINDING_MISMATCH')
+  return binding
+}
+
+function createRouteProvider(options, dependencies, manifest, route, routeRecord, persist) {
+  const beforeGenerationSubmit = async ({ route_id: routeId, unit_id: unitId, model }) => {
+    if (routeId !== route.id || model !== route.model) fail('REDRAW_EPISODE_FALLBACK_ROUTE_BINDING_MISMATCH')
+    if (manifest.winner_route_id == null) {
+      if (unitId !== GATE_UNIT_ID || routeRecord.generation_submissions !== 0) fail('REDRAW_EPISODE_FALLBACK_GATE_VIOLATION')
+    } else if (manifest.winner_route_id !== route.id) {
+      fail('REDRAW_EPISODE_FALLBACK_MODEL_MIXED')
+    } else if (manifest.gate_review?.status !== 'approved' || manifest.status !== 'sequence_running') {
+      fail('REDRAW_EPISODE_GATE_REVIEW_REQUIRED')
+    }
+    if (manifest.generation_attempts.length >= MAX_GENERATION_SUBMISSIONS) fail('REDRAW_EPISODE_FALLBACK_SUBMISSION_LIMIT')
+    if (manifest.generation_attempts.some((attempt) => attempt.route_id === route.id && attempt.unit_id === unitId)) {
+      fail('REDRAW_EPISODE_FALLBACK_DUPLICATE_SUBMISSION')
+    }
+    manifest.generation_attempts.push({ route_id: route.id, provider: route.provider, model: route.model, unit_id: unitId, started_at: (dependencies.now || (() => new Date()))().toISOString() })
+    routeRecord.generation_submissions += 1
+    persist()
+  }
+  const createProvider = dependencies.createProvider || ((providerOptions) => createEpisodeVideoProviderAdapter({ ...dependencies.providerOptions, ...providerOptions }))
+  return createProvider({ route, providerApiKey: String(options.keys[route.key_id] || '').trim(), referenceApiKey: String(options.keys.fumin || '').trim(), beforeGenerationSubmit })
+}
+
+export async function runFallbackEpisode(options, dependencies = {}) {
+  return withExecutionLock(options, dependencies, true, () => runFallbackEpisodeUnlocked(options, dependencies))
+}
+
+async function runFallbackEpisodeUnlocked(options, dependencies) {
+  const sourceHead = validateOptions(options, dependencies)
   const episodePackage = path.resolve(String(options.episodePackage))
   const stateDir = path.resolve(String(options.stateDir))
-  requireNewStateDir(stateDir)
   const load = dependencies.loadEpisodePackage || loadEpisodePackage
   const pkg = load(episodePackage, stateDir)
   const now = dependencies.now || (() => new Date())
   const routes = dependencies.routes || EPISODE_VIDEO_ROUTES
   const executeStage = dependencies.runStage || runStage
-  const createProvider = dependencies.createProvider || ((providerOptions) => createEpisodeVideoProviderAdapter({
-    ...dependencies.providerOptions,
-    ...providerOptions,
-  }))
   const createdAt = now().toISOString()
   const manifest = {
     schema_version: 'redraw-isolated-video-model-fallback-state-v1',
+    run_id: crypto.randomUUID(),
     status: 'preflight',
     source_head: sourceHead,
     created_at: createdAt,
@@ -196,39 +339,7 @@ export async function runFallbackEpisode(options, dependencies = {}) {
     }
     availableRouteCount += 1
     const childDir = path.join(stateDir, routeRecord.child_state_dir)
-    const beforeGenerationSubmit = async ({ route_id: routeId, unit_id: unitId, model }) => {
-      if (routeId !== route.id || model !== route.model) {
-        fail('REDRAW_EPISODE_FALLBACK_ROUTE_BINDING_MISMATCH', `${routeId}:${model}`)
-      }
-      if (manifest.winner_route_id == null) {
-        if (unitId !== GATE_UNIT_ID || routeRecord.generation_submissions !== 0) {
-          fail('REDRAW_EPISODE_FALLBACK_GATE_VIOLATION', `${routeId}:${unitId}`)
-        }
-      } else if (manifest.winner_route_id !== route.id) {
-        fail('REDRAW_EPISODE_FALLBACK_MODEL_MIXED', `${manifest.winner_route_id}:${route.id}`)
-      }
-      if (manifest.generation_attempts.length >= MAX_GENERATION_SUBMISSIONS) {
-        fail('REDRAW_EPISODE_FALLBACK_SUBMISSION_LIMIT', String(MAX_GENERATION_SUBMISSIONS))
-      }
-      if (manifest.generation_attempts.some((attempt) => attempt.route_id === route.id && attempt.unit_id === unitId)) {
-        fail('REDRAW_EPISODE_FALLBACK_DUPLICATE_SUBMISSION', `${route.id}:${unitId}`)
-      }
-      manifest.generation_attempts.push({
-        route_id: route.id,
-        provider: route.provider,
-        model: route.model,
-        unit_id: unitId,
-        started_at: now().toISOString(),
-      })
-      routeRecord.generation_submissions += 1
-      persist()
-    }
-    const provider = createProvider({
-      route,
-      providerApiKey: String(options.keys[route.key_id] || '').trim(),
-      referenceApiKey: String(options.keys.fumin || '').trim(),
-      beforeGenerationSubmit,
-    })
+    const provider = createRouteProvider(options, dependencies, manifest, route, routeRecord, persist)
     routeRecord.status = 'preflight'
     persist()
     let preflight
@@ -267,24 +378,11 @@ export async function runFallbackEpisode(options, dependencies = {}) {
     }
 
     manifest.winner_route_id = route.id
-    manifest.status = 'winner_selected'
-    routeRecord.status = 'winner_selected'
-    persist()
     try {
-      await executeStage(childOptions(options, childDir, 'sequence'), { provider })
-      await executeStage(childOptions(options, childDir, 'assemble'), { provider })
-      const verified = await executeStage(childOptions(options, childDir, 'verify'), { provider })
-      if (!verified?.episode_artifact?.sha256) {
-        fail('REDRAW_EPISODE_FALLBACK_EPISODE_ARTIFACT_MISSING')
-      }
-      manifest.episode_artifact = {
-        route_id: route.id,
-        artifact_id: verified.episode_artifact.artifact_id,
-        sha256: verified.episode_artifact.sha256,
-      }
-      manifest.visual_review_status = aggregateVisualReviewStatus(verified)
-      manifest.status = 'completed_verified'
-      routeRecord.status = 'completed_verified'
+      manifest.gate_review = { status: 'pending_external_review', binding: gateBinding(options, manifest) }
+      manifest.visual_review_status = 'pending_external_review'
+      manifest.status = 'waiting_first_shot_review'
+      routeRecord.status = 'waiting_first_shot_review'
       persist()
       return publicManifest(manifest)
     } catch (error) {
@@ -300,6 +398,64 @@ export async function runFallbackEpisode(options, dependencies = {}) {
   manifest.stop_reason = error.code
   persist()
   throw error
+}
+
+// Product/server callers supply an explicit human decision; no CLI flag can approve.
+export async function recordFallbackGateReview(options, review, dependencies = {}) {
+  return withExecutionLock(options, dependencies, false, async () => {
+    const manifest = readReviewState(options)
+    if (manifest.gate_review?.status !== 'pending_external_review') fail('REDRAW_EPISODE_GATE_REVIEW_STATE_INVALID')
+    const binding = assertReviewBinding(options, manifest)
+    if (stableStringify(review?.binding) !== stableStringify(binding)) fail('REDRAW_EPISODE_GATE_REVIEW_BINDING_MISMATCH')
+    if (!['approved', 'rejected'].includes(review?.decision) || typeof review?.reviewer !== 'string' || !review.reviewer.trim()) {
+      fail('REDRAW_EPISODE_GATE_REVIEW_INVALID')
+    }
+    manifest.gate_review = { binding, status: review.decision, reviewer: review.reviewer.trim(), reviewed_at: (dependencies.now || (() => new Date()))().toISOString() }
+    if (review.decision === 'rejected') {
+      manifest.status = 'first_shot_review_rejected'
+      manifest.routes.find((route) => route.id === manifest.winner_route_id).status = manifest.status
+    }
+    persistManifest(options.stateDir, manifest, dependencies)
+    return publicManifest(manifest)
+  })
+}
+
+export async function resumeFallbackEpisode(options, dependencies = {}) {
+  return withExecutionLock(options, dependencies, false, async () => {
+    const manifest = readReviewState(options)
+    if (manifest.gate_review?.status !== 'approved') fail('REDRAW_EPISODE_GATE_REVIEW_REQUIRED')
+    assertReviewBinding(options, manifest)
+    const route = (dependencies.routes || EPISODE_VIDEO_ROUTES).find((item) => item.id === manifest.winner_route_id)
+    const routeRecord = manifest.routes.find((item) => item.id === manifest.winner_route_id)
+    if (!route || route.model !== routeRecord.model || route.provider !== routeRecord.provider) fail('REDRAW_EPISODE_FALLBACK_ROUTE_BINDING_MISMATCH')
+    if (!routeKeysAvailable(route, options.keys || {})) fail('REDRAW_EPISODE_NO_PROVIDER_KEY')
+    const persist = () => persistManifest(options.stateDir, manifest, dependencies)
+    const provider = createRouteProvider(options, dependencies, manifest, route, routeRecord, persist)
+    const executeStage = dependencies.runStage || runStage
+    const childDir = path.join(options.stateDir, routeRecord.child_state_dir)
+    manifest.status = 'sequence_running'
+    routeRecord.status = 'sequence_running'
+    persist()
+    try {
+      await executeStage(childOptions(options, childDir, 'sequence'), { provider })
+      await executeStage(childOptions(options, childDir, 'assemble'), { provider })
+      const verified = await executeStage(childOptions(options, childDir, 'verify'), { provider })
+      if (!verified?.episode_artifact?.sha256) fail('REDRAW_EPISODE_FALLBACK_EPISODE_ARTIFACT_MISSING')
+      manifest.episode_artifact = { route_id: route.id, artifact_id: verified.episode_artifact.artifact_id, sha256: verified.episode_artifact.sha256 }
+      manifest.visual_review_status = aggregateVisualReviewStatus(verified)
+      manifest.status = manifest.visual_review_status === 'not_required' ? 'completed_verified' : 'technical_verified_pending_visual_review'
+      routeRecord.status = manifest.status
+      persist()
+      return publicManifest(manifest)
+    } catch (error) {
+      const classification = failureClass(error, childDir)
+      manifest.status = classification === 'indeterminate' ? 'needs_attention' : 'failed'
+      routeRecord.status = manifest.status
+      routeRecord.failure_class = classification
+      persist()
+      throw error
+    }
+  })
 }
 
 function readKeyFile(filePath) {
@@ -344,8 +500,8 @@ export async function main(argv = process.argv.slice(2), dependencies = {}) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch((error) => {
-    console.error(String(error?.code || error?.message || 'REDRAW_EPISODE_FALLBACK_FAILED'))
+  main().catch(() => {
+    console.error('REDRAW_EPISODE_FALLBACK_FAILED')
     process.exitCode = 1
   })
 }

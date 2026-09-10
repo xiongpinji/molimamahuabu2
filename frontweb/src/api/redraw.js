@@ -150,6 +150,22 @@ function assertControlledReleaseUrl(value, report) {
   return requestPath
 }
 
+function executionRunActionPayload(body) {
+  const payload = {
+    expected_revision: body?.expected_revision,
+    expected_plan_hash: body?.expected_plan_hash,
+    expected_quote_hash: body?.expected_quote_hash,
+    expected_confirmation_hash: body?.expected_confirmation_hash,
+  }
+  if (body?.output_parameters !== undefined) {
+    payload.output_parameters = {
+      resolution: body.output_parameters?.resolution,
+      aspect_ratio: body.output_parameters?.aspect_ratio,
+    }
+  }
+  return payload
+}
+
 export const redrawAPI = {
   listProjects() {
     return request.get('/redraw/projects')
@@ -166,6 +182,9 @@ export const redrawAPI = {
   listProjectEvents(projectId) {
     return request.get(`/redraw/projects/${projectId}/events`)
   },
+  listProjectWorks(projectId) {
+    return request.get(`/redraw/projects/${projectId}/works`)
+  },
   createWorks(projectId, file) {
     const form = new FormData()
     form.append('file', file)
@@ -173,11 +192,31 @@ export const redrawAPI = {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
   },
-  getWork(workId) {
+  getWork(workId, options) {
+    if (options) return request.get(`/redraw/works/${workId}`, { signal: options.signal, silentError: options.silentError })
     return request.get(`/redraw/works/${workId}`)
   },
   getBlueprint(workId) {
     return request.get(`/redraw/works/${workId}/blueprint`, { silentError: true })
+  },
+  getSourceAudioSeamReview(workId, options = {}) {
+    return request.get(`/redraw/works/${workId}/source-audio-seam-review`, {
+      params: options.params,
+      signal: options.signal,
+      silentError: true,
+    })
+  },
+  recordSourceAudioSeamDecision(workId, body) {
+    return request.post(`/redraw/works/${workId}/source-audio-seam-review`, body, { silentError: true })
+  },
+  resumeSourceAudioSeamAnalysis(workId, body) {
+    return request.post(`/redraw/works/${workId}/source-audio-seam-resume`, body, { silentError: true })
+  },
+  getSourceVideo(workId, sourceIdentity, { signal } = {}) {
+    return request.get(`/redraw/works/${workId}/source-video`, {
+      params: { expected_source_asset_id: sourceIdentity.asset_id, expected_source_sha256: sourceIdentity.sha256 },
+      responseType: 'blob', silentError: true, signal,
+    })
   },
   saveBlueprint(workId, body) {
     return request.put(`/redraw/works/${workId}/blueprint`, body, { silentError: true })
@@ -188,8 +227,47 @@ export const redrawAPI = {
   updateShot(shotId, body) {
     return request.put(`/redraw/shots/${shotId}`, body)
   },
-  getReferenceBundle(shotId) {
+  getReferenceBundle(shotId, options) {
+    if (options) return request.get(`/redraw/shots/${shotId}/reference-bundle`, { signal: options.signal, silentError: options.silentError })
     return request.get(`/redraw/shots/${shotId}/reference-bundle`)
+  },
+  getMotionDraft(shotId, identity, { signal } = {}) {
+    return request.get(`/redraw/shots/${shotId}/motion-draft`, {
+      params: { expected_updated_at: identity.expected_updated_at, expected_source_sha256: identity.expected_source_sha256 },
+      responseType: 'blob', silentError: true, signal,
+    })
+  },
+  getMotionProcessing(shotId, identity, { signal } = {}) {
+    return request.get(`/redraw/shots/${shotId}/motion-processing`, {
+      params: { expected_updated_at: identity.expected_updated_at, expected_source_sha256: identity.expected_source_sha256 },
+      responseType: 'blob', silentError: true, signal,
+    })
+  },
+  getMotionReference(shotId, identity, { signal } = {}) {
+    return request.get(`/redraw/shots/${shotId}/motion-reference`, {
+      params: { expected_updated_at: identity.expected_updated_at, expected_source_sha256: identity.expected_source_sha256 },
+      silentError: true, signal,
+    })
+  },
+  getMotionReferenceMedia(shotId, identity, { signal } = {}) {
+    return request.get(`/redraw/shots/${shotId}/motion-reference/media`, {
+      params: { expected_updated_at: identity.expected_updated_at, expected_source_sha256: identity.expected_source_sha256,
+        expected_import_id: identity.expected_import_id, expected_file_sha256: identity.expected_file_sha256 },
+      responseType: 'blob', silentError: true, signal,
+    })
+  },
+  uploadMotionReference(shotId, file, { expected_updated_at, idempotencyKey, full_frame_reviewed,
+    source_identity_obscured, source_text_obscured, motion_preserved, processing_report } = {}) {
+    const form = new FormData()
+    form.append('file', file)
+    form.append('expected_updated_at', expected_updated_at)
+    if (processing_report !== undefined) form.append('processing_report', processing_report)
+    for (const [field, value] of Object.entries({ full_frame_reviewed, source_identity_obscured, source_text_obscured, motion_preserved })) {
+      form.append(field, value === true ? 'true' : 'false')
+    }
+    return request.post(`/redraw/shots/${shotId}/motion-reference`, form, {
+      headers: { 'Content-Type': 'multipart/form-data', 'Idempotency-Key': idempotencyKey }, silentError: true,
+    })
   },
   saveReferenceBundle(shotId, body) {
     return request.put(`/redraw/shots/${shotId}/reference-bundle`, buildReferenceBundlePayload(body))
@@ -218,6 +296,82 @@ export const redrawAPI = {
   getCharacterPlan(versionId) {
     return request.get(`/redraw/versions/${versionId}/character-plan`)
   },
+  getExecutionPlanReview(versionId) {
+    return request.get(`/redraw/versions/${versionId}/execution-plan/review`, { silentError: true })
+  },
+  saveExecutionPlanReview(versionId, body) {
+    return request.post(`/redraw/versions/${versionId}/execution-plan/review`, {
+      expected_plan_hash: body?.expected_plan_hash,
+    }, { silentError: true })
+  },
+  getExecutionQueue(versionId) {
+    return request.get(`/redraw/versions/${versionId}/execution-queue`, { silentError: true })
+  },
+  prepareExecutionQueue(versionId, body) {
+    return request.post(`/redraw/versions/${versionId}/execution-queue`, {
+      expected_plan_hash: body?.expected_plan_hash,
+    }, { silentError: true })
+  },
+  listExecutionRuns(versionId, options) {
+    return request.get(`/redraw/versions/${versionId}/execution-runs`, { silentError: true, signal: options?.signal })
+  },
+  getExecutionRun(versionId, runId, options) {
+    return request.get(`/redraw/versions/${versionId}/execution-runs/${runId}`, { silentError: true, signal: options?.signal })
+  },
+  getExecutionRunReadiness(versionId, runId, input, options) {
+    return request.get(`/redraw/versions/${versionId}/execution-runs/${runId}/readiness`, {
+      params: { resolution: input?.resolution, aspect_ratio: input?.aspect_ratio }, silentError: true, signal: options?.signal,
+    })
+  },
+  getExecutionUnitCandidate(versionId, runId, unitId, options) {
+    return request.get(`/redraw/versions/${versionId}/execution-runs/${runId}/units/${encodeURIComponent(unitId)}/candidate`, {
+      silentError: true, signal: options?.signal,
+    })
+  },
+  getExecutionUnitCandidateMedia(versionId, runId, unitId, input, options) {
+    return request.get(`/redraw/versions/${versionId}/execution-runs/${runId}/units/${encodeURIComponent(unitId)}/candidate/media`, {
+      params: { expected_candidate_hash: input?.expected_candidate_hash }, responseType: 'blob', silentError: true, signal: options?.signal,
+    })
+  },
+  createExecutionRun(versionId, body) {
+    return request.post(`/redraw/versions/${versionId}/execution-runs`, {
+      expected_plan_hash: body?.expected_plan_hash, expected_queue_id: body?.expected_queue_id,
+    }, { silentError: true })
+  },
+  pauseExecutionRun(versionId, runId, body) {
+    return request.post(`/redraw/versions/${versionId}/execution-runs/${runId}/pause`, {
+      expected_revision: body?.expected_revision,
+    }, { silentError: true })
+  },
+  resumeExecutionRun(versionId, runId, body) {
+    return request.post(`/redraw/versions/${versionId}/execution-runs/${runId}/resume`, executionRunActionPayload(body), { silentError: true })
+  },
+  advanceExecutionRun(versionId, runId, body) {
+    return request.post(`/redraw/versions/${versionId}/execution-runs/${runId}/advance`, executionRunActionPayload(body), { silentError: true })
+  },
+  recoverExecutionUnitTask(versionId, runId, body) {
+    return request.post(`/redraw/versions/${versionId}/execution-runs/${runId}/recover`, { attempt_id: body?.attempt_id }, { silentError: true })
+  },
+  reviewExecutionUnitCandidate(versionId, runId, unitId, body) {
+    return request.post(`/redraw/versions/${versionId}/execution-runs/${runId}/units/${encodeURIComponent(unitId)}/review`, {
+      expected_revision: body?.expected_revision, expected_candidate_hash: body?.expected_candidate_hash,
+      decision: body?.decision,
+      checks: Object.fromEntries(Object.entries(body?.checks || {}).map(([key, value]) => [key, {
+        basis: value?.basis, result: value?.result,
+      }])),
+    }, { silentError: true })
+  },
+  getUnitReferenceMaterials(versionId, queueId, unitId, input) {
+    return request.get(`/redraw/versions/${versionId}/execution-queues/${queueId}/units/${encodeURIComponent(unitId)}/reference-materials`, {
+      params: { review_id: input?.review_id, plan_hash: input?.plan_hash, unit_hash: input?.unit_hash }, silentError: true,
+    })
+  },
+  prepareUnitReferenceMaterials(versionId, queueId, unitId, input) {
+    return request.post(`/redraw/versions/${versionId}/execution-queues/${queueId}/units/${encodeURIComponent(unitId)}/reference-materials`, {
+      review_id: input?.review_id, plan_hash: input?.plan_hash, unit_hash: input?.unit_hash,
+      expected_materials_hash: input?.expected_materials_hash,
+    }, { silentError: true })
+  },
   getPreparationGate(versionId) {
     return request.get(`/redraw/versions/${versionId}/preparation-gate`)
   },
@@ -237,7 +391,8 @@ export const redrawAPI = {
     const suffix = kind ? `?kind=${encodeURIComponent(kind)}` : ''
     return request.get(`/redraw/versions/${versionId}/assets${suffix}`)
   },
-  getGenerationGate(versionId) {
+  getGenerationGate(versionId, options) {
+    if (options) return request.get(`/redraw/versions/${versionId}/generation-gate`, { signal: options.signal, silentError: options.silentError })
     return request.get(`/redraw/versions/${versionId}/generation-gate`)
   },
   getAssetQuote(assetId) {
@@ -254,6 +409,24 @@ export const redrawAPI = {
   },
   saveRedrawCharacterIdentityPack(assetId, body) {
     return request.put(`/redraw/assets/${assetId}/identity-pack`, body)
+  },
+  uploadIdentityReference(assetId, file, { expected_updated_at, idempotencyKey } = {}) {
+    const form = new FormData()
+    form.append('file', file)
+    form.append('purpose', 'identity')
+    form.append('expected_updated_at', expected_updated_at)
+    return request.post(`/redraw/assets/${assetId}/reference-artifact`, form, {
+      headers: { 'Content-Type': 'multipart/form-data', 'Idempotency-Key': idempotencyKey },
+      silentError: true,
+    })
+  },
+  getIdentityReferenceState(versionId, workId) {
+    return Promise.all([
+      request.get(`/redraw/versions/${versionId}/assets`, { silentError: true }),
+      request.get(`/redraw/versions/${versionId}/generation-gate`, { silentError: true }),
+      request.get(`/redraw/versions/${versionId}/character-plan`, { silentError: true }),
+      request.get(`/redraw/works/${workId}`, { silentError: true }),
+    ])
   },
   generateAsset(assetId, body = {}) {
     return request.post(`/redraw/assets/${assetId}/generate`, body)

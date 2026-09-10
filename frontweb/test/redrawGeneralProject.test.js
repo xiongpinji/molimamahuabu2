@@ -1,6 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
+import { compileScript, parse } from '@vue/compiler-sfc'
+import * as vue from 'vue'
+import { canStartLocalization } from '../src/utils/redrawBlueprintReviewState.js'
 import * as workspaceState from '../src/utils/redrawWorkspaceState.js'
 
 function readSource(path) {
@@ -14,6 +17,244 @@ const workspaceSource = readSource('../src/views/RedrawWorkspace.vue')
 const sourceStepSource = readSource('../src/components/redraw/RedrawSourceStep.vue')
 const stateSource = readSource('../src/utils/redrawWorkspaceState.js')
 const overviewSource = readSource('../src/components/redraw/RedrawProjectOverview.vue')
+
+function sourceStepRuntime(t, initialProps = {}, api = {}) {
+  const scope = vue.effectScope()
+  const unmount = []
+  const messages = []
+  const runtime = {
+    computed: vue.computed,
+    ref: vue.ref,
+    watch: vue.watch,
+    ...workspaceState,
+    canStartLocalization,
+    onMounted() {},
+    onUnmounted(callback) { unmount.push(callback) },
+    ElMessage: {
+      error(message) { messages.push({ type: 'error', message }) },
+      success(message) { messages.push({ type: 'success', message }) },
+      warning(message) { messages.push({ type: 'warning', message }) },
+    },
+    redrawAPI: {
+      listStylePresets: async () => [],
+      listLocales: async () => [],
+      ...api,
+    },
+    RedrawBlueprintReviewPanel: {},
+    RedrawLocalizationReviewPanel: {},
+    StylePresetPicker: {},
+  }
+  const { descriptor } = parse(sourceStepSource)
+  const script = compileScript(descriptor, { id: 'redraw-source-runtime' }).content
+    .replace(/import[\s\S]*?from\s+['"][^'"]+['"]/g, '')
+    .replace('export default', 'return')
+  const component = new Function(...Object.keys(runtime), script)(...Object.values(runtime))
+  const defaults = Object.fromEntries(Object.entries(component.props).map(([key, value]) => [
+    key, typeof value.default === 'function' ? value.default() : value.default,
+  ]))
+  const props = vue.reactive({ ...defaults, projectId: 1, ...initialProps })
+  const state = scope.run(() => component.setup(props, { expose() {}, emit() {} }))
+  t.after(() => {
+    unmount.forEach((callback) => callback())
+    scope.stop()
+  })
+  return { state, props, api: runtime.redrawAPI, messages }
+}
+
+const availableLocales = [
+  { locale: 'en-US', market: 'US', status: 'full_output', blocking: [] },
+  { locale: 'ja-JP', market: 'JP', status: 'subtitle_only', blocking: ['tts', 'native_dialogue_audio'] },
+]
+
+test('工作台把项目语言和市场传给源片步骤', () => {
+  const sourceStep = workspaceSource.match(/<RedrawSourceStep[\s\S]*?\/>/)?.[0] || ''
+  assert.match(sourceStep, /:default-locale="project\?\.default_locale"/)
+  assert.match(sourceStep, /:default-market="project\?\.default_market"/)
+})
+
+test('真实源片组件保留非英文项目目标并按该组合提交分析', async (t) => {
+  const analyzed = []
+  const initialWork = { id: 8, analysis_quote: { credits: 6 } }
+  const { state } = sourceStepRuntime(t, {
+    defaultLocale: 'ja-JP', defaultMarket: 'JP', initialWork,
+  }, {
+    listLocales: async () => availableLocales,
+    analyzeWork: async (...args) => { analyzed.push(args); return { task_id: 'analysis-8' } },
+    getWork: async () => initialWork,
+  })
+  await state.loadCapabilities()
+  assert.equal(state.locale.value, 'ja-JP')
+  assert.equal(state.market.value, 'JP')
+  state.selectedPreset.value = { id: 3 }
+  assert.equal(state.canStartAnalysis.value, true)
+  await state.startAnalysis()
+  assert.equal(analyzed.length, 1)
+  assert.equal(analyzed[0][1].locale, 'ja-JP')
+  assert.equal(analyzed[0][1].market, 'JP')
+  assert.deepEqual(state.localizationQuoteBody(), {
+    locale: 'ja-JP', market: 'JP', localization_level: 'faithful',
+  })
+})
+
+test('真实源片组件等待异步项目目标且不从能力列表选择首项', async (t) => {
+  const { state, props } = sourceStepRuntime(t, {}, { listLocales: async () => availableLocales })
+  await state.loadCapabilities()
+  assert.equal(state.locale.value, '')
+  assert.equal(state.market.value, '')
+  props.defaultLocale = 'ja-JP'
+  props.defaultMarket = 'JP'
+  await vue.nextTick()
+  assert.equal(state.locale.value, 'ja-JP')
+  assert.equal(state.market.value, 'JP')
+})
+
+test('能力请求完成和重复刷新都不覆盖用户已选择的语言地区', async (t) => {
+  let resolveLocales
+  const { state, props, api } = sourceStepRuntime(t, {}, {
+    listLocales: () => new Promise((resolve) => { resolveLocales = resolve }),
+  })
+  const loading = state.loadCapabilities()
+  state.locale.value = 'ja-JP'
+  state.market.value = 'JP'
+  props.defaultLocale = 'en-US'
+  props.defaultMarket = 'US'
+  await vue.nextTick()
+  assert.equal(state.locale.value, 'ja-JP')
+  assert.equal(state.market.value, 'JP')
+  resolveLocales(availableLocales)
+  await loading
+  assert.equal(state.locale.value, 'ja-JP')
+  assert.equal(state.market.value, 'JP')
+  api.listLocales = async () => availableLocales
+  await state.loadCapabilities()
+  await vue.nextTick()
+  assert.equal(state.locale.value, 'ja-JP')
+  assert.equal(state.market.value, 'JP')
+})
+
+test('项目目标组合不存在时保留原意并可见阻断，不擅自换市场', async (t) => {
+  const { state } = sourceStepRuntime(t, {
+    defaultLocale: 'en-US', defaultMarket: 'GB',
+    initialWork: { id: 8, analysis_quote: { credits: 6 } },
+  }, { listLocales: async () => availableLocales })
+  await state.loadCapabilities()
+  state.selectedPreset.value = { id: 3 }
+  assert.equal(state.locale.value, 'en-US')
+  assert.equal(state.market.value, 'GB')
+  assert.equal(state.canStartAnalysis.value, false)
+  assert.match(state.localeCapabilityMessage?.value || '', /语言|地区|能力/)
+})
+
+test('能力列表被清空后保留目标且阻断分析和本地化，不回退英文', async (t) => {
+  const quoted = []
+  const { state, api } = sourceStepRuntime(t, {
+    defaultLocale: 'ja-JP', defaultMarket: 'JP', blueprintRecord: null,
+    initialWork: {
+      id: 8, workflow_phase: 'analysis_review', analysis_quote: { credits: 6 },
+      localization_quote: { priced: true, credits: 9, quote_hash: 'quote-9' },
+    },
+  }, { listLocales: async () => availableLocales, quoteLocalization: async (...args) => quoted.push(args) })
+  await state.loadCapabilities()
+  state.selectedPreset.value = { id: 3 }
+  api.listLocales = async () => []
+  await state.loadCapabilities()
+  assert.equal(state.locale.value, 'ja-JP')
+  assert.equal(state.market.value, 'JP')
+  assert.equal(state.canStartAnalysis.value, false)
+  assert.equal(state.canSubmitLocalization.value, false)
+  await state.confirmLocalization()
+  assert.equal(quoted.length, 0)
+  assert.match(state.localeCapabilityMessage?.value || '', /语言|地区|能力/)
+  state.locale.value = ''
+  state.market.value = ''
+  assert.deepEqual(state.localizationQuoteBody(), {
+    locale: '', market: '', localization_level: 'faithful',
+  })
+  state.workState.value = { id: 8, workflow_phase: 'analysis_review' }
+  await state.ensureLocalizationQuote()
+  assert.equal(quoted.length, 0)
+})
+
+test('真实组件所选 blocking 缺少文本能力时阻断分析和本地化', async (t) => {
+  const { state, api } = sourceStepRuntime(t, {
+    defaultLocale: 'ja-JP', defaultMarket: 'JP', blueprintRecord: null,
+    initialWork: {
+      id: 8, workflow_phase: 'analysis_review', analysis_quote: { credits: 6 },
+      localization_quote: { priced: true, credits: 9, quote_hash: 'quote-9' },
+    },
+  }, { listLocales: async () => availableLocales })
+  await state.loadCapabilities()
+  state.selectedPreset.value = { id: 3 }
+  assert.equal(state.canStartAnalysis.value, true)
+  assert.equal(state.canSubmitLocalization.value, true)
+  api.listLocales = async () => [availableLocales[0], {
+    locale: 'ja-JP', market: 'JP', status: 'blocking', blocking: ['text'],
+  }]
+  await state.loadCapabilities()
+  assert.equal(state.locale.value, 'ja-JP')
+  assert.equal(state.market.value, 'JP')
+  assert.equal(state.canStartAnalysis.value, false)
+  assert.equal(state.canSubmitLocalization.value, false)
+  assert.match(state.localeCapabilityMessage?.value || '', /text/)
+})
+
+test('真实组件仅缺后续视频能力仍可分析但必须显示生成缺口', async (t) => {
+  const { state } = sourceStepRuntime(t, {
+    defaultLocale: 'ja-JP', defaultMarket: 'JP',
+    initialWork: { id: 8, analysis_quote: { credits: 6 } },
+  }, { listLocales: async () => [{ locale: 'ja-JP', market: 'JP', status: 'blocking', blocking: ['video'] }] })
+  await state.loadCapabilities()
+  state.selectedPreset.value = { id: 3 }
+  assert.equal(state.canStartAnalysis.value, true)
+  assert.match(state.localeCapabilityMessage?.value || '', /后续.*video/)
+})
+
+test('源片本地化确认和重试文案不把非英文目标标为英文', () => {
+  const { descriptor } = parse(sourceStepSource)
+  assert.doesNotMatch(descriptor.template.content, /英文/)
+  assert.match(descriptor.template.content, /确认本地化/)
+  assert.match(descriptor.template.content, /重试本地化/)
+})
+
+test('非英文项目真实本地化提交成功提示不宣称英文输出', async (t) => {
+  const created = []
+  const initialWork = {
+    id: 8, workflow_phase: 'analysis_review',
+    localization_quote: { priced: true, credits: 9, quote_hash: 'quote-9' },
+  }
+  const { state, messages } = sourceStepRuntime(t, {
+    defaultLocale: 'ja-JP', defaultMarket: 'JP', blueprintRecord: null, initialWork,
+  }, {
+    listLocales: async () => availableLocales,
+    quoteLocalization: async () => initialWork.localization_quote,
+    createVersion: async (...args) => { created.push(args); return { task_id: 'localization-8' } },
+    getWork: async () => initialWork,
+  })
+  await state.loadCapabilities()
+  await state.confirmLocalization()
+  assert.equal(created.length, 1)
+  assert.equal(created[0][1].locale, 'ja-JP')
+  assert.equal(created[0][1].market, 'JP')
+  assert.deepEqual(messages, [{ type: 'success', message: '本地化已提交' }])
+})
+
+test('非英文项目真实本地化失败使用通用兜底提示', async (t) => {
+  const initialWork = {
+    id: 8, workflow_phase: 'analysis_review',
+    localization_quote: { priced: true, credits: 9, quote_hash: 'quote-9' },
+  }
+  const { state, messages } = sourceStepRuntime(t, {
+    defaultLocale: 'ja-JP', defaultMarket: 'JP', blueprintRecord: null, initialWork,
+  }, {
+    listLocales: async () => availableLocales,
+    quoteLocalization: async () => initialWork.localization_quote,
+    createVersion: async () => { throw new Error('') },
+  })
+  await state.loadCapabilities()
+  await state.confirmLocalization()
+  assert.deepEqual(messages, [{ type: 'error', message: '提交本地化失败' }])
+  assert.equal(state.localizationSubmitting.value, false)
+})
 
 test('项目创建必须提交单一市场、模式、预算和自动尝试上限', () => {
   for (const field of [

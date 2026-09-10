@@ -200,8 +200,15 @@ export function localizationQuoteCredits(work) {
   return quote?.priced === true && Number.isSafeInteger(credits) && credits > 0 ? credits : null
 }
 
-export function localeReady(locales) {
-  return Array.isArray(locales) && locales.length > 0
+export function localeReady(locales, locale, market) {
+  if (!Array.isArray(locales) || !locale) return false
+  const selected = locales.find((item) => item.locale === locale && (item.market || '') === (market || ''))
+  return Boolean(
+    selected
+      && ['full_output', 'asset_pending', 'subtitle_only', 'voice_pending', 'blocking'].includes(selected.status)
+      && Array.isArray(selected.blocking)
+      && !selected.blocking.some((capability) => ['text', 'subtitles'].includes(capability)),
+  )
 }
 
 function referencePayload(referenceImage) {
@@ -384,14 +391,14 @@ export function buildLocalizationPayload(body) {
   }
 }
 
-export function canStartRedrawAnalysis({ work, selectedFile, locales, selectedPreset, freeStyle }) {
+export function canStartRedrawAnalysis({ work, selectedFile, locales, locale, market, selectedPreset, freeStyle }) {
   const hasStyle = Boolean(
     selectedPreset?.id != null
       || String(freeStyle?.positivePrompt || freeStyle?.positive || '').trim(),
   )
   return Boolean(
     analysisQuoteCredits(work) != null
-      && localeReady(locales)
+      && localeReady(locales, locale, market)
       && (work?.id || selectedFile)
       && hasStyle,
   )

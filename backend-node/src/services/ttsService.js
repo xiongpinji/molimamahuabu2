@@ -100,11 +100,8 @@ function resolveMaxResponseBytes(value) {
 /**
  * 使用 MiniMax T2A v2 合成语音
  */
-async function synthesizeWithMinimax(text, voiceId, apiKey, baseUrl, model, options = {}) {
-  const normalizedBaseUrl = String(baseUrl || 'https://api.minimaxi.com/v1').replace(/\/+$/, '');
-  const url = normalizedBaseUrl.endsWith('/t2a_v2')
-    ? normalizedBaseUrl
-    : `${normalizedBaseUrl}/t2a_v2`;
+async function synthesizeWithMinimax(text, voiceId, connection, model, options = {}) {
+  const url = connection.url;
   const pronunciationTones = Array.isArray(options.pronunciationTones)
     ? options.pronunciationTones.filter(Boolean)
     : [];
@@ -153,7 +150,7 @@ async function synthesizeWithMinimax(text, voiceId, apiKey, baseUrl, model, opti
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
+        'Authorization': connection.authorization,
         'Content-Length': Buffer.byteLength(body),
       },
     };
@@ -276,8 +273,8 @@ async function synthesizeWithMinimax(text, voiceId, apiKey, baseUrl, model, opti
  * 使用 OpenAI TTS API 合成语音（兼容所有 OpenAI 格式的代理）
  * POST {base_url}/audio/speech  body: { model, input, voice, response_format, speed }
  */
-async function synthesizeWithOpenai(text, voice, apiKey, baseUrl, model, speed, options = {}) {
-  const url = (baseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '') + '/audio/speech';
+async function synthesizeWithOpenai(text, voice, connection, model, speed, options = {}) {
+  const url = connection.url;
   const body = JSON.stringify({
     model: model || 'tts-1',
     input: text,
@@ -316,7 +313,7 @@ async function synthesizeWithOpenai(text, voice, apiKey, baseUrl, model, speed, 
       headers: {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(body),
-        ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {}),
+        ...(connection.authorization ? { 'Authorization': connection.authorization } : {}),
       },
     };
     const req = mod.request(reqOpts, (res) => {
@@ -429,6 +426,7 @@ async function synthesize(db, log, {
   if (!ttsConfig) throw new Error('未配置 TTS 模型，请在「AI 配置」中添加 service_type=tts 的配置');
 
   const provider = (ttsConfig.provider || '').toLowerCase();
+  const connection = resolveTtsConnection(ttsConfig);
   let ttsSettings = {};
   try { ttsSettings = JSON.parse(ttsConfig.settings || '{}'); } catch (_) {}
   // 外部传入的 voice_id / speed 优先（海外化场景），否则取配置值
@@ -447,12 +445,11 @@ async function synthesize(db, log, {
   let audioBuffer;
   let providerResult = null;
 
-  if (provider === 'minimax') {
+  if (connection?.kind === 'minimax') {
     providerResult = await synthesizeWithMinimax(
       text,
       voiceId || 'female-shaonv',
-      ttsConfig.api_key,
-      ttsConfig.base_url,
+      connection,
       ttsModel,
       {
         speed: finalSpeed,
@@ -465,12 +462,11 @@ async function synthesize(db, log, {
       }
     );
     audioBuffer = providerResult.audio;
-  } else if (provider === 'openai' || ttsConfig.base_url) {
+  } else if (connection?.kind === 'openai') {
     providerResult = await synthesizeWithOpenai(
       text,
       voiceId || 'alloy',
-      ttsConfig.api_key,
-      ttsConfig.base_url,
+      connection,
       ttsModel,
       finalSpeed,
       {
@@ -536,4 +532,18 @@ async function synthesize(db, log, {
   return { local_path: localPath };
 }
 
-module.exports = { synthesize, isProbableMp3 };
+// Shared with internal preflight; no environment fallback or network access.
+function resolveTtsConnection(config) {
+  const provider = (config.provider || '').toLowerCase();
+  if (provider === 'minimax') {
+    const base = String(config.base_url || 'https://api.minimaxi.com/v1').replace(/\/+$/, '');
+    return { kind: 'minimax', url: base.endsWith('/t2a_v2') ? base : `${base}/t2a_v2`,
+      authorization: `Bearer ${config.api_key}` };
+  }
+  if (provider === 'openai' || config.base_url) return { kind: 'openai',
+    url: (config.base_url || 'https://api.openai.com/v1').replace(/\/+$/, '') + '/audio/speech',
+    authorization: config.api_key ? `Bearer ${config.api_key}` : null };
+  return null;
+}
+
+module.exports = { synthesize, isProbableMp3, resolveTtsConnection };

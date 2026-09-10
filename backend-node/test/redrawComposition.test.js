@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { execFileSync } = require('node:child_process');
+const { execFile, execFileSync } = require('node:child_process');
 const Database = require('better-sqlite3');
 
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
@@ -17,6 +17,8 @@ const {
   runComposition,
   recoverInterruptedCompositions,
 } = require('../src/services/redrawCompositionService');
+
+const NATIVE_TEST_TIMEOUT_MS = 60_000;
 
 function setup() {
   const db = new Database(':memory:');
@@ -51,6 +53,28 @@ function touch(root, relative, body = 'media') {
 
 function sha256(value) {
   return crypto.createHash('sha256').update(String(value)).digest('hex');
+}
+
+function stableStringify(value) {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function geometryProbeJson(overrides = {}) {
+  return JSON.stringify({
+    streams: [{
+      codec_type: 'video',
+      width: 1280,
+      height: 720,
+      sample_aspect_ratio: '1:1',
+      display_aspect_ratio: '16:9',
+      ...overrides,
+    }],
+    format: { duration: '1' },
+  });
 }
 
 function fileSha256(filePath) {
@@ -242,6 +266,9 @@ function ctx(state, overrides = {}) {
       duration: 3,
       width: 1280,
       height: 720,
+      sampleAspectRatio: '1:1',
+      displayAspectRatio: '16:9',
+      rotation: 0,
       hasVideo: true,
       hasAudio: true,
       hash: 'final-hash',
@@ -250,6 +277,7 @@ function ctx(state, overrides = {}) {
       fs.mkdirSync(path.dirname(outputPath), { recursive: true });
       fs.writeFileSync(outputPath, 'mp4');
     },
+    execFile: (_bin, _args, _options, callback) => callback(null, geometryProbeJson(), ''),
     ...overrides,
   };
 }
@@ -438,6 +466,76 @@ test('createComposition serializes active exports and enforces idempotency key r
   }
 });
 
+test('createComposition keeps the pending plan, request hash, and pinned release-v1 shapes geometry-free', async () => {
+  const state = setup();
+  try {
+    await addReadyVersion(state);
+    const created = await createComposition(ctx(state), {
+      versionId: state.versionId,
+      idempotencyKey: 'compose-compatible-shape',
+      audioMode: 'replace',
+    });
+    const manifest = JSON.parse(created.manifest_json);
+    const plan = manifest.plan;
+    const oldInputHash = sha256(stableStringify({
+      release_hash: plan.release_hash,
+      timeline: plan.timeline,
+      videos: plan.video_inputs.map(({ id, relative_path, duration_ms, width, height, hash }) => (
+        { id, relative_path, duration_ms, width, height, hash }
+      )),
+      audio: plan.audio_inputs.map(({ asset_id, relative_path, start_ms, end_ms, duration_ms, hash }) => (
+        { asset_id, relative_path, start_ms, end_ms, duration_ms, hash }
+      )),
+      subtitles: plan.subtitles.cues,
+    }));
+    const oldRequestHash = sha256(stableStringify({
+      version_id: state.versionId,
+      audio_mode: 'replace',
+      input_hash: oldInputHash,
+    }));
+
+    assert.equal(plan.input_hash, oldInputHash);
+    assert.equal(manifest.request_hash, oldRequestHash);
+    assert.deepEqual(Object.keys(plan.video_inputs[0]).sort(), [
+      'duration_ms', 'hash', 'height', 'id', 'relative_path', 'width',
+    ]);
+    assert.deepEqual(Object.keys(manifest.episode_release).sort(), [
+      'locale', 'market', 'project_id', 'quality_summary', 'release_hash', 'schema_version', 'shots', 'version_id', 'work_id',
+    ]);
+    assert.deepEqual(Object.keys(manifest.episode_release.shots[0]).sort(), [
+      'audio_sha256', 'candidate_review_id', 'candidate_sha256', 'dependency_hash', 'end_ms',
+      'shot_id', 'shot_index', 'start_ms', 'subtitle_sha256',
+    ]);
+  } finally {
+    cleanup(state);
+  }
+});
+
+test('runComposition returns a historical completed row without probing or execution', async () => {
+  const state = setup();
+  try {
+    await addReadyVersion(state);
+    const created = await createComposition(ctx(state), {
+      versionId: state.versionId,
+      idempotencyKey: 'compose-completed-short-circuit',
+      audioMode: 'replace',
+    });
+    const historicalManifest = JSON.stringify({ historical: true });
+    state.db.prepare("UPDATE redraw_exports SET status = 'completed', manifest_json = ? WHERE id = ?")
+      .run(historicalManifest, created.id);
+    const returned = await runComposition(ctx(state, {
+      execFile: () => { throw new Error('must not probe completed export'); },
+      compositionRunner: () => { throw new Error('must not execute completed export'); },
+      probeRunner: () => { throw new Error('must not probe completed output'); },
+    }), created.id);
+
+    assert.equal(returned.status, 'completed');
+    assert.equal(returned.manifest_json, historicalManifest);
+  } finally {
+    cleanup(state);
+  }
+});
+
 test('runComposition rejects stale manifests before mutation when inputs drift after create', async () => {
   const state = setup();
   try {
@@ -483,6 +581,137 @@ test('runComposition requires owner CAS and never mutates wrong-owner or process
       (error) => error.code === 'REDRAW_COMPOSITION_EXPORT_STATE_INVALID',
     );
     assert.equal(state.db.prepare('SELECT status FROM redraw_exports WHERE id = ?').get(created.id).status, 'processing');
+  } finally {
+    cleanup(state);
+  }
+});
+
+test('runComposition fails closed on mixed, unknown, contradictory, rotated, or drifting input geometry before workspace creation', async () => {
+  const cases = [
+    {
+      name: 'mixed-sar',
+      second: { sample_aspect_ratio: '2:1', display_aspect_ratio: '32:9' },
+      code: 'REDRAW_COMPOSITION_INPUT_GEOMETRY_MISMATCH',
+    },
+    {
+      name: 'unknown-sar',
+      first: { sample_aspect_ratio: 'N/A' },
+      code: 'REDRAW_COMPOSITION_INPUT_GEOMETRY_INVALID',
+    },
+    {
+      name: 'contradictory-dar',
+      first: { sample_aspect_ratio: '1:1', display_aspect_ratio: '4:3' },
+      code: 'REDRAW_COMPOSITION_INPUT_GEOMETRY_INVALID',
+    },
+    {
+      name: 'rotated-tag',
+      first: { tags: { rotate: '90' } },
+      code: 'REDRAW_COMPOSITION_INPUT_GEOMETRY_INVALID',
+    },
+    {
+      name: 'rotated-display-matrix',
+      first: { side_data_list: [{ side_data_type: 'Display Matrix', rotation: 90 }] },
+      code: 'REDRAW_COMPOSITION_INPUT_GEOMETRY_INVALID',
+    },
+    {
+      name: 'malformed-display-matrix',
+      first: { side_data_list: [{ side_data_type: 'Display Matrix', rotation: 'not-a-number' }] },
+      code: 'REDRAW_COMPOSITION_INPUT_GEOMETRY_INVALID',
+    },
+    {
+      name: 'malformed-display-matrix-with-zero-rotation',
+      first: { side_data_list: [{ side_data_type: 'Display Matrix', displaymatrix: 'not-a-matrix', rotation: 0 }] },
+      code: 'REDRAW_COMPOSITION_INPUT_GEOMETRY_INVALID',
+    },
+    {
+      name: 'reflected-display-matrix-with-zero-rotation',
+      first: {
+        side_data_list: [{
+          side_data_type: 'Display Matrix',
+          displaymatrix: '\n00000000:       -65536           0           0\n00000001:            0       65536           0\n00000002:            0           0  1073741824\n',
+          rotation: 0,
+        }],
+      },
+      code: 'REDRAW_COMPOSITION_INPUT_GEOMETRY_INVALID',
+    },
+  ];
+  for (const item of cases) {
+    const state = setup();
+    try {
+      await addReadyVersion(state);
+      const oldRelative = touch(state.root, `redraw/version-${state.versionId}/exports/old-${item.name}.mp4`, 'old-output');
+      const oldAssetId = Number(state.db.prepare(`INSERT INTO assets
+        (name, type, category, local_path, metadata, created_at, updated_at)
+        VALUES ('old', 'video', 'redraw_composition', ?, '{}', ?, ?)`)
+        .run(oldRelative, state.now, state.now).lastInsertRowid);
+      const ledgerBefore = state.db.prepare('SELECT id, status, amount FROM tenant_usage_reservations ORDER BY id').all();
+      const created = await createComposition(ctx(state), {
+        versionId: state.versionId,
+        idempotencyKey: `compose-input-geometry-${item.name}`,
+        audioMode: 'replace',
+      });
+      const versionStatusBeforeRun = state.db.prepare('SELECT status FROM redraw_versions WHERE id = ?').get(state.versionId).status;
+      const inputExec = (_bin, args, _options, callback) => {
+        const file = String(args.at(-1));
+        const geometry = file.endsWith('shot-1.mp4') ? item.first : item.second;
+        callback(null, geometryProbeJson(geometry), '');
+      };
+
+      await assert.rejects(
+        () => runComposition(ctx(state, {
+          execFile: inputExec,
+          compositionRunner: () => { throw new Error('workspace validation ran too late'); },
+        }), created.id),
+        (error) => error.code === item.code,
+      );
+
+      assert.deepEqual(
+        state.db.prepare('SELECT status, error_code FROM redraw_exports WHERE id = ?').get(created.id),
+        { status: 'failed', error_code: item.code },
+      );
+      const exportBase = path.join(state.root, 'redraw', `version-${state.versionId}`, 'exports');
+      assert.equal(fs.readdirSync(exportBase).some((name) => name.startsWith(`export-${created.id}-`)), false);
+      assert.deepEqual(state.db.prepare('SELECT id, status, amount FROM tenant_usage_reservations ORDER BY id').all(), ledgerBefore);
+      assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM assets WHERE id = ?').get(oldAssetId).count, 1);
+      assert.equal(fs.readFileSync(path.join(state.root, oldRelative), 'utf8'), 'old-output');
+      assert.equal(state.db.prepare(`SELECT COUNT(*) AS count FROM assets
+        WHERE json_extract(metadata, '$.export_id') = ?`).get(created.id).count, 0);
+      assert.equal(state.db.prepare('SELECT status FROM redraw_versions WHERE id = ?').get(state.versionId).status, versionStatusBeforeRun);
+    } finally {
+      cleanup(state);
+    }
+  }
+});
+
+test('runComposition rejects input bytes that change during the private geometry probe', async () => {
+  const state = setup();
+  try {
+    await addReadyVersion(state);
+    const created = await createComposition(ctx(state), {
+      versionId: state.versionId,
+      idempotencyKey: 'compose-input-probe-drift',
+      audioMode: 'replace',
+    });
+    let changed = false;
+    await assert.rejects(
+      () => runComposition(ctx(state, {
+        execFile: (_bin, args, _options, callback) => {
+          const file = String(args.at(-1));
+          if (!changed && file.endsWith('shot-1.mp4')) {
+            changed = true;
+            fs.writeFileSync(file, 'changed-during-probe');
+          }
+          callback(null, geometryProbeJson(), '');
+        },
+        compositionRunner: () => { throw new Error('must not compose drifted input'); },
+      }), created.id),
+      (error) => error.code === 'REDRAW_COMPOSITION_INPUT_DRIFT',
+    );
+    assert.equal(fs.existsSync(path.join(state.root, 'redraw')), false);
+    assert.deepEqual(
+      state.db.prepare('SELECT status, error_code FROM redraw_exports WHERE id = ?').get(created.id),
+      { status: 'failed', error_code: 'REDRAW_COMPOSITION_INPUT_DRIFT' },
+    );
   } finally {
     cleanup(state);
   }
@@ -534,6 +763,10 @@ test('runComposition applies default process timeouts and marks ffmpeg/probe tim
         audioMode: 'replace',
       });
       const fakeExecFile = (_bin, _args, options, callback) => {
+        if (String(_args.at(-1)).includes(`${path.sep}videos${path.sep}`)) {
+          callback(null, geometryProbeJson(), '');
+          return;
+        }
         optionsSeen.push(options);
         const error = new Error('timed out');
         error.killed = true;
@@ -568,29 +801,185 @@ test('runComposition applies default process timeouts and marks ffmpeg/probe tim
   }
 });
 
-test('runComposition rejects output probe dimension drift', async () => {
+test('runComposition rejects output dimension, aspect-ratio, or rotation drift without completing assets', async () => {
+  const cases = [
+    {
+      name: 'dimension',
+      probe: {
+          duration: 3,
+          width: 640,
+          height: 720,
+          sampleAspectRatio: '1:1',
+          displayAspectRatio: '8:9',
+          rotation: 0,
+          hasVideo: true,
+          hasAudio: true,
+      },
+    },
+    {
+      name: 'sar',
+      probe: {
+        duration: 3, width: 1280, height: 720,
+        sampleAspectRatio: '2:1', displayAspectRatio: '32:9', rotation: 0,
+        hasVideo: true, hasAudio: true,
+      },
+    },
+    {
+      name: 'rotation',
+      probe: {
+        duration: 3, width: 1280, height: 720,
+        sampleAspectRatio: '1:1', displayAspectRatio: '16:9', rotation: 90,
+        hasVideo: true, hasAudio: true,
+      },
+    },
+  ];
+  for (const item of cases) {
+    const state = setup();
+    try {
+      await addReadyVersion(state);
+      const created = await createComposition(ctx(state), {
+        versionId: state.versionId,
+        idempotencyKey: `compose-output-${item.name}`,
+        audioMode: 'replace',
+      });
+      const versionStatusBeforeRun = state.db.prepare('SELECT status FROM redraw_versions WHERE id = ?').get(state.versionId).status;
+      await assert.rejects(
+        () => runComposition(ctx(state, { probeRunner: async () => item.probe }), created.id),
+        (error) => error.code === 'REDRAW_COMPOSITION_OUTPUT_INVALID',
+      );
+      assert.deepEqual(
+        state.db.prepare('SELECT status, error_code FROM redraw_exports WHERE id = ?').get(created.id),
+        { status: 'failed', error_code: 'REDRAW_COMPOSITION_OUTPUT_INVALID' },
+      );
+      assert.equal(state.db.prepare(`SELECT COUNT(*) AS count FROM assets
+        WHERE json_extract(metadata, '$.export_id') = ?`).get(created.id).count, 0);
+      assert.equal(state.db.prepare('SELECT status FROM redraw_versions WHERE id = ?').get(state.versionId).status, versionStatusBeforeRun);
+    } finally {
+      cleanup(state);
+    }
+  }
+});
+
+test('runComposition rejects output bytes that change during the output geometry probe', async () => {
   const state = setup();
   try {
     await addReadyVersion(state);
     const created = await createComposition(ctx(state), {
       versionId: state.versionId,
-      idempotencyKey: 'compose-output-dim',
+      idempotencyKey: 'compose-output-probe-drift',
       audioMode: 'replace',
     });
     await assert.rejects(
       () => runComposition(ctx(state, {
-        probeRunner: async () => ({
-          duration: 3,
-          width: 640,
-          height: 720,
-          hasVideo: true,
-          hasAudio: true,
-        }),
+        probeRunner: async (outputPath) => {
+          fs.writeFileSync(outputPath, 'changed-during-output-probe');
+          return {
+            duration: 3, width: 1280, height: 720,
+            sampleAspectRatio: '1:1', displayAspectRatio: '16:9', rotation: 0,
+            hasVideo: true, hasAudio: true,
+          };
+        },
       }), created.id),
       (error) => error.code === 'REDRAW_COMPOSITION_OUTPUT_INVALID',
     );
+    assert.deepEqual(
+      state.db.prepare('SELECT status, error_code FROM redraw_exports WHERE id = ?').get(created.id),
+      { status: 'failed', error_code: 'REDRAW_COMPOSITION_OUTPUT_INVALID' },
+    );
+    assert.equal(state.db.prepare(`SELECT COUNT(*) AS count FROM assets
+      WHERE json_extract(metadata, '$.export_id') = ?`).get(created.id).count, 0);
   } finally {
     cleanup(state);
+  }
+});
+
+test('runComposition binds probed output bytes through final input revalidation and publication', async () => {
+  const cases = [
+    { name: 'replace-after-probe', stage: 'post-probe', operation: 'replace' },
+    { name: 'delete-after-probe', stage: 'post-probe', operation: 'delete' },
+    { name: 'replace-during-final-input-check', stage: 'final-input', operation: 'replace' },
+    { name: 'delete-during-final-input-check', stage: 'final-input', operation: 'delete' },
+    { name: 'unchanged-control', stage: 'none', operation: 'none' },
+  ];
+  for (const item of cases) {
+    const state = setup();
+    try {
+      await addReadyVersion(state);
+      const oldRelative = touch(state.root, `redraw/version-${state.versionId}/exports/old-${item.name}.mp4`, 'old-completed-output');
+      const oldAssetId = Number(state.db.prepare(`INSERT INTO assets
+        (name, type, category, local_path, metadata, created_at, updated_at)
+        VALUES ('old', 'video', 'redraw_composition', ?, '{}', ?, ?)`)
+        .run(oldRelative, state.now, state.now).lastInsertRowid);
+      const oldManifest = JSON.stringify({ preserved: item.name });
+      const oldExportId = Number(state.db.prepare(`INSERT INTO redraw_exports
+        (version_id, tenant_id, user_id, export_type, asset_id, version_number, manifest_json,
+         release_hash, status, created_at, updated_at)
+        VALUES (?, 'tenant-a', 'user-a', 'video', ?, 1, ?, ?, 'completed', ?, ?)`)
+        .run(state.versionId, oldAssetId, oldManifest, 'c'.repeat(64), state.now, state.now).lastInsertRowid);
+      const oldRow = state.db.prepare('SELECT * FROM redraw_exports WHERE id = ?').get(oldExportId);
+      const baseCtx = ctx(state);
+      let outputPath = null;
+      let outputProbed = false;
+      let changed = false;
+      const mutateOutput = () => {
+        if (changed || !outputPath || item.operation === 'none') return;
+        if (item.operation === 'replace') fs.writeFileSync(outputPath, 'different bytes after real validation');
+        if (item.operation === 'delete') fs.rmSync(outputPath);
+        changed = true;
+      };
+      const runCtx = ctx(state, {
+        artifactVerifier: async (...args) => {
+          const result = await baseCtx.artifactVerifier(...args);
+          if (item.stage === 'final-input' && outputProbed) mutateOutput();
+          return result;
+        },
+        compositionRunner: async (job) => {
+          outputPath = job.outputPath;
+          fs.writeFileSync(outputPath, 'validated-output-bytes');
+        },
+        probeRunner: async () => {
+          outputProbed = true;
+          return {
+            duration: 3, width: 1280, height: 720,
+            sampleAspectRatio: '1:1', displayAspectRatio: '16:9', rotation: 0,
+            hasVideo: true, hasAudio: true,
+          };
+        },
+        clock: () => {
+          if (item.stage === 'post-probe' && outputProbed) mutateOutput();
+          return state.now;
+        },
+      });
+      const created = await createComposition(runCtx, {
+        versionId: state.versionId,
+        idempotencyKey: `compose-final-output-binding-${item.name}`,
+        audioMode: 'replace',
+      });
+
+      if (item.stage === 'none') {
+        const completed = await runComposition(runCtx, created.id);
+        const manifest = JSON.parse(completed.manifest_json);
+        assert.equal(completed.status, 'completed');
+        assert.equal(manifest.outputs.hashes.mp4, sha256('validated-output-bytes'));
+        assert.equal(state.db.prepare(`SELECT COUNT(*) AS count FROM assets
+          WHERE json_extract(metadata, '$.export_id') = ?`).get(created.id).count, 3);
+      } else {
+        await assert.rejects(
+          () => runComposition(runCtx, created.id),
+          (error) => error.code === 'REDRAW_COMPOSITION_OUTPUT_INVALID',
+        );
+        assert.deepEqual(
+          state.db.prepare('SELECT status, error_code FROM redraw_exports WHERE id = ?').get(created.id),
+          { status: 'failed', error_code: 'REDRAW_COMPOSITION_OUTPUT_INVALID' },
+        );
+        assert.equal(state.db.prepare(`SELECT COUNT(*) AS count FROM assets
+          WHERE json_extract(metadata, '$.export_id') = ?`).get(created.id).count, 0);
+      }
+      assert.deepEqual(state.db.prepare('SELECT * FROM redraw_exports WHERE id = ?').get(oldExportId), oldRow);
+      assert.equal(fs.readFileSync(path.join(state.root, oldRelative), 'utf8'), 'old-completed-output');
+    } finally {
+      cleanup(state);
+    }
   }
 });
 
@@ -815,7 +1204,7 @@ test('runComposition gives an all-silent approved release an explicit silent aud
   }
 });
 
-test('REQUIRE_LOCAL_FFMPEG 生成可 probe MP4、SRT、VTT 和脱敏 release manifest', async (t) => {
+test('REQUIRE_LOCAL_FFMPEG 保留 160x288 SAR 81:80 的 9:16 几何和四角方向', async (t) => {
   if (process.env.REQUIRE_LOCAL_FFMPEG !== '1') {
     t.skip('set REQUIRE_LOCAL_FFMPEG=1 to require real media composition');
     return;
@@ -826,15 +1215,26 @@ test('REQUIRE_LOCAL_FFMPEG 生成可 probe MP4、SRT、VTT 和脱敏 release man
   const ffprobe = getFfprobePath();
   function generated(name, args) {
     const output = path.join(fixtureDir, name);
-    execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', ...args, output], { windowsHide: true });
+    execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', ...args, output], {
+      windowsHide: true,
+      timeout: NATIVE_TEST_TIMEOUT_MS,
+    });
     return fs.readFileSync(output);
   }
   const media = {
     video1Bytes: generated('shot-1.mp4', [
-      '-f', 'lavfi', '-i', 'color=c=red:s=320x180:d=1', '-an', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-t', '1',
+      '-f', 'lavfi', '-i', [
+        'color=c=black:s=160x288:d=1',
+        'drawbox=x=0:y=0:w=41:h=53:color=red:t=fill',
+        'drawbox=x=113:y=0:w=47:h=61:color=green:t=fill',
+        'drawbox=x=0:y=211:w=37:h=77:color=blue:t=fill',
+        'drawbox=x=109:y=219:w=51:h=69:color=yellow:t=fill',
+      ].join(','), '-vf', 'setsar=81/80:max=65535',
+      '-an', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-t', '1',
     ]),
     video2Bytes: generated('shot-2.mp4', [
-      '-f', 'lavfi', '-i', 'color=c=blue:s=320x180:d=2', '-an', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-t', '2',
+      '-f', 'lavfi', '-i', 'color=c=blue:s=160x288:d=2', '-vf', 'setsar=81/80:max=65535',
+      '-an', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-t', '2',
     ]),
     audio1Bytes: generated('a1.mp3', [
       '-f', 'lavfi', '-i', 'sine=frequency=440:duration=0.8', '-c:a', 'libmp3lame',
@@ -847,10 +1247,10 @@ test('REQUIRE_LOCAL_FFMPEG 生成可 probe MP4、SRT、VTT 和脱敏 release man
   try {
     await addReadyVersion(state, media);
     const realCtx = ctx(state, {
-      width: 320,
-      height: 180,
+      artifactVerifier: undefined,
       compositionRunner: undefined,
       probeRunner: undefined,
+      execFile: undefined,
     });
     const created = await createComposition(realCtx, {
       versionId: state.versionId,
@@ -861,16 +1261,164 @@ test('REQUIRE_LOCAL_FFMPEG 生成可 probe MP4、SRT、VTT 和脱敏 release man
     const manifest = JSON.parse(completed.manifest_json);
     const outputPath = path.join(state.root, manifest.outputs.mp4_path);
     const probe = JSON.parse(execFileSync(ffprobe, [
-      '-v', 'error', '-show_entries', 'format=duration:stream=codec_type,width,height', '-of', 'json', outputPath,
-    ], { encoding: 'utf8', windowsHide: true }));
-    assert.equal(probe.streams.some((stream) => stream.codec_type === 'video'), true);
+      '-v', 'error', '-show_entries', 'format=duration:stream=codec_type,width,height,sample_aspect_ratio,display_aspect_ratio',
+      '-of', 'json', outputPath,
+    ], { encoding: 'utf8', windowsHide: true, timeout: NATIVE_TEST_TIMEOUT_MS }));
+    const video = probe.streams.find((stream) => stream.codec_type === 'video');
+    assert.equal(Boolean(video), true);
     assert.equal(probe.streams.some((stream) => stream.codec_type === 'audio'), true);
+    assert.equal(video.width, 160);
+    assert.equal(video.height, 288);
+    assert.equal(video.sample_aspect_ratio, '81:80');
+    assert.equal(video.display_aspect_ratio, '9:16');
     assert.ok(Math.abs(Number(probe.format.duration) - 3) <= 0.1);
+
+    function frameSamples(file) {
+      const frame = execFileSync(ffmpeg, [
+        '-hide_banner', '-loglevel', 'error', '-ss', '0.2', '-i', file,
+        '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1',
+      ], { windowsHide: true, maxBuffer: 160 * 288 * 4, timeout: NATIVE_TEST_TIMEOUT_MS });
+      const at = (x, y) => [...frame.subarray((y * 160 + x) * 3, (y * 160 + x) * 3 + 3)];
+      return { top_left: at(10, 10), top_right: at(150, 10), bottom_left: at(10, 278), bottom_right: at(150, 278) };
+    }
+    function assertFourCorners(samples) {
+      const [tl, tr, bl, br] = [samples.top_left, samples.top_right, samples.bottom_left, samples.bottom_right];
+      assert.ok(tl[0] > tl[1] + 60 && tl[0] > tl[2] + 60, 'top-left remains red');
+      assert.ok(tr[1] > tr[0] + 40 && tr[1] > tr[2] + 40, 'top-right remains green');
+      assert.ok(bl[2] > bl[0] + 60 && bl[2] > bl[1] + 40, 'bottom-left remains blue');
+      assert.ok(br[0] > 150 && br[1] > 150 && br[2] < 80, 'bottom-right remains yellow');
+    }
+    const sourcePath = path.join(state.root, 'videos', 'shot-1.mp4');
+    const sourceSamples = frameSamples(sourcePath);
+    const outputSamples = frameSamples(outputPath);
+    assertFourCorners(sourceSamples);
+    assertFourCorners(outputSamples);
+
     assert.ok(fs.readFileSync(path.join(state.root, manifest.outputs.srt_path), 'utf8').includes('Hello'));
     assert.ok(fs.readFileSync(path.join(state.root, manifest.outputs.vtt_path), 'utf8').startsWith('WEBVTT'));
     assert.match(completed.release_hash, /^[a-f0-9]{64}$/);
     assert.equal(hasAbsoluteString(manifest), false);
     assert.equal(/https?:|provider|api[_-]?key|token|secret/i.test(JSON.stringify(manifest.episode_release)), false);
+    for (const kind of ['mp4', 'srt', 'vtt']) {
+      const download = await resolveDownloadArtifact(realCtx, { exportId: completed.id, kind });
+      assert.match(download.sha256, /^[a-f0-9]{64}$/);
+      assert.equal(fs.existsSync(download.absolute_path), true);
+    }
+
+    const completedBeforeRejectedOutput = state.db.prepare('SELECT * FROM redraw_exports WHERE id = ?').get(completed.id);
+    const forced = await createComposition(realCtx, {
+      versionId: state.versionId,
+      idempotencyKey: 'real-ffmpeg-force-square-sar',
+      audioMode: 'replace',
+    });
+    const forcingExec = (bin, args, options, callback) => {
+      const forcedArgs = args.includes('-filter_complex')
+        ? args.map((arg) => (typeof arg === 'string' ? arg.replace(/setsar=81\/80:max=65535/g, 'setsar=1:max=65535') : arg))
+        : args;
+      execFile(bin, forcedArgs, options, callback);
+    };
+    await assert.rejects(
+      () => runComposition({ ...realCtx, execFile: forcingExec }, forced.id),
+      (error) => error.code === 'REDRAW_COMPOSITION_OUTPUT_INVALID',
+    );
+    assert.deepEqual(
+      state.db.prepare('SELECT status, error_code FROM redraw_exports WHERE id = ?').get(forced.id),
+      { status: 'failed', error_code: 'REDRAW_COMPOSITION_OUTPUT_INVALID' },
+    );
+    assert.equal(state.db.prepare(`SELECT COUNT(*) AS count FROM assets
+      WHERE json_extract(metadata, '$.export_id') = ?`).get(forced.id).count, 0);
+    assert.deepEqual(state.db.prepare('SELECT * FROM redraw_exports WHERE id = ?').get(completed.id), completedBeforeRejectedOutput);
+
+    const evidenceDir = process.env.G5_COMPOSITION_EVIDENCE_DIR;
+    if (evidenceDir) {
+      fs.mkdirSync(evidenceDir);
+      const inputFrame = path.join(evidenceDir, 'input-frame.png');
+      const outputFrame = path.join(evidenceDir, 'output-frame.png');
+      execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-ss', '0.2', '-i', sourcePath, '-frames:v', '1', inputFrame], {
+        windowsHide: true,
+        timeout: NATIVE_TEST_TIMEOUT_MS,
+      });
+      execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-ss', '0.2', '-i', outputPath, '-frames:v', '1', outputFrame], {
+        windowsHide: true,
+        timeout: NATIVE_TEST_TIMEOUT_MS,
+      });
+      for (const [source, target] of [
+        [sourcePath, path.join(evidenceDir, 'input-160x288-sar81-80.mp4')],
+        [outputPath, path.join(evidenceDir, 'output-160x288-sar81-80.mp4')],
+      ]) fs.copyFileSync(source, target, fs.constants.COPYFILE_EXCL);
+      fs.writeFileSync(path.join(evidenceDir, 'receipt.json'), JSON.stringify({
+        schema: 'g5-composition-geometry-evidence-v1',
+        synthetic_only: true,
+        input: { sha256: await fileSha256(sourcePath), samples: sourceSamples },
+        output: { sha256: await fileSha256(outputPath), probe, samples: outputSamples },
+        assertions: {
+          geometry: '160x288 SAR 81:80 DAR 9:16',
+          raw_pixels: 'all four asymmetric colored corners retained in original orientation',
+          forced_output_sar_1_rejected: true,
+        },
+      }, null, 2) + '\n', { flag: 'wx' });
+    }
+  } finally {
+    cleanup(state);
+  }
+});
+
+test('REQUIRE_LOCAL_FFMPEG 保留原 320x180 SAR 1:1 TTS、字幕和下载控制样本', async (t) => {
+  if (process.env.REQUIRE_LOCAL_FFMPEG !== '1') {
+    t.skip('set REQUIRE_LOCAL_FFMPEG=1 to require real media composition');
+    return;
+  }
+  const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-composition-square-control-'));
+  t.after(() => fs.rmSync(fixtureDir, { recursive: true, force: true }));
+  const ffmpeg = getFfmpegPath();
+  const ffprobe = getFfprobePath();
+  const generated = (name, args) => {
+    const output = path.join(fixtureDir, name);
+    execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', ...args, output], {
+      windowsHide: true,
+      timeout: NATIVE_TEST_TIMEOUT_MS,
+    });
+    return fs.readFileSync(output);
+  };
+  const state = setup();
+  try {
+    await addReadyVersion(state, {
+      video1Bytes: generated('square-1.mp4', [
+        '-f', 'lavfi', '-i', 'color=c=red:s=320x180:d=1', '-an', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-t', '1',
+      ]),
+      video2Bytes: generated('square-2.mp4', [
+        '-f', 'lavfi', '-i', 'color=c=blue:s=320x180:d=2', '-an', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-t', '2',
+      ]),
+      audio1Bytes: generated('square-a1.mp3', ['-f', 'lavfi', '-i', 'sine=frequency=440:duration=0.8', '-c:a', 'libmp3lame']),
+      audio2Bytes: generated('square-a2.mp3', ['-f', 'lavfi', '-i', 'sine=frequency=660:duration=0.6', '-c:a', 'libmp3lame']),
+    });
+    const realCtx = ctx(state, {
+      artifactVerifier: undefined,
+      compositionRunner: undefined,
+      probeRunner: undefined,
+      execFile: undefined,
+    });
+    const created = await createComposition(realCtx, {
+      versionId: state.versionId,
+      idempotencyKey: 'real-square-pixel-control',
+      audioMode: 'replace',
+    });
+    const completed = await runComposition(realCtx, created.id);
+    const manifest = JSON.parse(completed.manifest_json);
+    const outputPath = path.join(state.root, manifest.outputs.mp4_path);
+    const probe = JSON.parse(execFileSync(ffprobe, [
+      '-v', 'error', '-show_entries', 'format=duration:stream=codec_type,width,height,sample_aspect_ratio,display_aspect_ratio',
+      '-of', 'json', outputPath,
+    ], { encoding: 'utf8', windowsHide: true, timeout: NATIVE_TEST_TIMEOUT_MS }));
+    const video = probe.streams.find((stream) => stream.codec_type === 'video');
+    assert.deepEqual(
+      [video.width, video.height, video.sample_aspect_ratio, video.display_aspect_ratio],
+      [320, 180, '1:1', '16:9'],
+    );
+    assert.equal(probe.streams.some((stream) => stream.codec_type === 'audio'), true);
+    assert.ok(Math.abs(Number(probe.format.duration) - 3) <= 0.1);
+    assert.ok(fs.readFileSync(path.join(state.root, manifest.outputs.srt_path), 'utf8').includes('Hello'));
+    assert.ok(fs.readFileSync(path.join(state.root, manifest.outputs.vtt_path), 'utf8').startsWith('WEBVTT'));
     for (const kind of ['mp4', 'srt', 'vtt']) {
       const download = await resolveDownloadArtifact(realCtx, { exportId: completed.id, kind });
       assert.match(download.sha256, /^[a-f0-9]{64}$/);

@@ -102,7 +102,7 @@ test('第四步 API 只暴露报价、启动、状态、合成、导出列表和
 test('第四步工作台由后端 current_step 门禁开放且不伪装完整 NLE', () => {
   assert.match(workspaceSource, /RedrawEditStep/)
   assert.match(workspaceSource, /allowedStep === 4/)
-  assert.match(workspaceSource, /item\.step > backendStep/)
+  assert.match(workspaceSource, /step > backendStep\.value/)
   assert.match(stepSource, /RedrawTimeline/)
   assert.match(stepSource, /RedrawPlayerCompare/)
   assert.match(stepSource, /RedrawExportPanel/)

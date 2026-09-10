@@ -213,6 +213,104 @@ test('normalizes a gap-free episode blueprint with off-screen and unresolved spe
   assert.match(value.blueprint_hash, /^[a-f0-9]{64}$/);
 });
 
+test('preserves an explicit no-audio source through normalization, lock and projection', () => {
+  const raw = fixtureBlueprint();
+  raw.source.audio_codec = null;
+  raw.source.audio_sample_rate_hz = null;
+  raw.source.audio_channels = null;
+  for (const shot of raw.shots) {
+    shot.dialogue = [];
+    shot.audio_contract.dialogue_mode = 'silent';
+  }
+  raw.shots[1].text_regions[0].kind = 'subtitle';
+  const before = JSON.stringify(raw);
+
+  const value = normalizeEpisodeBlueprint(raw);
+
+  assert.deepEqual(value.source, raw.source);
+  assert.equal(JSON.stringify(raw), before);
+  assert.deepEqual(value.shots[1].text_regions, raw.shots[1].text_regions);
+  assert.equal(normalizeEpisodeBlueprint(value).blueprint_hash, value.blueprint_hash);
+  assert.equal(assertBlueprintLockable(value), value);
+  const facts = projectSourceFactsV2(value);
+  assert.ok(facts.shots.every((shot) => shot.dialogue.length === 0));
+  assert.ok(facts.shots.every((shot) => shot.audio_contract.dialogue_mode === 'silent'));
+});
+
+test('preserves valid audio metadata without changing spoken dialogue', () => {
+  const raw = fixtureBlueprint();
+  const value = normalizeEpisodeBlueprint(raw);
+
+  assert.deepEqual(value.source, raw.source);
+  assert.equal(value.source.audio_codec, 'aac');
+  assert.equal(value.source.audio_sample_rate_hz, 48_000);
+  assert.equal(value.source.audio_channels, 2);
+  assert.deepEqual(value.shots.map((shot) => shot.dialogue), raw.shots.map((shot) => shot.dialogue));
+});
+
+test('rejects spoken dialogue for a no-audio source even with audio or subtitle evidence', () => {
+  for (const kind of ['audio_transcript', 'subtitle']) {
+    const raw = fixtureBlueprint();
+    raw.source.audio_codec = null;
+    raw.source.audio_sample_rate_hz = null;
+    raw.source.audio_channels = null;
+    raw.evidence_manifest.items[0].kind = kind;
+
+    assert.throws(
+      () => normalizeEpisodeBlueprint(raw),
+      (error) => error.code === 'BLUEPRINT_SOURCE_AUDIO_CONFLICT',
+      kind,
+    );
+  }
+});
+
+test('keeps subtitle-backed spoken dialogue valid when the source has audio', () => {
+  const raw = fixtureBlueprint();
+  raw.evidence_manifest.items[0].kind = 'subtitle';
+
+  const value = normalizeEpisodeBlueprint(raw);
+
+  assert.deepEqual(value.shots.map((shot) => shot.dialogue), raw.shots.map((shot) => shot.dialogue));
+  assert.equal(value.source.audio_codec, 'aac');
+});
+
+test('rejects every partially null audio metadata tuple', () => {
+  const fields = ['audio_codec', 'audio_sample_rate_hz', 'audio_channels'];
+  for (let mask = 1; mask < 7; mask += 1) {
+    const raw = fixtureBlueprint();
+    fields.forEach((field, index) => {
+      if (mask & (1 << index)) raw.source[field] = null;
+    });
+    assert.throws(() => normalizeEpisodeBlueprint(raw), /source\.audio_/, `null mask ${mask}`);
+  }
+});
+
+test('rejects missing, undefined and invalid audio metadata instead of treating it as no audio', () => {
+  const fields = ['audio_codec', 'audio_sample_rate_hz', 'audio_channels'];
+  for (const field of fields) {
+    const missing = fixtureBlueprint();
+    delete missing.source[field];
+    assert.throws(() => normalizeEpisodeBlueprint(missing), /source\.audio_/, `missing ${field}`);
+
+    const undefinedValue = fixtureBlueprint();
+    fields.forEach((item) => { undefinedValue.source[item] = null; });
+    undefinedValue.source[field] = undefined;
+    assert.throws(() => normalizeEpisodeBlueprint(undefinedValue), /source\.audio_/, `undefined ${field}`);
+  }
+  const invalidValues = {
+    audio_codec: ['', ' ', 0, false, {}],
+    audio_sample_rate_hz: [0, -1, 1.5, '48000', false, NaN, Infinity, {}],
+    audio_channels: [0, -1, 1.5, '2', false, NaN, Infinity, {}],
+  };
+  for (const [field, values] of Object.entries(invalidValues)) {
+    for (const value of values) {
+      const raw = fixtureBlueprint();
+      raw.source[field] = value;
+      assert.throws(() => normalizeEpisodeBlueprint(raw), /source\.audio_/, `invalid ${field}: ${String(value)}`);
+    }
+  }
+});
+
 test('blueprint hash is canonical, excludes its own value and does not mutate input', () => {
   const raw = lockedBlueprint();
   const before = JSON.stringify(raw);

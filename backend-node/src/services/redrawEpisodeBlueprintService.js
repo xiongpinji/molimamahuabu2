@@ -1,4 +1,5 @@
 const { createHash } = require('crypto');
+const { readVerifiedSourceAudioContext } = require('./redrawSourceAudioEvidenceService');
 
 const {
   normalizeEpisodeFactsV2,
@@ -20,6 +21,9 @@ const SHOT_FIELDS = [
 const DIALOGUE_EVIDENCE_KINDS = new Set([
   'asr', 'audio', 'audio_transcript', 'subtitle', 'transcript',
 ]);
+const CORRECTION_EVIDENCE_KINDS = new Set(['asr', 'audio', 'audio_transcript', 'transcript']);
+const CORRECTION_FIELDS = ['evidence_ref', 'evidence_sha256', 'original_source_text',
+  'original_start_ms', 'original_end_ms', 'source_start_ms', 'source_end_ms'];
 
 const DANGEROUS_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 
@@ -103,8 +107,8 @@ function positiveInteger(value, name) {
   return value;
 }
 
-function timestamp(value, name) {
-  if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${name} 时间码无效`);
+function timestamp(value, name, precise = false) {
+  if (!(precise ? Number.isFinite(value) : Number.isSafeInteger(value)) || value < 0) throw new Error(`${name} 时间码无效`);
   return value;
 }
 
@@ -120,6 +124,8 @@ function normalizeSource(raw) {
   ];
   assertExactKeys(raw, fields, fields, 'source');
   if (!Number.isFinite(raw.fps) || raw.fps <= 0) throw new Error('source.fps 无效');
+  const noAudio = raw.audio_codec === null
+    && raw.audio_sample_rate_hz === null && raw.audio_channels === null;
   return {
     asset_id: assetId(raw.asset_id, 'source.asset_id'),
     sha256: safeText(raw.sha256, 'source.sha256', 64),
@@ -128,9 +134,9 @@ function normalizeSource(raw) {
     height: positiveInteger(raw.height, 'source.height'),
     fps: raw.fps,
     video_codec: safeText(raw.video_codec, 'source.video_codec', 64),
-    audio_codec: safeText(raw.audio_codec, 'source.audio_codec', 64),
-    audio_sample_rate_hz: positiveInteger(raw.audio_sample_rate_hz, 'source.audio_sample_rate_hz'),
-    audio_channels: positiveInteger(raw.audio_channels, 'source.audio_channels'),
+    audio_codec: noAudio ? null : safeText(raw.audio_codec, 'source.audio_codec', 64),
+    audio_sample_rate_hz: noAudio ? null : positiveInteger(raw.audio_sample_rate_hz, 'source.audio_sample_rate_hz'),
+    audio_channels: noAudio ? null : positiveInteger(raw.audio_channels, 'source.audio_channels'),
   };
 }
 
@@ -355,7 +361,64 @@ function dialogueEvidenceRequired(message) {
   throw codedError('DIALOGUE_EVIDENCE_REQUIRED', message);
 }
 
-function normalizeDialogue(raw, name, shot, characters, evidence, seenIds) {
+function verifiedDialogueSegment(turn, evidence, audioContext) {
+  const matches = (Array.isArray(turn.evidence_refs) ? turn.evidence_refs : []).flatMap(ref => {
+    const entry = readVerifiedSourceAudioContext(audioContext, ref);
+    if (!entry) return [];
+    const manifest = evidence.get(ref);
+    if (!manifest || String(manifest.asset_id) !== String(entry.assetId) || manifest.sha256 !== entry.sha256) {
+      throw new Error('对白已验证音频资产绑定不一致');
+    }
+    const segment = entry.evidence.segments.find(item => item.id === turn.id);
+    if (!segment) throw new Error('对白不属于已验证音频证据');
+    return [{ segment, entry }];
+  });
+  if (matches.length > 1) throw new Error('对白已验证音频证据不唯一');
+  return matches[0];
+}
+
+function normalizeDialogueSourceCorrection(turn, shot, evidence, durationMs, audioContext) {
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(turn, 'source_correction');
+    if (!descriptor || !Object.hasOwn(descriptor, 'value')) throw new Error('修订必须是自有数据字段');
+    const raw = descriptor.value;
+    assertExactKeys(raw, CORRECTION_FIELDS, CORRECTION_FIELDS, 'source_correction');
+    const descriptors = Object.getOwnPropertyDescriptors(raw);
+    for (const key of Reflect.ownKeys(descriptors)) {
+      if (!CORRECTION_FIELDS.includes(key) || !Object.hasOwn(descriptors[key], 'value')) {
+        throw new Error('修订不允许未知字段或访问器');
+      }
+    }
+    const ref = raw.evidence_ref;
+    const item = evidence.get(ref);
+    const verified = verifiedDialogueSegment(turn, evidence, audioContext);
+    if (!Array.isArray(turn.evidence_refs) || !turn.evidence_refs.includes(ref)
+      || !item || !CORRECTION_EVIDENCE_KINDS.has(item.kind)
+      || typeof raw.evidence_sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(raw.evidence_sha256)
+      || raw.evidence_sha256 !== item.sha256) throw new Error('修订证据绑定无效');
+    for (const prefix of ['original', 'source']) {
+      const start = timestamp(raw[`${prefix}_start_ms`], `${prefix}_start_ms`, Boolean(verified));
+      const end = timestamp(raw[`${prefix}_end_ms`], `${prefix}_end_ms`, Boolean(verified));
+      if (end <= start || end > durationMs) throw new Error('修订完整时间越界');
+    }
+    if (typeof raw.original_source_text !== 'string' || !raw.original_source_text.trim()
+      || raw.original_source_text.length > 16384 || raw.original_source_text.includes('\0')) {
+      throw new Error('修订原文无效');
+    }
+    if (verified && (raw.original_start_ms !== verified.segment.start_ms
+      || raw.original_end_ms !== verified.segment.end_ms
+      || raw.original_source_text !== verified.segment.source_text.trim())) throw new Error('修订原始音频锚点不一致');
+    safeText(turn.source_text, 'source_text', 500);
+    const start = Math.max(raw.source_start_ms, shot.start_ms);
+    const end = Math.min(raw.source_end_ms, shot.end_ms);
+    if (start >= end || turn.start_ms !== start || turn.end_ms !== end) throw new Error('修订投影不一致');
+    return Object.fromEntries(CORRECTION_FIELDS.map((key) => [key, raw[key]]));
+  } catch {
+    throw codedError('REDRAW_BLUEPRINT_CORRECTION_INVALID', '对白人工修订合同无效');
+  }
+}
+
+function normalizeDialogue(raw, name, shot, characters, evidence, seenIds, durationMs, audioContext) {
   assertArray(raw, name);
   return raw.map((turn, index) => {
     const itemName = `${name}[${index}]`;
@@ -364,15 +427,22 @@ function normalizeDialogue(raw, name, shot, characters, evidence, seenIds) {
       'source_text', 'source_language', 'emotion', 'evidence_refs', 'confidence',
       'review_status',
     ];
-    assertExactKeys(turn, fields, fields, itemName);
+    assertExactKeys(turn, [...fields, 'source_correction'], fields, itemName);
+    const verified = verifiedDialogueSegment(turn, evidence, audioContext);
+    const correction = Object.hasOwn(turn, 'source_correction')
+      ? normalizeDialogueSourceCorrection(turn, shot, evidence, durationMs, audioContext) : undefined;
     const id = stableId(turn.id, `${itemName}.id`);
     if (seenIds.has(id)) throw new Error(`${itemName}.id 重复`);
     seenIds.add(id);
-    const start = timestamp(turn.start_ms, `${itemName}.start_ms`);
-    const end = timestamp(turn.end_ms, `${itemName}.end_ms`);
+    const start = timestamp(turn.start_ms, `${itemName}.start_ms`, Boolean(verified));
+    const end = timestamp(turn.end_ms, `${itemName}.end_ms`, Boolean(verified));
     if (end <= start || start < shot.start_ms || end > shot.end_ms) {
       throw new Error(`${itemName} dialogue 时间越界`);
     }
+    if (verified && !correction && (start !== Math.max(shot.start_ms, verified.segment.start_ms)
+      || end !== Math.min(shot.end_ms, verified.segment.end_ms)
+      || turn.source_text.trim() !== verified.segment.source_text.trim()
+      || turn.source_language !== verified.entry.evidence.source_language)) throw new Error(`${itemName} 原始音频投影不一致`);
     const speakerId = stableId(turn.speaker_id, `${itemName}.speaker_id`);
     if (!['character', 'voice_cluster', 'off_screen'].includes(turn.speaker_kind)) {
       throw new Error(`${itemName}.speaker_kind 无效`);
@@ -384,7 +454,9 @@ function normalizeDialogue(raw, name, shot, characters, evidence, seenIds) {
     if (turn.speaker_kind === 'character' && !turn.off_screen && !shot.visible_character_ids.includes(speakerId)) {
       throw new Error(`${itemName}.speaker_id 画内角色必须可见`);
     }
-    if (turn.speaker_kind === 'voice_cluster' && !/^speaker-cluster-[1-9][0-9]*$/.test(speakerId)) {
+    if (turn.speaker_kind === 'voice_cluster' && (verified
+      ? speakerId !== verified.segment.speaker_cluster_id
+      : !/^speaker-cluster-[1-9][0-9]*$/.test(speakerId))) {
       throw new Error(`${itemName}.speaker_id 声音聚类 id 无效`);
     }
     if (turn.speaker_kind === 'off_screen' && turn.off_screen !== true) {
@@ -415,6 +487,7 @@ function normalizeDialogue(raw, name, shot, characters, evidence, seenIds) {
       evidence_refs: evidenceRefs,
       confidence: probability(turn.confidence, `${itemName}.confidence`),
       review_status: turn.speaker_kind === 'voice_cluster' ? 'needs_review' : turn.review_status,
+      ...(correction ? { source_correction: correction } : {}),
     };
   }).sort((a, b) => (a.start_ms - b.start_ms) || compareCodeUnit(a.id, b.id));
 }
@@ -431,7 +504,7 @@ function normalizeVisibleCharacters(raw, name, characters) {
   }).sort(compareCodeUnit);
 }
 
-function normalizeShots(raw, durationMs, characterIds, evidence) {
+function normalizeShots(raw, durationMs, characterIds, evidence, audioContext) {
   assertArray(raw, 'shots', { nonEmpty: true });
   const seenShotIds = new Set();
   const seenDialogueIds = new Set();
@@ -439,7 +512,10 @@ function normalizeShots(raw, durationMs, characterIds, evidence) {
   let previousEnd = 0;
   return [...raw].sort((a, b) => Number(a.index) - Number(b.index)).map((shot, index) => {
     const name = `shots[${index}]`;
-    assertExactKeys(shot, SHOT_FIELDS, SHOT_FIELDS, name);
+    assertExactKeys(shot, [...SHOT_FIELDS, 'manual_boundary'], SHOT_FIELDS, name);
+    if (Object.hasOwn(shot, 'manual_boundary') && shot.manual_boundary !== true) {
+      throw codedError('REDRAW_BLUEPRINT_CORRECTION_INVALID', '人工切镜标记只能为 true');
+    }
     if (shot.index !== index + 1) throw new Error(`${name}.index 必须连续`);
     const id = stableId(shot.id, `${name}.id`);
     if (seenShotIds.has(id)) throw new Error(`${name}.id 重复`);
@@ -454,6 +530,7 @@ function normalizeShots(raw, durationMs, characterIds, evidence) {
       index: shot.index,
       start_ms: start,
       end_ms: end,
+      ...(shot.manual_boundary === true ? { manual_boundary: true } : {}),
       composition: safeText(shot.composition, `${name}.composition`, 500),
       camera_movement: safeText(shot.camera_movement, `${name}.camera_movement`, 300),
       opening_state: safeText(shot.opening_state, `${name}.opening_state`, 500),
@@ -466,7 +543,7 @@ function normalizeShots(raw, durationMs, characterIds, evidence) {
       confidence: normalizeShotConfidence(shot.confidence, `${name}.confidence`),
       evidence_refs: normalizeEvidenceRefs(shot.evidence_refs, `${name}.evidence_refs`, evidence),
     };
-    normalized.dialogue = normalizeDialogue(shot.dialogue, `${name}.dialogue`, normalized, characterIds, evidence, seenDialogueIds);
+    normalized.dialogue = normalizeDialogue(shot.dialogue, `${name}.dialogue`, normalized, characterIds, evidence, seenDialogueIds, durationMs, audioContext);
     if (normalized.audio_contract.dialogue_mode === 'silent' && normalized.dialogue.length > 0) {
       throw new Error(`${name} silent 不能包含 dialogue`);
     }
@@ -548,7 +625,7 @@ function blueprintSha256(blueprint) {
   return createHash('sha256').update(stableStringify(canonical)).digest('hex');
 }
 
-function normalizeEpisodeBlueprint(raw) {
+function normalizeEpisodeBlueprint(raw, audioContext) {
   assertExactKeys(raw, BLUEPRINT_FIELDS, BLUEPRINT_FIELDS.filter((field) => field !== 'blueprint_hash'), 'episode_blueprint');
   if (raw.schema_version !== 'episode-blueprint-v1') {
     throw new Error('schema_version 必须是 episode-blueprint-v1');
@@ -556,9 +633,17 @@ function normalizeEpisodeBlueprint(raw) {
   const source = normalizeSource(raw.source);
   const evidenceManifest = normalizeEvidenceManifest(raw.evidence_manifest);
   const evidence = evidenceIndex(evidenceManifest);
+  for (const item of evidenceManifest.items) {
+    const entry = readVerifiedSourceAudioContext(audioContext, item.id);
+    if (entry && (entry.evidence.source_asset_id !== Number(source.asset_id)
+      || entry.evidence.source_video_sha256 !== source.sha256)) throw new Error('已验证音频与蓝图源资产不一致');
+  }
   const characters = normalizeCharacters(raw.characters, evidence);
   const characterIds = new Set(characters.map((character) => character.id));
-  const shots = normalizeShots(raw.shots, source.duration_ms, characterIds, evidence);
+  const shots = normalizeShots(raw.shots, source.duration_ms, characterIds, evidence, audioContext);
+  if (source.audio_codec === null && shots.some((shot) => shot.audio_contract.dialogue_mode === 'spoken')) {
+    throw codedError('BLUEPRINT_SOURCE_AUDIO_CONFLICT', '无音轨来源不能包含 spoken 对白');
+  }
   const review = normalizeReview(raw.review);
   if (characters.some((character) => character.review_status === 'needs_review')
     || shots.some((shot) => shot.dialogue.some((turn) => turn.review_status === 'needs_review'))) {
@@ -595,12 +680,12 @@ function assertDialogueEvidence(turn, evidence, name) {
   }
 }
 
-function normalizeLockableBlueprint(blueprint) {
+function normalizeLockableBlueprint(blueprint, audioContext) {
   if (!blueprint || blueprint.schema_version !== 'episode-blueprint-v1') {
     throw codedError('BLUEPRINT_SCHEMA_INVALID', '蓝图版本无效');
   }
   const suppliedHash = blueprint.blueprint_hash;
-  const normalized = normalizeEpisodeBlueprint(blueprint);
+  const normalized = normalizeEpisodeBlueprint(blueprint, audioContext);
 
   const evidenceItems = normalized.evidence_manifest.items;
   if (!/^[a-f0-9]{64}$/.test(String(normalized.source.sha256 || ''))
@@ -633,13 +718,13 @@ function normalizeLockableBlueprint(blueprint) {
   return normalized;
 }
 
-function assertBlueprintLockable(blueprint) {
-  normalizeLockableBlueprint(blueprint);
+function assertBlueprintLockable(blueprint, audioContext) {
+  normalizeLockableBlueprint(blueprint, audioContext);
   return blueprint;
 }
 
-function projectSourceFactsV2(blueprint) {
-  const locked = normalizeLockableBlueprint(blueprint);
+function projectSourceFactsV2(blueprint, audioContext) {
+  const locked = normalizeLockableBlueprint(blueprint, audioContext);
   return normalizeEpisodeFactsV2({
     schema_version: '2.0',
     duration_ms: locked.source.duration_ms,
@@ -701,6 +786,7 @@ function projectSourceFactsV2(blueprint) {
 
 module.exports = {
   assertBlueprintLockable,
+  normalizeDialogueSourceCorrection,
   normalizeEpisodeBlueprint,
   projectSourceFactsV2,
 };

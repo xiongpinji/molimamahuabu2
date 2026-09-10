@@ -125,6 +125,73 @@ class SourceEvidenceTests(unittest.TestCase):
                     clusterer=FakeClusterer([]),
                 )
 
+    def _vad_engine(self, info, segments=()):
+        class FakeModel:
+            def transcribe(self, audio_input, *, beam_size, vad_filter):
+                return iter(segments), SimpleNamespace(**info)
+
+        engine = FasterWhisperEngine.__new__(FasterWhisperEngine)
+        engine.model = FakeModel()
+        return engine
+
+    def test_completed_vad_without_speech_returns_bound_empty_evidence(self):
+        engine = self._vad_engine({
+            "language": "en", "language_probability": 0.42,
+            "duration": 3.0, "duration_after_vad": 0.0,
+        })
+        result = analyze_source_audio(self.wav_path, asr=engine, clusterer=object())
+
+        self.assertEqual(result, {
+            "source_language": None,
+            "language_probability": None,
+            "segments": [],
+            "audio_sha256": hashlib.sha256(self.wav_path.read_bytes()).hexdigest(),
+            "transcript_sha256": hashlib.sha256(b"[]").hexdigest(),
+            "no_speech_evidence": {
+                "method": "faster-whisper-vad", "audio_duration_ms": 3000,
+                "speech_duration_ms": 0,
+            },
+        })
+
+    def test_empty_transcript_requires_valid_native_vad_and_matching_wav_duration(self):
+        valid = {"duration": 3.0, "duration_after_vad": 0.0}
+        invalid = [{}, {"duration": 3.0}, {"duration_after_vad": 0.0}]
+        for field in valid:
+            for value in (None, True, False, "0", -1, math.nan, math.inf):
+                invalid.append({**valid, field: value})
+        invalid.extend([
+            {**valid, "duration": 0}, {**valid, "duration": 2.9},
+            {**valid, "duration": 3.1}, {**valid, "duration_after_vad": 0.001},
+        ])
+        for info in invalid:
+            with self.subTest(info=info), self.assertRaisesRegex(
+                ValueError, "SOURCE_AUDIO_SEGMENTS_INVALID",
+            ):
+                analyze_source_audio(
+                    self.wav_path, asr=self._vad_engine(info), clusterer=object(),
+                )
+
+    def test_vad_metadata_is_only_exposed_by_source_inference(self):
+        engine = self._vad_engine({
+            "language": "en", "language_probability": 0.42,
+            "duration": 3.0, "duration_after_vad": 0.0,
+        })
+        self.assertEqual(engine.infer(self.wav_path), {
+            "language": "en", "probability": 0.42, "text": "", "segments": [],
+        })
+        source = engine.infer_source_audio_bytes(self.wav_path.read_bytes())
+        self.assertEqual(source["duration"], 3.0)
+        self.assertEqual(source["duration_after_vad"], 0.0)
+
+    def test_incomplete_asr_generator_never_returns_no_speech_evidence(self):
+        def interrupted():
+            raise TimeoutError("inference incomplete")
+            yield
+
+        engine = self._vad_engine({"duration": 3.0, "duration_after_vad": 0.0}, interrupted())
+        with self.assertRaises(TimeoutError):
+            analyze_source_audio(self.wav_path, asr=engine, clusterer=object())
+
     def test_out_of_order_segments_are_rejected_instead_of_silently_sorted(self):
         with self.assertRaisesRegex(ValueError, "SOURCE_AUDIO_SEGMENTS_INVALID"):
             analyze_source_audio(

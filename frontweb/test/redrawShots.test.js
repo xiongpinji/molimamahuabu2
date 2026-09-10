@@ -219,7 +219,7 @@ test('第三步 API 只提交后端允许的更新、单镜和批量入口', () 
 })
 
 test('参考包 API 使用精确 GET PUT 且保存参数由客户端白名单重建', async () => {
-  assert.match(apiSource, /getReferenceBundle\(shotId\)/)
+  assert.match(apiSource, /getReferenceBundle\(shotId, options\)/)
   assert.match(apiSource, /saveReferenceBundle\(shotId, body\)/)
   assert.match(apiSource, /request\.get\(`\/redraw\/shots\/\$\{shotId\}\/reference-bundle`\)/)
   assert.match(apiSource, /request\.put\(`\/redraw\/shots\/\$\{shotId\}\/reference-bundle`,\s*buildReferenceBundlePayload\(body\)\)/)
@@ -326,7 +326,7 @@ test('强制参考包版本仅以 GET 完整证据放行保存后单镜与批量
   )
   assert.equal((saveFunction.match(/redrawAPI\.saveReferenceBundle/g) || []).length, 1)
   assert.match(stepSource, /verifiedShotIds/)
-  assert.match(stepSource, /if \(!verifiedShotIds\.length\) return/)
+  assert.match(stepSource, /if \(!verifiedShotIds\.length \|\| motionGenerationBlocked\.value \|\| epoch !== motionActionEpoch\) return/)
   assert.match(editorSource, /RedrawReferenceBundlePanel/)
   assert.match(editorSource, /props\.referenceBundleRequired/)
   assert.match(editorSource, /props\.referenceBundleSaving \|\| !props\.referenceBundleState\.ready/)
@@ -385,10 +385,33 @@ test('第三步工作台覆盖批次、编辑、计费、重试、对照预览�
   assert.match(previewSource, /video_url/)
 })
 
+function generationHandlers(text) {
+  return ['generateShot', 'generateBatch', 'retryDeliveryShot'].map(name => {
+    const match = text.match(new RegExp(`^async function ${name}\\([^\\n]*\\) \\{[\\s\\S]*?^\\}`, 'm'))
+    assert.ok(match, `必须审计实际 ${name} 生成入口`)
+    assert.match(match[0], /redrawAPI\.generate(?:Shot|Batch)\(/)
+    return match[0]
+  }).join('\n')
+}
+
 test('受保护积分文案和安全生成 payload 不接受客户端价格与产物字段', () => {
   assert.match(editorSource, /本次预计扣除/)
   assert.match(editorSource, /积分待管理员配置/)
   assert.match(batchSource, /积分待管理员配置/)
   assert.match(stepSource, /retry:\s*true/)
-  assert.doesNotMatch(stepSource, /credit_amount|price|owner_id|task_id|new_video_ref\s*:/)
+  // A preparation response may contain task_id; it must not become a generation request field.
+  assert.doesNotMatch(generationHandlers(stepSource), /credit_amount|price|owner_id|task_id|new_video_ref\s*:/)
+})
+
+test('生成字段审计覆盖三个实际入口且不会因合法准备任务读取而失效', () => {
+  assert.match(stepSource, /result\??\.task_id/)
+  for (const name of ['generateShot', 'generateBatch', 'retryDeliveryShot']) {
+    for (const field of ['credit_amount', 'price', 'owner_id', 'task_id', 'new_video_ref']) {
+      const modified = stepSource.replace(new RegExp(`(^async function ${name}\\([^\\n]*\\) \\{)`, 'm'),
+        `$1\n  const forbiddenPayload = { ${field}: 'forbidden' }`)
+      assert.notEqual(modified, stepSource)
+      assert.match(generationHandlers(modified), /credit_amount|price|owner_id|task_id|new_video_ref\s*:/,
+        `${name} 中的 ${field} 必须仍被原禁止字段规则发现`)
+    }
+  }
 })

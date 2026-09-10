@@ -19,7 +19,11 @@ const DEFAULT_TTL_SECONDS = 30 * 60;
 const MAX_TTL_SECONDS = 30 * 60;
 const DURATION_TOLERANCE_MS = 100;
 const HASH_PATTERN = /^[a-f0-9]{64}$/;
-const FILE_PATTERN = /^([a-f0-9]{64})\.mp4$/;
+const FILE_PATTERN = /^([a-f0-9]{64})\.(mp4|png|jpg)$/;
+const ASSET_MIME = { mp4: 'video/mp4', png: 'image/png', jpg: 'image/jpeg' };
+// Match redrawReferenceArtifactImportService's existing per-type upload contract.
+const PREPARED_REFERENCE_MAX_BYTES = Object.freeze({ 'image/png': 20 * 1024 * 1024,
+  'image/jpeg': 20 * 1024 * 1024, 'video/mp4': 200 * 1024 * 1024 });
 
 function codedError(code, message, details) {
   const error = new Error(message);
@@ -93,7 +97,9 @@ function createProviderAssetUrl(input = {}) {
   if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds <= 0 || ttlSeconds > MAX_TTL_SECONDS) {
     throw codedError('REDRAW_PROVIDER_ASSET_TTL_INVALID', `provider asset 有效期必须在 1 到 ${MAX_TTL_SECONDS} 秒之间`);
   }
-  const pathname = `${prefix}/${hash}.mp4`;
+  const extension = Object.keys(ASSET_MIME).find(key => ASSET_MIME[key] === (input.mimeType || 'video/mp4'));
+  if (!extension) throw codedError('REDRAW_PROVIDER_ASSET_PATH_INVALID', 'provider asset MIME 无效');
+  const pathname = `${prefix}/${hash}.${extension}`;
   const expiresAt = Math.floor(nowMs / 1000) + ttlSeconds;
   const signature = hmacSignature(secret, pathname, expiresAt);
   const url = new URL(pathname, origin);
@@ -119,7 +125,7 @@ function verifyProviderAssetUrl(value, input = {}) {
     throw codedError('REDRAW_PROVIDER_ASSET_ORIGIN_UNSAFE', 'provider asset URL origin 不匹配');
   }
   const prefix = routePrefix(input.routePrefix);
-  const match = url.pathname.match(new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\/([a-f0-9]{64})\\.mp4$`));
+  const match = url.pathname.match(new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\/([a-f0-9]{64})\\.(mp4|png|jpg)$`));
   if (!match) throw codedError('REDRAW_PROVIDER_ASSET_PATH_INVALID', 'provider asset URL 路径无效');
   const keys = [...url.searchParams.keys()];
   if (keys.length !== 2 || keys.filter((key) => key === 'expires').length !== 1
@@ -166,7 +172,7 @@ function sha256File(filePath) {
   });
 }
 
-async function resolveProviderAssetPath(input = {}) {
+function providerAssetFile(input) {
   const filename = String(input.filename || '').trim().toLowerCase();
   const match = FILE_PATTERN.exec(filename);
   if (!match) throw codedError('REDRAW_PROVIDER_ASSET_PATH_INVALID', 'provider asset 文件名无效');
@@ -176,22 +182,216 @@ async function resolveProviderAssetPath(input = {}) {
   if (path.dirname(candidate) !== conditioningRoot || !isInside(storageRoot, candidate)) {
     throw codedError('REDRAW_PROVIDER_ASSET_PATH_INVALID', 'provider asset 路径越界');
   }
-  let real;
+  return { candidate, match };
+}
+
+function providerPathStat(file, directory = false) {
+  let current = path.parse(file).root;
+  const parts = file.slice(current.length).split(path.sep).filter(Boolean);
+  let stat = fs.lstatSync(current, { bigint: true });
+  for (const [index, part] of parts.entries()) {
+    current = path.join(current, part); stat = fs.lstatSync(current, { bigint: true });
+    if (stat.isSymbolicLink() || (index < parts.length - 1 || directory ? !stat.isDirectory() : !stat.isFile())) {
+      throw codedError('REDRAW_PROVIDER_ASSET_PATH_INVALID', 'provider asset 路径含链接或非普通文件');
+    }
+  }
+  const real = fs.realpathSync.native(file);
+  if (process.platform === 'win32' ? real.toLowerCase() !== file.toLowerCase() : real !== file) {
+    throw codedError('REDRAW_PROVIDER_ASSET_PATH_INVALID', 'provider asset realpath 不匹配');
+  }
+  return stat;
+}
+
+function readProviderAssetBytes(input = {}) {
+  const { candidate, match } = providerAssetFile(input);
+  let fd;
   try {
-    real = fs.realpathSync(candidate);
-  } catch (_) {
-    throw codedError('REDRAW_PROVIDER_ASSET_NOT_FOUND', 'provider asset 不存在');
+    const before = providerPathStat(candidate);
+    if (before.size <= 0n || before.size > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw codedError('REDRAW_PROVIDER_ASSET_NOT_FOUND', 'provider asset 不可读');
+    }
+    const same = stat => ['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].every(key => stat[key] === before[key]);
+    fd = fs.openSync(candidate, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+    if (!same(fs.fstatSync(fd, { bigint: true }))) throw codedError('REDRAW_PROVIDER_ASSET_PATH_INVALID', 'provider asset 文件已变化');
+    const bytes = fs.readFileSync(fd);
+    if (!same(providerPathStat(candidate)) || !same(fs.fstatSync(fd, { bigint: true })) || bytes.length !== Number(before.size)) {
+      throw codedError('REDRAW_PROVIDER_ASSET_PATH_INVALID', 'provider asset 文件已变化');
+    }
+    if (crypto.createHash('sha256').update(bytes).digest('hex') !== match[1]) {
+      throw codedError('REDRAW_PROVIDER_ASSET_HASH_MISMATCH', 'provider asset 内容 hash 不匹配');
+    }
+    return { bytes, mimeType: ASSET_MIME[match[2]], path: candidate };
+  } catch (error) {
+    if (error.code?.startsWith('REDRAW_')) throw error;
+    throw codedError('REDRAW_PROVIDER_ASSET_NOT_FOUND', 'provider asset 不可读');
+  } finally { if (fd !== undefined) fs.closeSync(fd); }
+}
+
+async function resolveProviderAssetPath(input = {}) {
+  const { candidate, match } = providerAssetFile(input);
+  let fd;
+  try {
+    const before = providerPathStat(candidate);
+    const same = stat => ['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].every(key => stat[key] === before[key]);
+    if (before.size <= 0n) throw codedError('REDRAW_PROVIDER_ASSET_NOT_FOUND', 'provider asset 不可读');
+    fd = fs.openSync(candidate, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+    if (!same(fs.fstatSync(fd, { bigint: true }))) throw codedError('REDRAW_PROVIDER_ASSET_PATH_INVALID', 'provider asset 文件已变化');
+    const digest = await new Promise((resolve, reject) => {
+      const hash = crypto.createHash('sha256'), stream = fs.createReadStream(candidate, { fd, autoClose: false });
+      stream.on('error', reject); stream.on('data', chunk => hash.update(chunk)); stream.on('end', () => resolve(hash.digest('hex')));
+    });
+    if (!same(providerPathStat(candidate)) || !same(fs.fstatSync(fd, { bigint: true }))) {
+      throw codedError('REDRAW_PROVIDER_ASSET_PATH_INVALID', 'provider asset 文件已变化');
+    }
+    if (digest !== match[1]) throw codedError('REDRAW_PROVIDER_ASSET_HASH_MISMATCH', 'provider asset 内容 hash 不匹配');
+    return candidate;
+  } catch (error) {
+    if (error.code?.startsWith('REDRAW_')) throw error;
+    throw codedError('REDRAW_PROVIDER_ASSET_NOT_FOUND', 'provider asset 不可读');
+  } finally { if (fd !== undefined) fs.closeSync(fd); }
+}
+
+// Receives only an owned prepared byte snapshot, never a caller-provided source path.
+async function publishPreparedProviderAsset(input = {}) {
+  const bytes = input.bytes;
+  if (!path.isAbsolute(String(input.storageRoot || '')) || !Buffer.isBuffer(bytes) || !bytes.length
+    || crypto.createHash('sha256').update(bytes).digest('hex') !== input.segmentSha256) {
+    throw codedError('REDRAW_PROVIDER_ASSET_HASH_MISMATCH', 'prepared provider asset 字节无效');
   }
-  if (!isInside(conditioningRoot, real) && path.resolve(real) !== candidate) {
-    throw codedError('REDRAW_PROVIDER_ASSET_PATH_INVALID', 'provider asset realpath 越界');
+  if (bytes.length > PREPARED_REFERENCE_MAX_BYTES[input.mimeType]) {
+    throw codedError('REDRAW_PROVIDER_ASSET_TOO_LARGE', 'prepared provider asset 超过既有素材类型大小限制');
   }
-  const stat = fs.statSync(real);
-  if (!stat.isFile() || stat.size <= 0) throw codedError('REDRAW_PROVIDER_ASSET_NOT_FOUND', 'provider asset 不可读');
-  const actualHash = await sha256File(real);
-  if (actualHash !== match[1]) {
-    throw codedError('REDRAW_PROVIDER_ASSET_HASH_MISMATCH', 'provider asset 内容 hash 不匹配');
+  const png = bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  const jpeg = bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255;
+  if ((input.mimeType === 'image/png' && !png) || (input.mimeType === 'image/jpeg' && !jpeg)
+    || (input.mimeType === 'video/mp4' && (png || jpeg))) {
+    throw codedError('REDRAW_PROVIDER_ASSET_MIME_MISMATCH', 'prepared provider asset 格式与 MIME 不一致');
   }
-  return real;
+  const signed = createProviderAssetUrl(input);
+  const filename = path.basename(signed.pathname), { candidate } = providerAssetFile({ storageRoot: input.storageRoot, filename });
+  const directory = path.dirname(candidate);
+  providerPathStat(path.resolve(input.storageRoot), true);
+  fs.mkdirSync(directory, { recursive: true }); providerPathStat(directory, true);
+  const temporary = path.join(directory, `.prepared-${crypto.randomBytes(16).toString('hex')}.tmp`);
+  let created = false;
+  try {
+    const handle = await fs.promises.open(temporary, 'wx'); created = true;
+    try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
+    providerPathStat(directory, true); providerPathStat(temporary);
+    try { fs.linkSync(temporary, candidate); } catch (error) { if (error.code !== 'EEXIST') throw error; }
+    const actual = readProviderAssetBytes({ storageRoot: input.storageRoot, filename });
+    if (!actual.bytes.equals(bytes)) throw codedError('REDRAW_PROVIDER_ASSET_HASH_MISMATCH', 'prepared provider asset 发布已变化');
+    return signed;
+  } finally {
+    if (created) { providerPathStat(directory, true); providerPathStat(temporary); fs.unlinkSync(temporary); }
+  }
+}
+
+// Reuse the existing bounded/public-DNS-pinned downloader only in a newly owned
+// private temp root. Its canary namespace never becomes a formal result asset.
+async function materializeExecutionUnitCandidate(input) {
+  if (!path.isAbsolute(String(input?.storageRoot || '')) || !path.isAbsolute(String(input?.tempRoot || ''))
+    || ![input.runId, input.attemptId, input.durationMs].every(value => Number.isSafeInteger(value) && value > 0)) {
+    throw codedError('REDRAW_UNIT_RESULT_INVALID', 'unit result binding invalid');
+  }
+  if (input.download !== undefined && (!input.download || Object.getPrototypeOf(input.download) !== Object.prototype
+    || Reflect.ownKeys(input.download).some(key => !['fetchImpl', '_dnsLookupForTest'].includes(key) || typeof input.download[key] !== 'function'))) {
+    throw codedError('REDRAW_UNIT_RESULT_INVALID', 'unit result transport invalid');
+  }
+  const root = path.resolve(input.storageRoot), tempRoot = path.resolve(input.tempRoot);
+  providerPathStat(root, true); providerPathStat(tempRoot, true);
+  const temporary = fs.mkdtempSync(path.join(tempRoot, 'redraw-unit-result-'));
+  const identity = providerPathStat(temporary, true);
+  try {
+    const artifact = await require('./providerCanaryArtifactService').materializeVideo(input.url,
+      { ...input.download, storageRoot: temporary, runId: 'redraw-result' });
+    if (artifact.media_type !== 'video/mp4') throw codedError('REDRAW_UNIT_RESULT_INVALID', 'unit result must be real MP4');
+    const source = path.resolve(temporary, artifact.relative_path);
+    if (!isInside(temporary, source)) throw codedError('REDRAW_UNIT_RESULT_INVALID', 'unit result path invalid');
+    const before = providerPathStat(source);
+    const probe = await probeVideo(source, {}, { resultGeometry: true });
+    // Generated results are not conditioning encodes. Preserve their actual
+    // codecs/audio; replacement and language/voice QA belong to the later review.
+    assertExecutionUnitCandidateProbe(input, probe);
+    if (await sha256File(source) !== artifact.sha256 || providerPathStat(source).size !== before.size) {
+      throw codedError('REDRAW_UNIT_RESULT_INVALID', 'unit result changed after probe');
+    }
+    const relativePath = `redraw-execution-results/${input.runId}/${input.attemptId}/${artifact.sha256}.mp4`;
+    const destination = path.resolve(root, relativePath), directory = path.dirname(destination);
+    providerPathStat(root, true); fs.mkdirSync(directory, { recursive: true, mode: 0o700 }); providerPathStat(directory, true);
+    try { fs.copyFileSync(source, destination, fs.constants.COPYFILE_EXCL); }
+    catch (error) { if (error.code !== 'EEXIST') throw error; }
+    const stored = providerPathStat(destination);
+    if (stored.size !== BigInt(artifact.bytes) || await sha256File(destination) !== artifact.sha256) {
+      throw codedError('REDRAW_UNIT_RESULT_INVALID', 'unit result stored bytes mismatch');
+    }
+    return { relative_path: relativePath, sha256: artifact.sha256, bytes: artifact.bytes, mime_type: 'video/mp4',
+      duration_ms: probe.durationMs, width: probe.width, height: probe.height,
+      video_codec: probe.videoCodec, audio_codec: probe.audioCodec };
+  } finally {
+    // Only this invocation's verified mkdtemp directory may be removed.
+    const current = providerPathStat(temporary, true);
+    if (current.dev === identity.dev && current.ino === identity.ino && path.dirname(temporary) === tempRoot) {
+      fs.rmSync(temporary, { recursive: true, force: true });
+    }
+  }
+}
+
+function assertExecutionUnitCandidateProbe(input, probe) {
+  if (input.audioMode === 'native' && !probe.audioCodec) throw codedError('REDRAW_UNIT_RESULT_INVALID', 'native unit result requires an audio stream');
+  const durationTolerance = Math.max(250, Math.round(input.durationMs * 0.03));
+  const shortEdge = /^([1-9][0-9]*)p$/.exec(input.resolution || ''), ratio = /^([1-9][0-9]*):([1-9][0-9]*)$/.exec(input.aspectRatio || '');
+  if (!shortEdge || !ratio || Math.min(probe.width, probe.height) !== Number(shortEdge[1])
+    || Math.abs(probe.displayWidth * Number(ratio[2]) - probe.height * Number(ratio[1])) > 2 * Math.max(Number(ratio[1]), Number(ratio[2]))
+    || Math.abs(probe.durationMs - input.durationMs) > durationTolerance) {
+    throw codedError('REDRAW_UNIT_RESULT_INVALID', 'unit result duration or dimensions mismatch');
+  }
+}
+
+function openExecutionUnitCandidate(input, artifact) {
+  const expected = `redraw-execution-results/${input.runId}/${input.attemptId}/${artifact.sha256}.mp4`;
+  if (!HASH_PATTERN.test(artifact.sha256) || artifact.relative_path !== expected) throw codedError('REDRAW_UNIT_RESULT_INVALID', 'unit result binding invalid');
+  const file = path.resolve(input.storageRoot, expected);
+  const unavailable = error => ['ENOENT', 'ENOTDIR', 'ELOOP'].includes(error?.code)
+    ? codedError('REDRAW_UNIT_RESULT_INVALID', 'unit result unavailable') : error;
+  let fd, closed = false, streamed = false;
+  const cleanup = () => { if (fd !== undefined && !closed) { fs.closeSync(fd); closed = true; } };
+  try {
+    const before = providerPathStat(file);
+    const same = stat => ['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].every(key => stat[key] === before[key]);
+    fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+    const assertCurrentBinding = () => {
+      try {
+        if (closed || !same(fs.fstatSync(fd, { bigint: true })) || !same(providerPathStat(file))) {
+          throw codedError('REDRAW_UNIT_RESULT_INVALID', 'unit result changed');
+        }
+      } catch (error) { throw unavailable(error); }
+    };
+    const hash = crypto.createHash('sha256'), buffer = Buffer.allocUnsafe(64 * 1024);
+    if (!same(fs.fstatSync(fd, { bigint: true }))) throw codedError('REDRAW_UNIT_RESULT_INVALID', 'unit result changed');
+    let count;
+    while ((count = fs.readSync(fd, buffer, 0, buffer.length, null)) > 0) hash.update(buffer.subarray(0, count));
+    if (hash.digest('hex') !== artifact.sha256 || before.size !== BigInt(artifact.bytes)
+      || !same(fs.fstatSync(fd, { bigint: true })) || !same(providerPathStat(file))) {
+      throw codedError('REDRAW_UNIT_RESULT_INVALID', 'unit result changed');
+    }
+    return { size: artifact.bytes, sha256: artifact.sha256, mime: 'video/mp4', cleanup, assertCurrentBinding,
+      createReadStream() {
+        assertCurrentBinding();
+        if (streamed) throw codedError('REDRAW_UNIT_RESULT_INVALID', 'unit result stream already consumed');
+        streamed = true;
+        // The stream borrows this FD. Even explicit destroy must leave physical
+        // close to cleanup, after the caller has awaited stream completion.
+        return fs.createReadStream(file, { fd, start: 0, end: artifact.bytes - 1, autoClose: false,
+          fs: { read: fs.read.bind(fs), close: (_fd, callback) => callback(null) } });
+      } };
+  } catch (error) { cleanup(); throw unavailable(error); }
+}
+
+function assertExecutionUnitCandidate(input, artifact) {
+  const handle = openExecutionUnitCandidate(input, artifact);
+  handle.cleanup();
+  return true;
 }
 
 function safeSourcePath(storageRoot, localPath) {
@@ -225,6 +425,34 @@ function segmentVersion(audioMode) {
   return audioMode === 'strip' ? STRIPPED_SEGMENT_VERSION : DEFAULT_SEGMENT_VERSION;
 }
 
+function resultDisplayWidth(video, width, height) {
+  const rational = value => {
+    const match = /^(\d+)[:/](\d+)$/.exec(String(value || '').trim());
+    const parts = match?.slice(1).map(Number);
+    return parts?.every(value => Number.isSafeInteger(value) && value > 0) ? parts.map(BigInt) : null;
+  };
+  const sar = rational(video.sample_aspect_ratio), dar = rational(video.display_aspect_ratio);
+  const sideData = Array.isArray(video.side_data_list) ? video.side_data_list : [];
+  const rotations = [...(Object.hasOwn(video.tags || {}, 'rotate') ? [video.tags.rotate] : []),
+    ...sideData.filter(value => Object.hasOwn(value || {}, 'rotation')).map(value => value.rotation)];
+  const invalidRotation = rotations.some(value => {
+    const text = String(value).trim(), number = Number(text);
+    return !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(text) || !Number.isFinite(number) || number % 360 !== 0;
+  });
+  const invalidMatrix = sideData.filter(value => value?.side_data_type === 'Display Matrix').some(value => {
+    const rows = String(value.displaymatrix || '').split(/\r?\n/).filter(row => row.trim());
+    const values = rows.flatMap(row => /^\s*\d+:\s+([+-]?\d+)\s+([+-]?\d+)\s+([+-]?\d+)\s*$/.exec(row)?.slice(1) || []);
+    const identity = [65536n, 0n, 0n, 0n, 65536n, 0n, 0n, 0n, 1073741824n];
+    return rows.length !== 3 || values.length !== 9 || values.some((item, index) => BigInt(item) !== identity[index]);
+  });
+  if (!sar || !dar || invalidRotation || invalidMatrix
+    || BigInt(width) * sar[0] * dar[1] !== BigInt(height) * sar[1] * dar[0]) {
+    throw codedError('REDRAW_UNIT_RESULT_INVALID', 'unit result display geometry invalid or contradictory');
+  }
+  // Non-square pixels are valid when the declared DAR agrees with actual SAR.
+  return width * Number(sar[0]) / Number(sar[1]);
+}
+
 function parseProbe(raw, requirements) {
   let parsed;
   try {
@@ -235,6 +463,9 @@ function parseProbe(raw, requirements) {
   const streams = Array.isArray(parsed?.streams) ? parsed.streams : [];
   const video = streams.find((stream) => stream.codec_type === 'video');
   const audio = streams.find((stream) => stream.codec_type === 'audio');
+  if (requirements?.videoOnly && (streams.length !== 1 || !video)) {
+    throw codedError('REDRAW_SOURCE_CONDITIONING_CODEC_INVALID', '动作草片必须只包含一个视频流');
+  }
   const width = Number(video?.width);
   const height = Number(video?.height);
   const durationSeconds = Number(video?.duration ?? parsed?.format?.duration);
@@ -251,20 +482,33 @@ function parseProbe(raw, requirements) {
   if (requirements?.audioMode === 'strip' && audio) {
     throw codedError('REDRAW_SOURCE_CONDITIONING_CODEC_INVALID', 'conditioning segment 不得保留源音轨');
   }
-  return {
+  const result = {
     durationMs: Math.round(durationSeconds * 1000),
     width,
     height,
     videoCodec: String(video.codec_name || ''),
     audioCodec: audio ? String(audio.codec_name || '') : null,
   };
+  if (requirements?.resultGeometry) result.displayWidth = resultDisplayWidth(video, width, height);
+  return result;
+}
+
+async function runMediaCommand(command, args, options, input) {
+  input.signal?.throwIfAborted();
+  const execution = (input.execFile || execFileAsync)(command, args, {
+    ...options, shell: false, signal: input.signal,
+  });
+  // execFile can reject on abort before the OS child has closed its output files.
+  const closed = execution?.child
+    ? new Promise((resolve) => execution.child.once('close', resolve))
+    : null;
+  try { return await execution; } finally { if (closed) await closed; }
 }
 
 async function probeVideo(filePath, input, requirements) {
-  const runner = input.execFile || execFileAsync;
   let result;
   try {
-    result = await runner(input.ffprobePath || getFfprobePath(), [
+    result = await runMediaCommand(input.ffprobePath || getFfprobePath(), [
       '-v', 'error',
       '-show_streams',
       '-show_format',
@@ -274,7 +518,7 @@ async function probeVideo(filePath, input, requirements) {
       timeout: Number(input.probeTimeoutMs || 15000),
       maxBuffer: 4 * 1024 * 1024,
       windowsHide: true,
-    });
+    }, input);
   } catch (error) {
     throw codedError('REDRAW_SOURCE_CONDITIONING_PROBE_FAILED', `ffprobe 校验失败: ${error.message}`);
   }
@@ -372,14 +616,13 @@ function atomicWriteJson(target, value) {
 }
 
 async function generateSegment(sourcePath, targetTemp, sourceProbe, expected, input) {
-  const runner = input.execFile || execFileAsync;
   const startSeconds = (expected.start_ms / 1000).toFixed(3);
   const durationSeconds = ((expected.end_ms - expected.start_ms) / 1000).toFixed(3);
   try {
     const audioArgs = expected.audio_mode === 'strip'
       ? ['-an']
       : ['-map', '0:a:0?', '-c:a', 'aac'];
-    await runner(input.ffmpegPath || getFfmpegPath(), [
+    await runMediaCommand(input.ffmpegPath || getFfmpegPath(), [
       '-y',
       '-v', 'error',
       '-i', sourcePath,
@@ -396,7 +639,7 @@ async function generateSegment(sourcePath, targetTemp, sourceProbe, expected, in
       timeout: Number(input.ffmpegTimeoutMs || 120000),
       maxBuffer: 8 * 1024 * 1024,
       windowsHide: true,
-    });
+    }, input);
   } catch (error) {
     throw codedError('REDRAW_SOURCE_CONDITIONING_FFMPEG_FAILED', `ffmpeg 切分源片失败: ${error.message}`);
   }
@@ -406,6 +649,7 @@ async function generateSegment(sourcePath, targetTemp, sourceProbe, expected, in
   const probe = await probeVideo(targetTemp, input, {
     videoCodec: 'h264',
     audioMode: expected.audio_mode,
+    videoOnly: input.videoOnly,
   });
   const expectedDuration = expected.end_ms - expected.start_ms;
   if (Math.abs(probe.durationMs - expectedDuration) > DURATION_TOLERANCE_MS) {
@@ -534,4 +778,13 @@ module.exports = {
   createProviderAssetUrl,
   verifyProviderAssetUrl,
   resolveProviderAssetPath,
+  readProviderAssetBytes,
+  publishPreparedProviderAsset,
+  materializeExecutionUnitCandidate,
+  assertExecutionUnitCandidate,
+  openExecutionUnitCandidate,
+  assertExecutionUnitCandidateProbe,
+  PREPARED_REFERENCE_MAX_BYTES,
+  probeVideo,
+  generateSegment,
 };

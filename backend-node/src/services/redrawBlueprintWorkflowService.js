@@ -5,6 +5,8 @@ const {
   normalizeEpisodeBlueprint,
   projectSourceFactsV2,
 } = require('./redrawEpisodeBlueprintService');
+const { resolveBlueprintDialogueSources, assertBlueprintBoundarySources,
+  loadVerifiedBlueprintAudioContext } = require('./redrawSourceDialogueService');
 
 const FORBIDDEN_KEY_PARTS = [
   'apikey', 'authorization', 'credential', 'generation', 'model', 'provider',
@@ -50,7 +52,7 @@ function requireContext(ctx) {
   if (!tenantId || !userId) {
     throw codedError('REDRAW_BLUEPRINT_CONTEXT_INVALID', '缺少所有者上下文');
   }
-  return { db: ctx.db, tenantId, userId };
+  return { db: ctx.db, tenantId, userId, storageRoot: ctx.storageRoot };
 }
 
 function workIdFrom(input) {
@@ -78,7 +80,7 @@ function expectedBlueprintHash(input) {
 
 function assertOwnedWork(ctx, workId) {
   const row = ctx.db.prepare(`
-    SELECT id, current_version
+    SELECT id, current_version, source_asset_id, source_fingerprint
     FROM redraw_works
     WHERE tenant_id = ? AND user_id = ? AND id = ? AND deleted_at IS NULL
   `).get(ctx.tenantId, ctx.userId, workId);
@@ -245,6 +247,12 @@ function assertSafeBlueprintValue(value, name = 'blueprint') {
     if (prototype !== Object.prototype && prototype !== null) {
       throw codedError('REDRAW_BLUEPRINT_INPUT_INVALID', `${current.name} 不允许继承字段`);
     }
+    const descriptors = Object.getOwnPropertyDescriptors(current.value);
+    if ((descriptors.source_correction && !Object.hasOwn(descriptors.source_correction, 'value'))
+      || (current.name.endsWith('.source_correction')
+        && Reflect.ownKeys(descriptors).some((key) => !Object.hasOwn(descriptors[key], 'value')))) {
+      throw codedError('REDRAW_BLUEPRINT_CORRECTION_INVALID', '对白人工修订不允许访问器');
+    }
     const entries = Object.entries(current.value);
     if (nodes + stack.length + entries.length > MAX_BLUEPRINT_NODES) {
       throw codedError('REDRAW_BLUEPRINT_INPUT_INVALID', '母本蓝图超过大小限制');
@@ -265,10 +273,10 @@ function assertSafeBlueprintValue(value, name = 'blueprint') {
   }
 }
 
-function normalizeDraft(blueprint) {
+function normalizeDraft(blueprint, audioContext) {
   assertSafeBlueprintValue(blueprint);
   try {
-    return normalizeEpisodeBlueprint(blueprint);
+    return normalizeEpisodeBlueprint(blueprint, audioContext);
   } catch (error) {
     if (error?.code) throw error;
     throw codedError('REDRAW_BLUEPRINT_INPUT_INVALID', '母本蓝图合同无效');
@@ -284,6 +292,106 @@ function nextTimestamp(ctx, previous) {
   return new Date(millis).toISOString();
 }
 
+function draftAudioContext(ctx, workId, blueprint) {
+  try {
+    return loadVerifiedBlueprintAudioContext(ctx, { workId, blueprint });
+  } catch (error) {
+    if (blueprint?.shots?.some(shot => shot.manual_boundary
+      || shot.dialogue?.some(turn => Object.hasOwn(turn, 'source_correction')))) {
+      throw codedError('REDRAW_BLUEPRINT_CORRECTION_INVALID', '人工修订的原始音频证据无法核验');
+    }
+    throw error;
+  }
+}
+
+function assertRetainedAudioBindings(blueprint, previous, audioContext) {
+  if (audioContext.size === 0) return;
+  const reject = () => { throw codedError('REDRAW_BLUEPRINT_INPUT_INVALID', '普通保存不能删除、替换或降级已验证的长音频证据及源资产'); };
+  if (Object.keys(previous.source).some(key => blueprint?.source?.[key] !== previous.source[key])) reject();
+  const items = blueprint?.evidence_manifest?.items;
+  if (!Array.isArray(items)) reject();
+  for (const [ref, entry] of audioContext) {
+    const original = previous.evidence_manifest.items.find(item => item.id === ref);
+    const matches = items.filter(item => item?.id === ref);
+    if (matches.length !== 1 || String(matches[0].asset_id) !== String(entry.assetId)
+      || matches[0].sha256 !== entry.sha256 || matches[0].kind !== original.kind) reject();
+  }
+}
+
+function assertDialogueCorrectionsValid(ctx, workId, blueprint) {
+  const corrected = blueprint.shots.flatMap((shot) => shot.dialogue
+    .filter((turn) => Object.hasOwn(turn, 'source_correction'))
+    .map((turn) => ({ shot, turn })));
+  if (corrected.length === 0) return;
+  const sources = resolveBlueprintDialogueSources(ctx, { workId, blueprint });
+  if (corrected.some(({ shot, turn }) => !sources.some((source) => source.shot_id === shot.id
+    && source.dialogue_id === turn.id && source.status === 'resolved'
+    && source.reason === 'SOURCE_DIALOGUE_MANUAL_CORRECTION_RESOLVED'))) {
+    throw codedError('REDRAW_BLUEPRINT_CORRECTION_INVALID', '对白人工修订的原始证据无法核验');
+  }
+}
+
+function inheritBoundaryCorrections(blueprint, previous, audioContext) {
+  if (!previous) return blueprint;
+  const before = new Map(previous.shots.map((shot) => [shot.id, shot]));
+  const after = new Map(blueprint.shots.map((shot) => [shot.id, shot]));
+  const boundaryChanged = previous.shots.length !== blueprint.shots.length
+    || previous.shots.some((shot) => !after.has(shot.id)
+      || shot.start_ms !== after.get(shot.id).start_ms || shot.end_ms !== after.get(shot.id).end_ms);
+  const affected = new Set([...previous.shots, ...blueprint.shots]
+    .filter((shot) => shot.manual_boundary).map((shot) => shot.id));
+  const changed = new Set();
+  const oldTurns = new Map(previous.shots.flatMap((shot) => shot.dialogue.map((turn) => [turn.id, shot.id])));
+  const newTurns = new Map(blueprint.shots.flatMap((shot) => shot.dialogue.map((turn) => [turn.id, shot.id])));
+  for (const turnId of new Set([...oldTurns.keys(), ...newTurns.keys()])) {
+    const origin = oldTurns.get(turnId);
+    const destination = newTurns.get(turnId);
+    if (destination !== origin) {
+      if (origin) { affected.add(origin); changed.add(origin); }
+      if (destination) { affected.add(destination); changed.add(destination); }
+    }
+  }
+  if (!boundaryChanged && affected.size === 0) return blueprint;
+  if (previous.shots.length !== blueprint.shots.length || previous.shots.some((shot) => !after.has(shot.id))) {
+    throw codedError('REDRAW_BLUEPRINT_CORRECTION_INVALID', '人工切镜必须保留原镜头 ID');
+  }
+  for (const shot of previous.shots) {
+    const next = after.get(shot.id);
+    if (shot.start_ms !== next.start_ms || shot.end_ms !== next.end_ms) {
+      affected.add(shot.id); changed.add(shot.id);
+    }
+  }
+  // Follow transfers in both directions so a destination cannot lose one of its own original turns.
+  for (const id of affected) {
+    for (const turn of before.get(id).dialogue) {
+      const destination = newTurns.get(turn.id);
+      if (!destination) throw codedError('REDRAW_BLUEPRINT_CORRECTION_INVALID', '人工切镜必须保留受影响原对白 ID');
+      affected.add(destination);
+      if (destination !== id) { changed.add(id); changed.add(destination); }
+    }
+    for (const turn of after.get(id).dialogue) {
+      const origin = oldTurns.get(turn.id);
+      if (!origin) throw codedError('REDRAW_BLUEPRINT_CORRECTION_INVALID', '人工切镜不能替换受影响原对白 ID');
+      affected.add(origin);
+      if (origin !== id) { changed.add(id); changed.add(origin); }
+    }
+  }
+  for (const shot of blueprint.shots) {
+    if (affected.has(shot.id)) shot.manual_boundary = true;
+    if (changed.has(shot.id)) for (const turn of shot.dialogue) turn.review_status = 'needs_review';
+  }
+  if (changed.size > 0) blueprint.review = { status: 'needs_review' };
+  return normalizeDraft(blueprint, audioContext);
+}
+
+function assertBoundaryCorrectionsValid(ctx, workId, blueprint) {
+  try {
+    assertBlueprintBoundarySources(ctx, { workId, blueprint });
+  } catch {
+    throw codedError('REDRAW_BLUEPRINT_CORRECTION_INVALID', '人工切镜的完整原始音频证据无法核验');
+  }
+}
+
 function getCurrentBlueprint(rawCtx, input) {
   const ctx = requireContext(rawCtx);
   const workId = workIdFrom(input);
@@ -296,9 +404,20 @@ function getCurrentBlueprint(rawCtx, input) {
 function createOrSaveDraft(rawCtx, input) {
   const ctx = requireContext(rawCtx);
   const workId = workIdFrom(input);
-  const blueprint = normalizeDraft(input?.blueprint);
+  assertSafeBlueprintValue(input?.blueprint);
   const transaction = ctx.db.transaction(() => {
-    assertOwnedWork(ctx, workId);
+    const work = assertOwnedWork(ctx, workId);
+    const current = currentRow(ctx, workId);
+    const audioContext = draftAudioContext(ctx, workId, input?.blueprint);
+    let blueprint = normalizeDraft(input?.blueprint, audioContext);
+    const previous = current ? JSON.parse(current.blueprint_json) : null;
+    // A client-provided source change cannot erase provenance while the work still has the same source.
+    if (previous && String(previous.source.asset_id) === String(work.source_asset_id)
+      && previous.source.sha256 === work.source_fingerprint) {
+      blueprint = inheritBoundaryCorrections(blueprint, previous, audioContext);
+    }
+    assertDialogueCorrectionsValid(ctx, workId, blueprint);
+    assertBoundaryCorrectionsValid(ctx, workId, blueprint);
     const duplicate = ctx.db.prepare(`
       SELECT id, work_id, tenant_id, user_id, revision, status, blueprint_json,
              blueprint_hash, evidence_manifest_json, reviewed_by, reviewed_at,
@@ -309,7 +428,6 @@ function createOrSaveDraft(rawCtx, input) {
     `).get(ctx.tenantId, ctx.userId, workId, blueprint.blueprint_hash);
     if (duplicate) return mapRow(duplicate);
 
-    const current = currentRow(ctx, workId);
     const now = nextTimestamp(rawCtx, current?.updated_at);
     const revision = nextDraftRevision(ctx, workId, Number(current?.revision || 0) + 1);
     const result = ctx.db.prepare(`
@@ -338,7 +456,7 @@ function saveDraft(rawCtx, input) {
   const ctx = requireContext(rawCtx);
   const workId = workIdFrom(input);
   const expected = expectedUpdatedAt(input);
-  const blueprint = normalizeDraft(input?.blueprint);
+  assertSafeBlueprintValue(input?.blueprint);
   const transaction = ctx.db.transaction(() => {
     assertOwnedWork(ctx, workId);
     const current = currentRow(ctx, workId);
@@ -349,6 +467,14 @@ function saveDraft(rawCtx, input) {
     if (String(current.updated_at) !== expected) {
       throw codedError('REDRAW_BLUEPRINT_CAS_CONFLICT', '母本蓝图已变化，请刷新后重试');
     }
+    const previous = JSON.parse(current.blueprint_json);
+    const previousAudioContext = draftAudioContext(ctx, workId, previous);
+    assertRetainedAudioBindings(input?.blueprint, previous, previousAudioContext);
+    const audioContext = draftAudioContext(ctx, workId, input?.blueprint);
+    let blueprint = normalizeDraft(input?.blueprint, audioContext);
+    blueprint = inheritBoundaryCorrections(blueprint, previous, audioContext);
+    assertDialogueCorrectionsValid(ctx, workId, blueprint);
+    assertBoundaryCorrectionsValid(ctx, workId, blueprint);
     if (current.blueprint_hash === blueprint.blueprint_hash) return mapRow(current);
     const duplicate = ctx.db.prepare(`
       SELECT id
@@ -493,18 +619,22 @@ function lockBlueprint(rawCtx, input) {
     if (String(current.updated_at) !== expected) {
       throw codedError('REDRAW_BLUEPRINT_CAS_CONFLICT', '母本蓝图已变化，请刷新后重试');
     }
-    const blueprint = normalizeDraft(JSON.parse(current.blueprint_json));
-    assertBlueprintLockable(blueprint);
+    const rawBlueprint = JSON.parse(current.blueprint_json);
+    const audioContext = draftAudioContext(ctx, workId, rawBlueprint);
+    const blueprint = normalizeDraft(rawBlueprint, audioContext);
+    assertBlueprintLockable(blueprint, audioContext);
     if (blueprint.blueprint_hash !== current.blueprint_hash
       || expectedHash !== current.blueprint_hash) {
       throw codedError('REDRAW_BLUEPRINT_HASH_MISMATCH', '母本蓝图哈希已变化，请刷新后重试');
     }
+    assertDialogueCorrectionsValid(ctx, workId, blueprint);
+    assertBoundaryCorrectionsValid(ctx, workId, blueprint);
     const version = exactVersion(ctx, workId, current.revision);
     if (!version) throw codedError('REDRAW_BLUEPRINT_NOT_FOUND', '母本蓝图不存在');
     if (version.locale !== 'source' || versionIsBound(version)) {
       throw codedError('REDRAW_BLUEPRINT_VERSION_ALREADY_BOUND', '当前版本已有不可变母本事实');
     }
-    const projected = projectSourceFactsV2(blueprint);
+    const projected = projectSourceFactsV2(blueprint, audioContext);
     const now = nextTimestamp(rawCtx, current.updated_at);
     const versionUpdate = ctx.db.prepare(`
       UPDATE redraw_versions

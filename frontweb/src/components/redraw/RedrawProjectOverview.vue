@@ -87,6 +87,7 @@ const needsAttentionCount = computed(() => resolveNeedsAttentionCount({
 }))
 
 function creditsText(value) {
+  if (value == null || (typeof value === 'string' && value.trim() === '')) return '未设置'
   const number = Number(value)
   return Number.isFinite(number) ? `${number} 积分` : '未设置'
 }

@@ -3,20 +3,24 @@
     <header class="section-heading">
       <div>
         <p class="eyebrow">04 · 预览导出</p>
-        <h2>{{ dialogueLanguageLabel }}配音、合成预览与下载</h2>
+        <h2 v-if="unitMode">所选执行记录的导出准备（只读）</h2>
+        <h2 v-else>{{ dialogueLanguageLabel }}配音、合成预览与下载</h2>
       </div>
-      <el-tag>{{ statusLabel(worstStatus) }}</el-tag>
+      <el-tag v-if="!unitMode">{{ statusLabel(worstStatus) }}</el-tag>
     </header>
 
     <el-alert v-if="loadError" :title="loadError" type="error" :closable="false" show-icon />
 
     <RedrawEpisodeReleasePanel
-      v-if="resolvedVersionId"
+      v-if="unitMode || resolvedVersionId"
       :version-id="resolvedVersionId"
       :refresh-token="releaseRefreshToken"
+      :unit-mode="unitMode"
+      :unit-intent="unitIntent"
+      :unit-context="unitContext"
     />
 
-    <div class="edit-layout">
+    <div v-if="!unitMode" class="edit-layout">
       <aside class="edit-sidebar">
         <RedrawTimeline :shots="shots" :selected-shot-id="selectedShotId" @select="selectedShotId = $event" />
         <section class="dialogue-card">
@@ -74,6 +78,9 @@ const props = defineProps({
   work: { type: Object, default: null },
   versionId: { type: [String, Number], default: null },
   targetLocale: { type: String, default: '' },
+  unitMode: { type: Boolean, default: false },
+  unitIntent: { type: Object, default: null },
+  unitContext: { type: Object, default: null },
 })
 const emit = defineEmits(['work-updated'])
 
@@ -154,6 +161,7 @@ function refreshReleaseReadinessForCompletedDialogue() {
 }
 
 async function restoreDialogueTask() {
+  if (props.unitMode) return
   const versionId = resolvedVersionId.value
   const taskId = readStoredDialogueTaskId(versionId)
   if (!versionId || !taskId) return
@@ -170,6 +178,7 @@ async function restoreDialogueTask() {
 }
 
 async function refreshWork() {
+  if (props.unitMode) return
   if (!localWork.value?.id) return
   const nextWork = await redrawAPI.getWork(localWork.value.id)
   localWork.value = nextWork
@@ -177,15 +186,18 @@ async function refreshWork() {
 }
 
 async function loadDialogueQuote() {
+  if (props.unitMode) return
   const versionId = resolvedVersionId.value
   if (!versionId) return
   dialogueQuote.value = await redrawAPI.quoteDialogue(versionId, {})
 }
 
 async function loadExports() {
+  if (props.unitMode) return
   const versionId = resolvedVersionId.value
   if (!versionId) return
   const rows = await redrawAPI.listExports(versionId)
+  if (props.unitMode) return
   exports.value = Array.isArray(rows) ? rows : []
   const targetId = compositionTask.value?.export_id || compositionTask.value?.exportId || exports.value[0]?.id
   const row = targetId ? exports.value.find((item) => String(item.id) === String(targetId)) : exports.value[0]
@@ -201,9 +213,10 @@ async function loadExports() {
 }
 
 async function loadInitialState() {
-  if (!resolvedVersionId.value) return
+  if (props.unitMode || !resolvedVersionId.value) return
   try {
     await Promise.all([loadDialogueQuote(), loadExports(), restoreDialogueTask()])
+    if (props.unitMode) return
     selectedShotId.value = selectedShotId.value || shots.value[0]?.id || null
     syncPolling()
     loadError.value = ''
@@ -213,6 +226,7 @@ async function loadInitialState() {
 }
 
 async function startDialogue() {
+  if (props.unitMode) return
   const versionId = resolvedVersionId.value
   if (dialogueStarting.value || !versionId || !canStartDialogue(dialogueQuote.value, dialogueTask.value)) return
   dialogueStarting.value = true
@@ -231,6 +245,7 @@ async function startDialogue() {
 const compositionIdempotencyKey = ref(idempotencyKey('compose'))
 
 async function compose() {
+  if (props.unitMode) return
   const versionId = resolvedVersionId.value
   if (!versionId || !canStartComposition(shots.value, dialogueTask.value, compositionTask.value)) return
   composing.value = true
@@ -255,12 +270,13 @@ function stopPolling() {
 }
 
 function syncPolling() {
-  if (!shouldPollTask(dialogueTask.value) && !shouldPollTask(compositionTask.value)) {
+  if (props.unitMode || (!shouldPollTask(dialogueTask.value) && !shouldPollTask(compositionTask.value))) {
     stopPolling()
     return
   }
   if (pollTimer) return
   pollTimer = setInterval(async () => {
+    if (props.unitMode) { stopPolling(); return }
     const versionId = resolvedVersionId.value
     if (!versionId) return
     try {
@@ -291,6 +307,12 @@ watch(resolvedVersionId, () => {
   compositionTask.value = null
   loadInitialState()
 })
+watch(() => props.unitMode, unitMode => {
+  if (!unitMode) return
+  stopPolling()
+  dialogueQuote.value = null; dialogueTask.value = null; compositionTask.value = null
+  exports.value = []; exportRow.value = null; loadError.value = ''
+}, { flush: 'sync' })
 
 onMounted(loadInitialState)
 onBeforeUnmount(stopPolling)
