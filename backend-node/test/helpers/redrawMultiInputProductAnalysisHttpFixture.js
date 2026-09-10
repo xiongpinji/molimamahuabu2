@@ -92,8 +92,9 @@ async function createFixture(t) {
   require('../../src/services/modelPriceService').set(db, 'GPT-5.5', 6);
 
   const sources = [
-    { name: '01-landscape-silent.mp4', width: 192, height: 128, durationMs: 12000, audio: false },
-    { name: '02-portrait-synthetic-audio.mov', width: 128, height: 192, durationMs: 14000, audio: true },
+    { name: '01-landscape-silent.mp4', width: 192, height: 128, durationMs: 12000, audio: false, speech: false },
+    { name: '02-portrait-synthetic-audio.mov', width: 128, height: 192, durationMs: 14000, audio: true, speech: true },
+    { name: '03-square-music-only.mp4', width: 160, height: 160, durationMs: 12000, audio: true, speech: false },
   ];
   function probe(file) {
     return JSON.parse(execFileSync(ffprobe,
@@ -115,9 +116,9 @@ async function createFixture(t) {
     assert.equal(Math.round(Number(video.duration) * 1000), source.durationMs);
     assert.equal(source.probe.streams.some((stream) => stream.codec_type === 'audio'), source.audio);
   }
-  assert.notEqual(sources[0].sha256, sources[1].sha256);
+  assert.equal(new Set(sources.map((source) => source.sha256)).size, sources.length);
   const zipBytes = createZipBuffer(sources.map((source) => [source.name, fs.readFileSync(source.path)]));
-  fs.writeFileSync(path.join(run, 'two-new-synthetic-sources.zip'), zipBytes, { flag: 'wx' });
+  fs.writeFileSync(path.join(run, 'three-new-synthetic-sources.zip'), zipBytes, { flag: 'wx' });
   write('synthetic-inputs.json', { sources, zip_sha256: sha256(zipBytes), testOnlySettings });
 
   const sourceAudioWorkerClient = {
@@ -130,13 +131,21 @@ async function createFixture(t) {
       assert.equal(extracted.streams[0].codec_name, 'pcm_s16le');
       assert.equal(extracted.streams[0].sample_rate, '16000');
       assert.equal(extracted.streams[0].channels, 1);
-      assert.ok(Math.abs(Number(extracted.format.duration) * 1000 - sources[1].durationMs) < 100);
       const snapshot = path.join(path.dirname(input.audioPath), `source-${input.requestId}.bin`);
-      assert.equal(sha256(fs.readFileSync(snapshot)), sources[1].sha256);
-      const copied = path.join(evidenceRoot, 'second-source-real-extracted.wav');
+      const sourceSha256 = sha256(fs.readFileSync(snapshot));
+      const source = sources.find((item) => item.sha256 === sourceSha256);
+      assert.ok(source?.audio, 'Worker input must bind one uploaded source with an audio track');
+      assert.ok(Math.abs(Number(extracted.format.duration) * 1000 - source.durationMs) < 100);
+      const copied = path.join(evidenceRoot, `work-${input.requestId}-real-extracted.wav`);
       fs.writeFileSync(copied, wav, { flag: 'wx' });
-      calls.worker.push({ request_id: input.requestId, source_sha256: sources[1].sha256,
+      calls.worker.push({ request_id: input.requestId, source_sha256: source.sha256,
         audio_sha256: input.audioSha256, artifact: copied, probe: extracted });
+      if (!source.speech) {
+        return { requestId: input.requestId, audioSha256: input.audioSha256,
+          transcriptSha256: sha256('[]'), sourceLanguage: null, languageProbability: null, segments: [],
+          noSpeechEvidence: { method: 'faster-whisper-vad', audio_duration_ms: source.durationMs,
+            speech_duration_ms: 0 } };
+      }
       return { requestId: input.requestId, audioSha256: input.audioSha256,
         transcriptSha256: sha256(JSON.stringify(SEGMENTS)), sourceLanguage: 'en', languageProbability: 0.99,
         segments: SEGMENTS };
@@ -145,7 +154,7 @@ async function createFixture(t) {
   async function localVisionDetailedDouble(payload) {
     const work = db.prepare('SELECT * FROM redraw_works WHERE id = ?').get(payload.source.work_id);
     const source = sources.find((item) => item.sha256 === work.source_fingerprint);
-    assert.ok(source, 'visual work must bind one of this run\'s two uploaded SHA values');
+    assert.ok(source, 'visual work must bind one of this run\'s three uploaded SHA values');
     const asset = db.prepare('SELECT * FROM assets WHERE id = ?').get(work.source_asset_id);
     assert.equal(payload.source.source_asset_id, asset.id);
     assert.equal(sha256(fs.readFileSync(path.join(storageRoot, asset.local_path))), source.sha256);
@@ -196,7 +205,7 @@ async function createFixture(t) {
   function request(method, route, { token, json, upload } = {}) {
     const boundary = 'g3-synthetic-zip-boundary';
     const bytes = upload ? Buffer.concat([
-      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="two-new-synthetic-sources.zip"\r\nContent-Type: application/zip\r\n\r\n`),
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="three-new-synthetic-sources.zip"\r\nContent-Type: application/zip\r\n\r\n`),
       zipBytes, Buffer.from(`\r\n--${boundary}--\r\n`),
     ]) : json === undefined ? null : Buffer.from(JSON.stringify(json));
     assert.ok(!token || loginTokens.has(token), 'No fabricated JWT or out-of-band issueToken is allowed');

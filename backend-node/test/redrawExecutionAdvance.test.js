@@ -13,6 +13,8 @@ const { getFfmpegPath, getFfprobePath } = require('../src/utils/ffmpegPath');
 const runs = require('../src/services/redrawExecutionRunService');
 const reviews = require('../src/services/redrawExecutionUnitReviewService');
 const { compileUnitProductionPack } = require('../src/services/redrawUnitProductionPackService');
+const { inspectPreparedUnitReferenceMaterials,
+  prepareUnitReferenceMaterials } = require('../src/services/redrawUnitReferenceDerivationService');
 const parameters = { resolution: '480p', aspect_ratio: '16:9' };
 
 function entry() {
@@ -414,6 +416,60 @@ test('real first candidate approval preserves original replay and only a fresh c
   const second = await entry().advanceExecutionRun(h.ctx, h.versionId, h.run.id, inputFor(next), runtime);
   assert.notEqual(second.attempt_id, first.attempt_id); assert.equal(second.attempt_status, 'waiting_review');
   assert.equal(posts, 2); assert.equal(downloads, 2); assert.equal(counts(h).attempts, 2); assert.equal(counts(h).reservations, 2);
+});
+
+test('an explicit second-unit provider failure stops the run and never submits another unit', async t => {
+  const h = await setup(t, 'paid', false, 'idle', { assemblyCase: true, audioMode: 'not_required',
+    assemblyParentRanges: [[0, 4000], [4000, 8000], [8000, 12000]], assemblyDurations: [5] });
+  assert.equal(h.queueState.queue.units.length, 3);
+  let media = await makeCandidateMedia(h), posts = 0, downloads = 0;
+  const runtime = { fetchImpl: async (_url, init) => {
+    posts += 1; assert.equal(init.method, 'POST'); assert.equal(h.db.inTransaction, false);
+    return new Response(JSON.stringify(posts === 1
+      ? { id: 'synthetic-first-candidate', status: 'succeeded',
+        content: { video_url: 'https://result.synthetic.invalid/first.mp4' } }
+      : { id: 'synthetic-second-failure', status: 'failed', error: { message: 'synthetic explicit failure' } }),
+    { status: 200, headers: { 'Content-Type': 'application/json' } });
+  }, download: { _dnsLookupForTest: async () => [{ address: '8.8.8.8', family: 4 }],
+    fetchImpl: async (_url, init) => { downloads += 1; assert.equal(init.method, 'GET');
+      return new Response(media, { status: 200, headers: { 'Content-Type': 'video/mp4' } }); } } };
+
+  const firstReady = await inspect(h);
+  const first = await entry().advanceExecutionRun(h.ctx, h.versionId, h.run.id, inputFor(firstReady), runtime);
+  h.attemptId = first.attempt_id;
+  assert.equal(first.attempt_status, 'waiting_review');
+  const candidate = await reviews.getExecutionUnitCandidate(h.ctx, h.versionId, h.run.id, h.expected(0).unit_id);
+  await reviews.reviewExecutionUnitCandidate(h.ctx, h.versionId, h.run.id, h.expected(0).unit_id, {
+    expected_revision: candidate.run_revision, expected_candidate_hash: candidate.candidate_hash, decision: 'approved',
+    checks: Object.fromEntries(candidate.required_checks.map(key => [key, { basis: 'human_watch_listen', result: 'passed' }])),
+  });
+
+  const secondMaterials = await inspectPreparedUnitReferenceMaterials(h.ctx, h.expected(1));
+  assert.equal(secondMaterials.status, 'needs_preparation');
+  await prepareUnitReferenceMaterials(h.ctx, { ...h.expected(1), expected_materials_hash: secondMaterials.materials_hash });
+  const secondReady = await inspect(h);
+  assert.equal(secondReady.status, 'ready', JSON.stringify(secondReady));
+  h.pack = compileUnitProductionPack({ owner: { tenantId: h.ctx.tenantId, userId: h.ctx.userId, workId: 1, versionId: h.versionId },
+    expected: h.expected(1), queueState: h.queueState, blueprint: h.blueprint, localization: h.localization });
+  const second = await entry().advanceExecutionRun(h.ctx, h.versionId, h.run.id, inputFor(secondReady), runtime);
+  h.attemptId = second.attempt_id;
+  assert.equal(second.attempt_status, 'failed');
+  assert.equal(runRow(h).status, 'failed');
+  assert.equal(posts, 2); assert.equal(downloads, 1);
+  assert.equal(counts(h).attempts, 2); assert.equal(counts(h).reservations, 2);
+  assert.equal(h.db.prepare('SELECT status FROM tenant_usage_reservations WHERE id=?')
+    .get(attemptRow(h).reservation_id).status, 'refunded');
+  const thirdUnitId = h.expected(2).unit_id;
+  assert.equal(h.db.prepare(`SELECT COUNT(*) n FROM redraw_execution_unit_attempts a
+    JOIN redraw_execution_queue_units q ON q.id=a.queue_unit_id WHERE q.unit_id=?`).get(thirdUnitId).n, 0);
+
+  const before = h.db.serialize(), changes = h.db.prepare('SELECT total_changes() n').get().n;
+  const replay = await entry().advanceExecutionRun(h.ctx, h.versionId, h.run.id, inputFor(secondReady), runtime);
+  assert.equal(replay.changed, false); assert.equal(replay.attempt_id, second.attempt_id);
+  assert.equal(posts, 2); assert.equal(downloads, 1);
+  assert.equal(counts(h).attempts, 2); assert.equal(counts(h).tasks, 2); assert.equal(counts(h).reservations, 2);
+  assert.deepEqual(h.db.serialize(), before);
+  assert.equal(h.db.prepare('SELECT total_changes() n').get().n, changes);
 });
 
 for (const failure of ['attempt_write', 'all_receipt_writes', 'unreadable_after_fallback']) {

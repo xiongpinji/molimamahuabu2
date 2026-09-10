@@ -1529,8 +1529,8 @@ G5.6 首片登记回执（2026-09-09）：七 SFC 仅命中 `redraw.episode-blue
 
 ### 任务 3：多输入回归、审查与同 HEAD CI（本地优先）
 
-- [ ] 建立不同镜头数/时长、单镜超过模型上限、多个输入方向、多人/画外/跨镜对白、无语音/静默、不同已支持语言的确定性矩阵；至少一条 UI 集成走默认动态证据管线，不注入 `activeAnalysisFacts` 或外部完成包。低层分析/生成依赖可模拟，但必须处理本次上传媒体。
-- [ ] 完整预演首个候选待审、拒绝、批准续行、处理中刷新、服务重启、未知结果和第 N 单元失败；核对已提交/未提交状态、防重及账户隔离。合成失败只能复用已有合格原片，不触发重新生成。
+- [x] 建立不同镜头数/时长、单镜超过模型上限、多个输入方向、多人/画外/跨镜对白、无语音/静默、不同已支持语言的确定性矩阵；至少一条 UI 集成走默认动态证据管线，不注入 `activeAnalysisFacts` 或外部完成包。低层分析/生成依赖可模拟，但必须处理本次上传媒体。2026-09-10 补入第三份 160×160、AAC 有轨的真实 FFmpeg 素材；最低层确定性 Worker 替身在真实抽取 WAV 上返回 VAD 零语音，与横屏无轨、竖屏有对白一起经真实登录、默认 HTTP ZIP 上传、音轨/视觉/融合、owner 隔离走通；三文件组合回归 51/51。该结果只证明产品分支与媒体绑定，不证明真实 ASR/VAD 质量。既有动态计划覆盖长镜头、跨镜完整句、引用上限及非常规模型时长；能力/页面矩阵覆盖 en-US、es-ES、ja-JP、ko-KR 等不同支持状态，默认浏览器产品链使用实际上传媒体而非注入最终 Facts。
+- [x] 完整预演首个候选待审、拒绝、批准续行、处理中刷新、服务重启、未知结果和第 N 单元失败；核对已提交/未提交状态、防重及账户隔离。合成失败只能复用已有合格原片，不触发重新生成。2026-09-10 新增三父镜头真实派生/准备队列的“首单元成功并人工批准，第二单元明确失败，第三单元不得启动”回归：固定 2 POST、1 下载、2 reservation，失败 reservation 退款一次，第三单元零 attempt，重复 advance 零 POST/零 DML；修复后完整 25/25（541,178 ms）。前端生命周期 216/216，后端 review/recovery 74/74，均 0 fail/skip。
 - [x] 运行聚焦测试、后端完整测试、Worker 测试、前端状态测试、真实前后端浏览器链及构建；记录每条命令退出码、通过/失败/跳过。2026-09-10 本轮统计见 G6 矩阵及总报告；所有失败为 0，skip 限于 Windows symlink/AF_UNIX 和条件分支，完整 Chromium 主链实际执行 1/1，并未靠 skip 放行。真实 FFmpeg 合成由媒体矩阵覆盖，正式无裁画面视检因无 approved visual baseline 仍未完成。
 - [x] 已收口审批错误呈现：`REDRAW_CHARACTER_IDENTITY_REQUIRED` 精确映射 409/原业务码，owner/CAS、拒绝零写与未知内部异常 500 保持。2026-09-08 原真实 HTTP TDD 和双审已完成；2026-09-09 当前路由再跑原定向用例 14/14、native 0（回执见上方 G6 身份包审批项）。原“当前仍包装成 500”是未同步的历史待办，现据源码和当前动态证据纠正；未重复修改 handler，不代表整个 G6 或浏览器已通过。
 - [x] G6.HTTP_EMPTY_ARRAY_GET_BODY（2026-09-09 本地小修收口）：低层 `node:http` 实际 GET 空数组 RED 5/4/1→GREEN 5/5，拒绝前后的 SQLite serialize、total_changes 与 transport 不变；正常无 body、非空非法 body、成员及版本 owner 隔离控制通过。仅 route 单表达式增加数组判断，空对象语义保留（不冒称独立 `{}` 动态覆盖），全局 parser/index/服务/POST/UI/模型未改。相邻 Run/Candidate 31/31，最终 feature 51/51，SPEC PASS→QUALITY APPROVE，原50项及完整历史不弱化；根证明 `g6-empty-array-get-body-verification-20260909-r1.json` SHA `79675d703f607219c1708fe7df061c8e67b943d489eeadabf37c835fb609acb1` / 103引用零漂移。feature 旧入口没有 raw-capture flag，已实读 TAP/空 stderr，不伪造该标志。仅关闭此缺口，不关闭整个 G6 或产品。
@@ -1538,7 +1538,7 @@ G5.6 首片登记回执（2026-09-09）：七 SFC 仅命中 `redraw.episode-blue
 
   历史：2026-09-09 实施前独立只读映射（后续测试与修复已见上项）：真实 unit 创建从 route 经 `createUnitComposition` / `buildUnitCompositionPlan` 等待 release 候选文件读取，再在事务中 INSERT；现有 owner/run/media 复核没有重核 `platform_users.status/token_version` 或 tenant/member 状态。优先复用 `redrawExecutionUnitCompositionHttp.test.js` 私有隔离夹具与既有 Export HTTP 精确 FD 读取屏障，在真实计划 await 内撤权、撤权后取快照，再释放原读取；比较新增 export/assets/dispatch/transport 为零，不能把夹具前置 synthetic 调用误报成全局零。保持不撤权控制例；禁止 mock 掉实际 create 服务。若 RED 确认，最小产品方向是在 unit 创建事务 INSERT 前调用本请求同步权限复核，安全映射撤 token/member 错误；不在 INSERT 后才补查、不加通用测试钩子或重写旧 v1。这段仅保留当时的定位与拟议方法，不覆盖上项最终 TDD/双审结论。
 - [ ] 审查精确差异和其他会话改动，只提交本任务内容；按当轮授权提交/推送后，要求最终 40 位 HEAD 的四项 Hosted CI 成功。未获远程权限则明确 CI 未验证，不引用基线绿灯。
-- [ ] 总报告记录支持矩阵、源/蓝图/本地化/素材/计划/输出 hashes、HEAD、测试/CI、未验证项；局部 fallback/SAR 测试通过不能勾选整个通用任务。
+- [x] 总报告记录支持矩阵、源/蓝图/本地化/素材/计划/输出 hashes、HEAD、测试/CI、未验证项；局部 fallback/SAR 测试通过不能勾选整个通用任务。2026-09-10 已追加“G3 多输入与执行失败矩阵收口”，明确当前基线 HEAD、未提交七文件差异（五个测试／夹具文件与两个文档）、三类真实合成媒体、当前测试终态和仍未运行的同 HEAD Hosted CI／真实供应商质量／用户新视频验收；未把本地 fixture 绿色写成完整交付。
 
 本地命令入口（不是本轮已执行结果；新增用例并入对应入口）：
 

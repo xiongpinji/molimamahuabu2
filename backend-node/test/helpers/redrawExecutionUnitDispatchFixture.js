@@ -94,7 +94,8 @@ function configureBeforeReview(h, audioMode = 'native', dialogueTargets = target
   }
 }
 
-async function setup(t, mode = 'paid', sequential = false, stage = 'bound', { createActor, assemblyCase = false, audioMode = 'native', dialogueTargets = targets } = {}) {
+async function setup(t, mode = 'paid', sequential = false, stage = 'bound', { createActor, assemblyCase = false,
+  audioMode = 'native', dialogueTargets = targets, assemblyParentRanges, assemblyDurations } = {}) {
   assert.ok(['queued', 'idle', 'unbound', 'bound'].includes(stage));
   assert.ok(['native', 'replace', 'not_required'].includes(audioMode));
   assert.ok(assemblyCase || audioMode === 'native');
@@ -106,7 +107,8 @@ async function setup(t, mode = 'paid', sequential = false, stage = 'bound', { cr
       h.db.prepare('UPDATE ai_service_configs SET verified_capabilities=? WHERE id=41').run(JSON.stringify(capabilities));
     } : h => configureBeforeReview(h, audioMode, dialogueTargets);
   const h = assemblyCase
-    ? await derivationFixture(t, { createActor, parentRanges: [[0, 5000], [5000, 12000]], durations: [5, 10],
+    ? await derivationFixture(t, { createActor, parentRanges: assemblyParentRanges || [[0, 5000], [5000, 12000]],
+      durations: assemblyDurations || [5, 10],
       beforeBlueprint: (h, raw) => audioMode === 'not_required' ? undefined : addDialogueEvidence(h, raw, true), beforeReview })
     : await fixture(t, { createActor, ...(sequential ? { secondMotion: true, durations: [5, 7] } : {}),
       beforeBlueprint: (h, raw) => addDialogueEvidence(h, raw), beforeReview });

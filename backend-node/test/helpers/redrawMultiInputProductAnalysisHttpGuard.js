@@ -181,12 +181,17 @@ function install() {
     return absolute;
   }
   const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-  const synthesisArgs = (audio) => ['-hide_banner', '-nostdin', '-loglevel', 'error', '-n', '-f', 'lavfi', '-i',
-    audio ? 'testsrc=size=128x192:rate=4' : 'testsrc=size=192x128:rate=4',
-    ...(audio ? ['-f', 'lavfi', '-i', 'sine=frequency=660:sample_rate=16000'] : []),
-    '-t', audio ? '14' : '12', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'ultrafast',
-    ...(audio ? ['-c:a', 'aac', '-b:a', '32k'] : ['-an']), '-threads', '1',
-    path.join(run, audio ? '02-portrait-synthetic-audio.mov' : '01-landscape-silent.mp4')];
+  const syntheticSources = [
+    { name: '01-landscape-silent.mp4', size: '192x128', duration: '12', audio: false },
+    { name: '02-portrait-synthetic-audio.mov', size: '128x192', duration: '14', audio: true },
+    { name: '03-square-music-only.mp4', size: '160x160', duration: '12', audio: true },
+  ];
+  const synthesisArgs = (source) => ['-hide_banner', '-nostdin', '-loglevel', 'error', '-n', '-f', 'lavfi', '-i',
+    `testsrc=size=${source.size}:rate=4`,
+    ...(source.audio ? ['-f', 'lavfi', '-i', 'sine=frequency=660:sample_rate=16000'] : []),
+    '-t', source.duration, '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'ultrafast',
+    ...(source.audio ? ['-c:a', 'aac', '-b:a', '32k'] : ['-an']), '-threads', '1',
+    path.join(run, source.name)];
   const contactSheetFilter = /^(?:crop=iw:ih\/3:0:ih\*2\/3,)?fps=[0-9.]+:round=up,scale=240:-1,drawtext=(?:fontfile=(?:\/Windows\/Fonts\/arial\.ttf|[A-Za-z]:\\Windows\\Fonts\\arial\.ttf):)?text='source %\{pts\\:hms\\:[0-9.]+\}':x=4:y=4:fontsize=12:fontcolor=white:box=1:boxcolor=black@0\.75,tile=4x\d+:nb_frames=\d+:padding=4:margin=4:color=black$/;
 
   function mediaCommand(file, args) {
@@ -201,7 +206,7 @@ function install() {
       command = ffprobe; kind = 'probe'; source = ownFile(args[6], true);
     } else if ([ffmpeg, 'ffmpeg', 'ffmpeg.exe'].includes(file)) {
       command = ffmpeg;
-      if (same(args, synthesisArgs(false)) || same(args, synthesisArgs(true))) {
+      if (syntheticSources.some((sourceSpec) => same(args, synthesisArgs(sourceSpec)))) {
         kind = 'synthetic-source'; output = ownFile(args.at(-1), false);
         if (fs.existsSync(output)) deny('SOURCE_OVERWRITE');
       } else if (args.length === 14 && same(args, ['-hide_banner', '-loglevel', 'error', '-y', '-i', args[5],

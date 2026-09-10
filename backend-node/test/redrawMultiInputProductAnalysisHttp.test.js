@@ -63,7 +63,7 @@ test('real login and default HTTP ZIP upload bind the second source through audi
   const project = data(await request('POST', '/redraw/projects', { token, json: { title: 'G3 synthetic multi-input HTTP' } }), 201);
   assert.equal(project.user_id, f.users[0].id); assert.equal(project.tenant_id, tenant.id);
   const uploaded = data(await request('POST', `/redraw/projects/${project.id}/works`, { token, upload: true }), 201).items;
-  assert.equal(uploaded.length, 2); assert.equal(count('redraw_works'), 2); assert.equal(count('async_tasks'), 0);
+  assert.equal(uploaded.length, 3); assert.equal(count('redraw_works'), 3); assert.equal(count('async_tasks'), 0);
   assert.deepEqual(uploaded.map((work) => work.source_fingerprint), sources.map((source) => source.sha256));
   assert.notEqual(uploaded[0].source_asset_id, uploaded[1].source_asset_id);
   assert.deepEqual(calls, { worker: [], vision: [] });
@@ -126,7 +126,7 @@ test('real login and default HTTP ZIP upload bind the second source through audi
     blueprints: count('redraw_episode_blueprints') };
   const repeated = data(await request('POST', `/redraw/projects/${project.id}/works`, { token, upload: true }), 201).items;
   assert.deepEqual(repeated.map((work) => work.id), uploaded.map((work) => work.id));
-  assert.ok(repeated.every((work) => work.reused)); assert.equal(count('redraw_works'), 2);
+  assert.ok(repeated.every((work) => work.reused)); assert.equal(count('redraw_works'), 3);
   for (let refresh = 0; refresh < 2; refresh++) {
     assert.deepEqual(data(await request('GET', `/redraw/projects/${project.id}/works`, { token })).map((work) => work.id), list.map((work) => work.id));
     assert.equal(data(await request('GET', `/redraw/works/${secondId}`, { token })).task_id, analyzed.task_id);
@@ -173,4 +173,27 @@ test('real login and default HTTP ZIP upload bind the second source through audi
   assertNoProduction();
   f.write('silent-first-source.json', { first: workRow(firstId), blueprint: firstRecord,
     first_branch_worker_calls: 0, total_worker_calls: calls.worker.length, production_counts: productionCounts() });
+
+  const music = list.find((work) => work.title === sources[2].name);
+  assert.ok(music); assert.notEqual(music.id, firstId); assert.notEqual(music.id, secondId);
+  const musicAnalysis = data(await request('POST', `/redraw/works/${music.id}/analyze`, { token, json: settings }), 201);
+  assert.equal(musicAnalysis.review_status, 'needs_review');
+  const musicRecord = data(await request('GET', `/redraw/works/${music.id}/blueprint`, { token }));
+  assert.equal(musicRecord.blueprint.source.sha256, sources[2].sha256);
+  assert.equal(musicRecord.blueprint.source.audio_codec, 'aac');
+  const musicWorker = calls.worker.find((call) => call.source_sha256 === sources[2].sha256);
+  assert.ok(musicWorker, 'music input must reach the Worker with its extracted WAV');
+  assert.equal(calls.worker.filter((call) => call.source_sha256 === sources[2].sha256).length, 1);
+  const musicAudio = readEvidence(music.id, 'redraw_source_audio_evidence');
+  assert.equal(musicAudio.payload.audio_sha256, musicWorker.audio_sha256);
+  assert.deepEqual(musicRecord.blueprint.shots.flatMap((shot) => shot.dialogue), []);
+  assert.equal(musicAudio.payload.dialogue_mode, 'silent');
+  assert.equal(musicAudio.payload.source_language, null);
+  assert.deepEqual(musicAudio.payload.segments, []);
+  assert.deepEqual(musicAudio.payload.no_speech_evidence, {
+    method: 'faster-whisper-vad', audio_duration_ms: sources[2].durationMs, speech_duration_ms: 0,
+  });
+  assertNoProduction();
+  f.write('music-only-third-source.json', { work: workRow(music.id), blueprint: musicRecord,
+    dialogue_mode: musicAudio.payload.dialogue_mode, production_counts: productionCounts() });
 });
