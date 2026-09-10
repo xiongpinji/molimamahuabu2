@@ -1,7 +1,7 @@
 // 项目导出服务：将剧集所有数据和媒体文件打包为 ZIP
 const fs = require('fs');
 const path = require('path');
-const AdmZip = require('adm-zip');
+const { createZipBuffer } = require('./zipArchiveService');
 
 const EXPORT_VERSION = '1.5';  // 1.5: 增加项目素材及其分镜/生成记录关联，支持完整复制画布素材
 
@@ -408,14 +408,13 @@ function exportDrama(db, cfg, log, dramaId) {
   };
 
   // ---- 9. 打包 ZIP ----
-  const zip = new AdmZip();
-  zip.addFile('project.json', Buffer.from(JSON.stringify(zipData, null, 2), 'utf8'));
+  const zipEntries = [['project.json', Buffer.from(JSON.stringify(zipData, null, 2), 'utf8')]];
 
   // 分镜图片完整历史（含首尾帧 first/last 专用图 + 所有历史生成）
   for (const { localRelPath, zipPath } of imageFilesToPack) {
     const abs = localPathToAbs(storagePath, localRelPath);
     const buf = safeReadFile(abs);
-    if (buf) zip.addFile(zipPath, buf);
+    if (buf) zipEntries.push([zipPath, buf]);
   }
 
   // 分镜视频
@@ -423,7 +422,7 @@ function exportDrama(db, cfg, log, dramaId) {
     if (vg.local_path) {
       const abs = localPathToAbs(storagePath, vg.local_path);
       const buf = safeReadFile(abs);
-      if (buf) zip.addFile(`media/videos/sb_${sbId}${extOf(vg.local_path)}`, buf);
+      if (buf) zipEntries.push([`media/videos/sb_${sbId}${extOf(vg.local_path)}`, buf]);
     }
   }
 
@@ -433,12 +432,12 @@ function exportDrama(db, cfg, log, dramaId) {
       if (sb.audio_local_path) {
         const abs = localPathToAbs(storagePath, sb.audio_local_path);
         const buf = safeReadFile(abs);
-        if (buf) zip.addFile(`media/audio/sb_${sb.id}${extOf(sb.audio_local_path)}`, buf);
+        if (buf) zipEntries.push([`media/audio/sb_${sb.id}${extOf(sb.audio_local_path)}`, buf]);
       }
       if (sb.narration_audio_local_path) {
         const abs = localPathToAbs(storagePath, sb.narration_audio_local_path);
         const buf = safeReadFile(abs);
-        if (buf) zip.addFile(`media/audio/sb_${sb.id}_narration${extOf(sb.narration_audio_local_path)}`, buf);
+        if (buf) zipEntries.push([`media/audio/sb_${sb.id}_narration${extOf(sb.narration_audio_local_path)}`, buf]);
       }
     }
   }
@@ -448,7 +447,7 @@ function exportDrama(db, cfg, log, dramaId) {
     if (c.local_path) {
       const abs = localPathToAbs(storagePath, c.local_path);
       const buf = safeReadFile(abs);
-      if (buf) zip.addFile(`media/characters/char_${c.id}${extOf(c.local_path)}`, buf);
+      if (buf) zipEntries.push([`media/characters/char_${c.id}${extOf(c.local_path)}`, buf]);
     }
   }
 
@@ -457,7 +456,7 @@ function exportDrama(db, cfg, log, dramaId) {
     if (s.local_path) {
       const abs = localPathToAbs(storagePath, s.local_path);
       const buf = safeReadFile(abs);
-      if (buf) zip.addFile(`media/scenes/scene_${s.id}${extOf(s.local_path)}`, buf);
+      if (buf) zipEntries.push([`media/scenes/scene_${s.id}${extOf(s.local_path)}`, buf]);
     }
   }
 
@@ -466,7 +465,7 @@ function exportDrama(db, cfg, log, dramaId) {
     if (p.local_path) {
       const abs = localPathToAbs(storagePath, p.local_path);
       const buf = safeReadFile(abs);
-      if (buf) zip.addFile(`media/props/prop_${p.id}${extOf(p.local_path)}`, buf);
+      if (buf) zipEntries.push([`media/props/prop_${p.id}${extOf(p.local_path)}`, buf]);
     }
   }
 
@@ -474,11 +473,11 @@ function exportDrama(db, cfg, log, dramaId) {
   for (const { localRelPath, zipPath } of extraFilesToPack) {
     const abs = localPathToAbs(storagePath, localRelPath);
     const buf = safeReadFile(abs);
-    if (buf) zip.addFile(zipPath, buf);
+    if (buf) zipEntries.push([zipPath, buf]);
   }
 
   log.info('Drama exported', { drama_id: dramaId, title: drama.title });
-  return { buffer: zip.toBuffer(), title: drama.title };
+  return { buffer: createZipBuffer(zipEntries), title: drama.title };
 }
 
 module.exports = { exportDrama };

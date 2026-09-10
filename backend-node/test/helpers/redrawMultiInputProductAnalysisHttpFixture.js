@@ -39,7 +39,7 @@ async function createFixture(t) {
   assert.ok(guard, 'Use the reviewed g3-multi-input-http launcher; never bare node/npm');
   const { run, ffmpeg, ffprobe } = guard;
   const Database = require('better-sqlite3');
-  const AdmZip = require('adm-zip');
+  const { createZipBuffer } = require('../../src/services/zipArchiveService');
   const express = require('express');
   const db = new Database(path.join(run, 'fixture.sqlite'));
   const storageRoot = path.join(run, 'storage');
@@ -116,9 +116,7 @@ async function createFixture(t) {
     assert.equal(source.probe.streams.some((stream) => stream.codec_type === 'audio'), source.audio);
   }
   assert.notEqual(sources[0].sha256, sources[1].sha256);
-  const zip = new AdmZip();
-  for (const source of sources) zip.addFile(source.name, fs.readFileSync(source.path));
-  const zipBytes = zip.toBuffer();
+  const zipBytes = createZipBuffer(sources.map((source) => [source.name, fs.readFileSync(source.path)]));
   fs.writeFileSync(path.join(run, 'two-new-synthetic-sources.zip'), zipBytes, { flag: 'wx' });
   write('synthetic-inputs.json', { sources, zip_sha256: sha256(zipBytes), testOnlySettings });
 

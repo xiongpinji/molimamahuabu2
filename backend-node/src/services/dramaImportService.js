@@ -1,7 +1,7 @@
 // 项目导入服务：解析 ZIP，还原剧集数据和媒体文件
 const fs = require('fs');
 const path = require('path');
-const AdmZip = require('adm-zip');
+const { readZipEntries } = require('./zipArchiveService');
 const { randomUUID } = require('crypto');
 const storageLayout = require('./storageLayout');
 
@@ -19,14 +19,14 @@ function ensureDir(dir) {
  * @returns {{ data: object, files: Map<string,Buffer> }}
  */
 function parseZip(zipBuffer) {
-  let zip;
+  let entries;
   try {
-    zip = new AdmZip(zipBuffer);
+    entries = readZipEntries(zipBuffer);
   } catch (e) {
     throw new Error('ZIP 文件损坏，无法解析');
   }
 
-  const projectEntry = zip.getEntry('project.json');
+  const projectEntry = entries.find((entry) => entry.entryName === 'project.json');
   if (!projectEntry) {
     throw new Error('ZIP 格式不正确：缺少 project.json');
   }
@@ -44,7 +44,7 @@ function parseZip(zipBuffer) {
 
   // 读取所有媒体文件到 Map
   const files = new Map();
-  for (const entry of zip.getEntries()) {
+  for (const entry of entries) {
     if (!entry.isDirectory && entry.entryName !== 'project.json') {
       files.set(entry.entryName, entry.getData());
     }

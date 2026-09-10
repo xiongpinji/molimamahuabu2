@@ -4,7 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { promisify } = require('util');
-const AdmZip = require('adm-zip');
+const { readZipEntries } = require('./zipArchiveService');
 const { getFfprobePath } = require('../utils/ffmpegPath');
 
 const execFileAsync = promisify(execFile);
@@ -226,12 +226,20 @@ function assertZipSize(file, limits = {}) {
 }
 
 async function expandZipUpload(file, limits, probeVideo) {
-  let zip;
   let entries;
   try {
-    zip = new AdmZip(file.path);
-    entries = zip.getEntries().filter((entry) => !entry.isDirectory);
-  } catch (_) {
+    entries = readZipEntries(file.path, {
+      maxEntries: Number(limits.zipMaxEntries ?? 20),
+      maxEntryBytes: Number(limits.zipMaxEntryBytes ?? limits.maxBytes ?? 1024 * 1024 * 1024),
+      maxTotalBytes: Number(limits.zipMaxTotalBytes ?? limits.maxBytes ?? 1024 * 1024 * 1024),
+    }).filter((entry) => !entry.isDirectory);
+  } catch (error) {
+    if (error?.code === 'ZIP_TOO_MANY_ENTRIES') {
+      throw uploadError('REDRAW_ZIP_TOO_MANY_ENTRIES', 'ZIP 源片数量超过限制');
+    }
+    if (error?.code === 'ZIP_ENTRY_TOO_LARGE' || error?.code === 'ZIP_EXPANDED_TOO_LARGE') {
+      throw uploadError('REDRAW_ZIP_EXPANDED_TOO_LARGE', 'ZIP 展开后超过大小限制');
+    }
     throw uploadError('REDRAW_ZIP_INVALID', 'ZIP 文件损坏或格式不受支持');
   }
   const maxEntries = Number(limits.zipMaxEntries ?? 20);

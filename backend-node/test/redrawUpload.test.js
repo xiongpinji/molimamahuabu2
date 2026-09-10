@@ -5,8 +5,8 @@ const { execFileSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const AdmZip = require('adm-zip');
 const Database = require('better-sqlite3');
+const { createZipBuffer, readZipEntries } = require('../src/services/zipArchiveService');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const { getFfmpegPath, hasLocalFfmpeg, hasLocalFfprobe } = require('../src/utils/ffmpegPath');
 const { MINIMAL_MP4 } = require('./fixtures/media');
@@ -51,9 +51,7 @@ function makeUpload(filePath, overrides = {}) {
 
 function writeZipWithRawEntryName(zipPath, rawName, data, safeName = rawName.replace(/\.\./g, 'aa')) {
   assert.equal(Buffer.byteLength(safeName), Buffer.byteLength(rawName));
-  const zip = new AdmZip();
-  zip.addFile(safeName, Buffer.from(data));
-  zip.writeZip(zipPath);
+  fs.writeFileSync(zipPath, createZipBuffer([[safeName, Buffer.from(data)]]));
   patchRawEntryName(zipPath, safeName, rawName);
 }
 
@@ -90,15 +88,13 @@ function createRealMp4(filePath, { color, duration = 12, size = '32x32' }) {
 }
 
 function writeZip(zipPath, entries) {
-  const zip = new AdmZip();
-  for (const [name, data] of entries) zip.addFile(name, data);
-  zip.writeZip(zipPath);
+  fs.writeFileSync(zipPath, createZipBuffer(entries));
 }
 
 function corruptEntryCrc(zipPath, entryIndex) {
   const source = fs.readFileSync(zipPath);
   const buffer = Buffer.from(source);
-  const entries = new AdmZip(zipPath).getEntries();
+  const entries = readZipEntries(zipPath);
   const entry = entries[entryIndex];
   const localOffset = entry.header.offset;
   assert.equal(source.readUInt32LE(localOffset), 0x04034b50);
@@ -124,7 +120,7 @@ function corruptEntryCrc(zipPath, entryIndex) {
   }
   assert.equal(patched, true);
   fs.writeFileSync(zipPath, buffer);
-  assert.throws(() => new AdmZip(zipPath).getEntries()[entryIndex].getData(), /CRC/i);
+  assert.throws(() => readZipEntries(zipPath)[entryIndex].getData(), /CRC/i);
 }
 
 function storageSnapshot(storageRoot) {
@@ -366,7 +362,7 @@ test('delayed ZIP publish keeps accepted path aliases distinct and ordered', asy
   const zipPath = path.join(dir, 'aliases.zip');
   writeZip(zipPath, [['a.mp4', first], ['x/a.mp4', second]]);
   patchRawEntryName(zipPath, 'x/a.mp4', './a.mp4');
-  assert.deepEqual(new AdmZip(zipPath).getEntries().map((entry) => entry.entryName), ['a.mp4', './a.mp4']);
+  assert.deepEqual(readZipEntries(zipPath).map((entry) => entry.entryName), ['a.mp4', './a.mp4']);
 
   const items = await expandSourceUpload(zipUpload(zipPath), { storageRoot, tempRoot });
   assert.deepEqual(items.map((item) => item.name), ['a.mp4', './a.mp4']);
@@ -385,7 +381,7 @@ test('raw ZIP NUL entry is rejected with the safeZipEntry domain error', async (
   const video = createRealMp4(path.join(dir, 'source.mp4'), { color: 'red', size: '16x16' });
   const zipPath = path.join(dir, 'nul.zip');
   writeZipWithRawEntryName(zipPath, 'a\0b.mp4', video, 'aXb.mp4');
-  assert.equal(new AdmZip(zipPath).getEntries()[0].entryName, 'a\0b.mp4');
+  assert.equal(readZipEntries(zipPath)[0].entryName, 'a\0b.mp4');
 
   await assert.rejects(
     () => expandSourceUpload(zipUpload(zipPath), { storageRoot, tempRoot }),
@@ -452,11 +448,9 @@ test('createWorks rejects a real bad ZIP before asset or work rows and storage c
 test('expandSourceUpload enforces zip entry count and total expanded size limits', async (t) => {
   const dir = makeTempDir(t);
   const overCountZip = path.join(dir, 'count.zip');
-  const countZip = new AdmZip();
-  for (let i = 0; i < 21; i += 1) {
-    countZip.addFile(`clip-${i}.mp4`, Buffer.from('x'));
-  }
-  countZip.writeZip(overCountZip);
+  fs.writeFileSync(overCountZip, createZipBuffer(
+    Array.from({ length: 21 }, (_, i) => [`clip-${i}.mp4`, Buffer.from('x')]),
+  ));
 
   await assert.rejects(
     () => expandSourceUpload(
@@ -468,9 +462,7 @@ test('expandSourceUpload enforces zip entry count and total expanded size limits
   );
 
   const overSizeZip = path.join(dir, 'size.zip');
-  const sizeZip = new AdmZip();
-  sizeZip.addFile('clip.mp4', Buffer.alloc(11));
-  sizeZip.writeZip(overSizeZip);
+  fs.writeFileSync(overSizeZip, createZipBuffer([['clip.mp4', Buffer.alloc(11)]]));
 
   await assert.rejects(
     () => expandSourceUpload(
@@ -486,11 +478,9 @@ test('expandSourceUpload validates zip item duration between 12s and 180s by def
   const dir = makeTempDir(t);
   const storageRoot = path.join(dir, 'storage');
   const zipPath = path.join(dir, 'sources.zip');
-  const zip = new AdmZip();
   const mp4 = path.join(dir, 'clip.mp4');
   writeMp4(mp4, 'zip-video');
-  zip.addLocalFile(mp4, '', 'clip.mp4');
-  zip.writeZip(zipPath);
+  fs.writeFileSync(zipPath, createZipBuffer([['clip.mp4', fs.readFileSync(mp4)]]));
 
   await assert.rejects(
     () => expandSourceUpload(
