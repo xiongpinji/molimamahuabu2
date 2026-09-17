@@ -538,6 +538,30 @@ const REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_TASK_E_UNLOCK = {
   approvedBy: 'product-owner 2026-08-28 redraw-product-media-registration-task-e',
   impactTests: REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_REQUIRED_TESTS,
 };
+const APP_UPDATE_DIALOG_UNLOCK = {
+  reason: '2026-09-18 应用版本检测与更新弹窗 API/根壳挂载获批',
+  approvedBy: 'product-owner 2026-09-18 app-update-dialog',
+  impactTests: [
+    'backend-node/test/appVersion.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
+const APP_UPDATE_REDRAW_UNLOCK = {
+  reason: APP_UPDATE_DIALOG_UNLOCK.reason,
+  approvedBy: APP_UPDATE_DIALOG_UNLOCK.approvedBy,
+  impactTests: [
+    'backend-node/test/appVersion.test.js',
+    'backend-node/test/redrawRoutes.test.js',
+    'backend-node/test/redrawProductMediaChain.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
+const APP_UPDATE_PROVIDER_FEATURE_IDS = new Set([
+  ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID,
+  PROACTIVE_CANARY_FEATURE_ID,
+]);
 const REDRAW_TTS_CLEANUP_UNLOCK = {
   reason: '2026-09-18 转绘默认关闭独立 TTS、优先原生视频音频交付获批',
   approvedBy: 'product-owner 2026-09-18 redraw-tts-cleanup-delivery',
@@ -1310,33 +1334,34 @@ test('NewAPI 计费只读预检修复刷新主动巡检锁并保留前序历史'
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   const feature = manifest.features.find(({ featureId }) => featureId === PROACTIVE_CANARY_FEATURE_ID);
   assert.ok(feature, `缺少功能锁 ${PROACTIVE_CANARY_FEATURE_ID}`);
-  assert.deepEqual(feature.unlock, NEWAPI_READONLY_PREFLIGHT_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-1), NEWAPI_CONFIG_SCOPED_CAPABILITY_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-2), NEWAPI_SIX_MODEL_PRODUCTION_COPY_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-3), NEWAPI_SIX_MODEL_REMEDIATION_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-4), CANVAS_BILLING_LOGIN_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-5), FAILED_GENERATION_RESUBMIT_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-6), WAN3_PROVIDER_ASSET_SIGNING_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-7), WAN3_FULL_CAPABILITY_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-8), PR211_CI_LOCK_REFRESH_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-9), WAN3_INTEGRATION_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-10), PR208_MAIN_SYNC_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-11), REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-12), REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_INITIAL_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-13), MIGRATION67_SHARED_HELPER_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-14), MIGRATION67_IDEMPOTENT_REPLAY_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-15), FREE_BILLING_REVIEW_FIX_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-16), REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-17), TOAPIS_SUBMISSION_RECOVERY_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-18), PR194_MAIN_SYNC_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-19), PR197_PROVIDER_CANARY_REMEDIATION_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-20), PR195_STATIC_ASSET_COMPAT_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-21), PR193_IMAGE_UNKNOWN_CLOSURE_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-22), REDRAW_GENERAL_GENERATION_DELIVERY_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-23), CANVAS_TEXT_CAPABILITY_HOTFIX_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-24), PR184_MAIN_MERGE_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-25), PLATFORM_ZERO_COST_SMOKE_FIXTURE_GUARD_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-26), PLATFORM_ZERO_COST_SMOKE_READ_AUTH_UNLOCK);
+  assert.deepEqual(feature.unlock, APP_UPDATE_DIALOG_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-1), NEWAPI_READONLY_PREFLIGHT_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-2), NEWAPI_CONFIG_SCOPED_CAPABILITY_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-3), NEWAPI_SIX_MODEL_PRODUCTION_COPY_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-4), NEWAPI_SIX_MODEL_REMEDIATION_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-5), CANVAS_BILLING_LOGIN_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-6), FAILED_GENERATION_RESUBMIT_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-7), WAN3_PROVIDER_ASSET_SIGNING_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-8), WAN3_FULL_CAPABILITY_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-9), PR211_CI_LOCK_REFRESH_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-10), WAN3_INTEGRATION_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-11), PR208_MAIN_SYNC_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-12), REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-13), REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_INITIAL_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-14), MIGRATION67_SHARED_HELPER_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-15), MIGRATION67_IDEMPOTENT_REPLAY_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-16), FREE_BILLING_REVIEW_FIX_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-17), REDRAW_PRODUCT_MEDIA_REGISTRATION_TASK_A_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-18), TOAPIS_SUBMISSION_RECOVERY_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-19), PR194_MAIN_SYNC_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-20), PR197_PROVIDER_CANARY_REMEDIATION_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-21), PR195_STATIC_ASSET_COMPAT_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-22), PR193_IMAGE_UNKNOWN_CLOSURE_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-23), REDRAW_GENERAL_GENERATION_DELIVERY_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-24), CANVAS_TEXT_CAPABILITY_HOTFIX_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-25), PR184_MAIN_MERGE_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-26), PLATFORM_ZERO_COST_SMOKE_FIXTURE_GUARD_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-27), PLATFORM_ZERO_COST_SMOKE_READ_AUTH_UNLOCK);
   assert.equal(feature.evidence.at(-1), REDRAW_PRODUCT_MEDIA_REGISTRATION_PLAN);
   assert.equal(feature.evidence.at(-2), REDRAW_PRODUCT_MEDIA_REGISTRATION_SPEC);
   assert.equal(feature.evidence.at(-3), PR194_MAIN_SYNC_EVIDENCE);
@@ -1380,11 +1405,12 @@ test('Coverage 版本级 HTTP 入口 Task C 使用独立功能锁和新鲜批准
     REDRAW_PRODUCT_MEDIA_REGISTRATION_SPEC,
     REDRAW_PRODUCT_MEDIA_REGISTRATION_PLAN,
   ]);
-  assert.deepEqual(feature.unlock, REDRAW_TTS_CLEANUP_UNLOCK);
+  assert.deepEqual(feature.unlock, APP_UPDATE_REDRAW_UNLOCK);
   assert.deepEqual(feature.unlockHistory, [
     REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_INITIAL_UNLOCK,
     REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_UNLOCK,
     NEWAPI_SHARED_ROUTE_REGISTRATION_UNLOCK,
+    REDRAW_TTS_CLEANUP_UNLOCK,
   ]);
   assert.notDeepEqual(feature.unlock, REDRAW_COVERAGE_REGISTRATION_TASK_B_UNLOCK);
   assert.notDeepEqual(feature.unlock, PR177_PLATFORM_ACCEPTANCE_UNLOCK);
@@ -1421,10 +1447,11 @@ test('真实产品 HTTP 媒体同链 Task E 使用独立功能锁和新鲜批准
     REDRAW_PRODUCT_MEDIA_REGISTRATION_SPEC,
     REDRAW_PRODUCT_MEDIA_REGISTRATION_PLAN,
   ]);
-  assert.deepEqual(feature.unlock, REDRAW_TTS_CLEANUP_UNLOCK);
+  assert.deepEqual(feature.unlock, APP_UPDATE_REDRAW_UNLOCK);
   assert.deepEqual(feature.unlockHistory, [
     REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_TASK_E_UNLOCK,
     NEWAPI_SHARED_ROUTE_REGISTRATION_UNLOCK,
+    REDRAW_TTS_CLEANUP_UNLOCK,
   ]);
   assert.notDeepEqual(feature.unlock, REDRAW_COVERAGE_REGISTRATION_TASK_B_UNLOCK);
   assert.notDeepEqual(feature.unlock, REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_UNLOCK);
@@ -1494,7 +1521,9 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
     const readonlyPreflightChanged = NEWAPI_READONLY_PREFLIGHT_FEATURE_IDS.has(featureId);
     assert.deepEqual(
       feature.unlock,
-      readonlyPreflightChanged
+      APP_UPDATE_PROVIDER_FEATURE_IDS.has(featureId)
+        ? APP_UPDATE_DIALOG_UNLOCK
+        : readonlyPreflightChanged
         ? NEWAPI_READONLY_PREFLIGHT_UNLOCK
         : scopedCapabilityChanged
         ? NEWAPI_CONFIG_SCOPED_CAPABILITY_UNLOCK
@@ -1609,6 +1638,11 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
       NEWAPI_SIX_MODEL_REMEDIATION_UNLOCK,
       ...(scopedCapabilityChanged ? [NEWAPI_SIX_MODEL_PRODUCTION_COPY_UNLOCK] : []),
       ...(readonlyPreflightChanged ? [NEWAPI_CONFIG_SCOPED_CAPABILITY_UNLOCK] : []),
+      ...(APP_UPDATE_PROVIDER_FEATURE_IDS.has(featureId)
+        ? [readonlyPreflightChanged
+          ? NEWAPI_READONLY_PREFLIGHT_UNLOCK
+          : NEWAPI_CONFIG_SCOPED_CAPABILITY_UNLOCK]
+        : []),
     ]);
     assert.deepEqual(
       feature.evidence.slice(0, HISTORICAL_EVIDENCE_BY_FEATURE[featureId].length),
@@ -1681,12 +1715,22 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
   assert.deepEqual(appLocks, [PROACTIVE_CANARY_FEATURE_ID, UNKNOWN_STATE_RECONCILIATION_FEATURE_ID].sort());
   for (const featureId of appLocks) {
     const feature = manifest.features.find((entry) => entry.featureId === featureId);
-    assert.deepEqual(feature.unlock, NEWAPI_READONLY_PREFLIGHT_UNLOCK);
-    assert.deepEqual(feature.unlockHistory.at(-1), NEWAPI_CONFIG_SCOPED_CAPABILITY_UNLOCK);
-    assert.deepEqual(feature.unlockHistory.at(-2), NEWAPI_SIX_MODEL_PRODUCTION_COPY_UNLOCK);
-    assert.deepEqual(feature.unlockHistory.at(-3), NEWAPI_SIX_MODEL_REMEDIATION_UNLOCK);
-    assert.deepEqual(feature.unlockHistory.at(-4), CANVAS_BILLING_LOGIN_UNLOCK);
-    assert.deepEqual(feature.unlockHistory.at(-5), FAILED_GENERATION_RESUBMIT_UNLOCK);
+    if (featureId === PROACTIVE_CANARY_FEATURE_ID) {
+      assert.deepEqual(feature.unlock, APP_UPDATE_DIALOG_UNLOCK);
+      assert.deepEqual(feature.unlockHistory.at(-1), NEWAPI_READONLY_PREFLIGHT_UNLOCK);
+      assert.deepEqual(feature.unlockHistory.at(-2), NEWAPI_CONFIG_SCOPED_CAPABILITY_UNLOCK);
+      assert.deepEqual(feature.unlockHistory.at(-3), NEWAPI_SIX_MODEL_PRODUCTION_COPY_UNLOCK);
+      assert.deepEqual(feature.unlockHistory.at(-4), NEWAPI_SIX_MODEL_REMEDIATION_UNLOCK);
+      assert.deepEqual(feature.unlockHistory.at(-5), CANVAS_BILLING_LOGIN_UNLOCK);
+      assert.deepEqual(feature.unlockHistory.at(-6), FAILED_GENERATION_RESUBMIT_UNLOCK);
+    } else {
+      assert.deepEqual(feature.unlock, NEWAPI_READONLY_PREFLIGHT_UNLOCK);
+      assert.deepEqual(feature.unlockHistory.at(-1), NEWAPI_CONFIG_SCOPED_CAPABILITY_UNLOCK);
+      assert.deepEqual(feature.unlockHistory.at(-2), NEWAPI_SIX_MODEL_PRODUCTION_COPY_UNLOCK);
+      assert.deepEqual(feature.unlockHistory.at(-3), NEWAPI_SIX_MODEL_REMEDIATION_UNLOCK);
+      assert.deepEqual(feature.unlockHistory.at(-4), CANVAS_BILLING_LOGIN_UNLOCK);
+      assert.deepEqual(feature.unlockHistory.at(-5), FAILED_GENERATION_RESUBMIT_UNLOCK);
+    }
   }
 });
 
@@ -1696,17 +1740,18 @@ test('NewAPI 六模型修复刷新管理员预设锁并保留 Wan3 与前序历�
     ({ featureId }) => featureId === ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID,
   );
   assert.ok(feature, `缺少功能锁 ${ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID}`);
-  assert.deepEqual(feature.unlock, NEWAPI_CONFIG_SCOPED_CAPABILITY_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-1), NEWAPI_SIX_MODEL_PRODUCTION_COPY_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-2), NEWAPI_SIX_MODEL_REMEDIATION_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-3), WAN3_FULL_CAPABILITY_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-4), PR211_CI_LOCK_REFRESH_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-5), WAN3_INTEGRATION_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-6), PR208_MAIN_SYNC_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-7), REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-8), REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_INITIAL_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-9), TOAPIS_BACKUP_DOMAIN_MIGRATION_UNLOCK);
-  assert.deepEqual(feature.unlockHistory.at(-10), REDRAW_GENERAL_GENERATION_DELIVERY_UNLOCK);
+  assert.deepEqual(feature.unlock, APP_UPDATE_DIALOG_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-1), NEWAPI_CONFIG_SCOPED_CAPABILITY_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-2), NEWAPI_SIX_MODEL_PRODUCTION_COPY_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-3), NEWAPI_SIX_MODEL_REMEDIATION_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-4), WAN3_FULL_CAPABILITY_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-5), PR211_CI_LOCK_REFRESH_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-6), WAN3_INTEGRATION_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-7), PR208_MAIN_SYNC_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-8), REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-9), REDRAW_COVERAGE_HTTP_ROUTE_TASK_C_INITIAL_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-10), TOAPIS_BACKUP_DOMAIN_MIGRATION_UNLOCK);
+  assert.deepEqual(feature.unlockHistory.at(-11), REDRAW_GENERAL_GENERATION_DELIVERY_UNLOCK);
 });
 
 test('未触及锁保留当前批准记录且所有锁保留历史证据', () => {
@@ -1716,11 +1761,11 @@ test('未触及锁保留当前批准记录且所有锁保留历史证据', () =>
     if (feature.featureId === REDRAW_COVERAGE_REGISTRATION_FEATURE_ID) {
       assert.deepEqual(feature.unlock, REDRAW_COVERAGE_REGISTRATION_TASK_B_UNLOCK);
     } else if (feature.featureId === REDRAW_COVERAGE_HTTP_ROUTE_FEATURE_ID) {
-      assert.deepEqual(feature.unlock, REDRAW_TTS_CLEANUP_UNLOCK);
+      assert.deepEqual(feature.unlock, APP_UPDATE_REDRAW_UNLOCK);
     } else if (feature.featureId === REDRAW_CLEAN_PLATE_MEDIA_FEATURE_ID) {
       assert.deepEqual(feature.unlock, REDRAW_TTS_CLEANUP_CLEAN_PLATE_UNLOCK);
     } else if (feature.featureId === REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_FEATURE_ID) {
-      assert.deepEqual(feature.unlock, REDRAW_TTS_CLEANUP_UNLOCK);
+      assert.deepEqual(feature.unlock, APP_UPDATE_REDRAW_UNLOCK);
     } else if (!Object.hasOwn(PROVIDER_TASK_LOCK_REQUIREMENTS, feature.featureId)) {
       assert.deepEqual(feature.unlock, PR177_PLATFORM_ACCEPTANCE_UNLOCK);
     }
@@ -1785,13 +1830,19 @@ test('失败视频重试闭环保留 Wan3 素材签名与完整历史并仅刷�
     const readonlyPreflightChanged = NEWAPI_READONLY_PREFLIGHT_FEATURE_IDS.has(featureId);
     assert.deepEqual(
       feature.unlock,
-      readonlyPreflightChanged
+      APP_UPDATE_PROVIDER_FEATURE_IDS.has(featureId)
+        ? APP_UPDATE_DIALOG_UNLOCK
+        : readonlyPreflightChanged
         ? NEWAPI_READONLY_PREFLIGHT_UNLOCK
         : scopedCapabilityChanged
         ? NEWAPI_CONFIG_SCOPED_CAPABILITY_UNLOCK
         : NEWAPI_SIX_MODEL_PRODUCTION_COPY_UNLOCK,
     );
-    const latestHistory = readonlyPreflightChanged
+    const latestHistory = APP_UPDATE_PROVIDER_FEATURE_IDS.has(featureId)
+      ? (readonlyPreflightChanged
+        ? [NEWAPI_READONLY_PREFLIGHT_UNLOCK, NEWAPI_CONFIG_SCOPED_CAPABILITY_UNLOCK, NEWAPI_SIX_MODEL_PRODUCTION_COPY_UNLOCK, NEWAPI_SIX_MODEL_REMEDIATION_UNLOCK]
+        : [NEWAPI_CONFIG_SCOPED_CAPABILITY_UNLOCK, NEWAPI_SIX_MODEL_PRODUCTION_COPY_UNLOCK, NEWAPI_SIX_MODEL_REMEDIATION_UNLOCK])
+      : readonlyPreflightChanged
       ? [NEWAPI_CONFIG_SCOPED_CAPABILITY_UNLOCK, NEWAPI_SIX_MODEL_PRODUCTION_COPY_UNLOCK, NEWAPI_SIX_MODEL_REMEDIATION_UNLOCK]
       : scopedCapabilityChanged
         ? [NEWAPI_SIX_MODEL_PRODUCTION_COPY_UNLOCK, NEWAPI_SIX_MODEL_REMEDIATION_UNLOCK]

@@ -7,6 +7,7 @@ const settingsRoutes = require('./settings');
 const aiConfigRoutes = require('./aiConfig');
 const propRoutes = require('./prop');
 const stubRoutes = require('./stub');
+const appVersionRoutes = require('./appVersion');
 const characterLibraryRoutes = require('./characterLibrary');
 const sceneLibraryRoutes = require('./sceneLibrary');
 const propLibraryRoutes = require('./propLibrary');
@@ -780,6 +781,9 @@ function setupRouter(cfg, db, log, options = {}) {
   r.get('/scene-model-map/:key', sceneModelMap.get);
   r.put('/scene-model-map/:key', sceneModelMap.update);
   r.delete('/scene-model-map/:key', sceneModelMap.delete);
+
+  // ---------- app version ----------
+  r.use('/app', appVersionRoutes);
 
   // 启动时将已有的覆盖加载到 promptI18n 内存缓存
   try {

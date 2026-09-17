@@ -18,6 +18,7 @@
     >
       <PersonalCenter embedded @close="personalCenterOpen = false" />
     </el-dialog>
+    <AppUpdateDialog />
   </div>
 </template>
 
@@ -25,6 +26,7 @@
 import { defineAsyncComponent, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import AccountBadge from '@/components/AccountBadge.vue'
+import AppUpdateDialog from '@/components/common/AppUpdateDialog.vue'
 
 const PersonalCenter = defineAsyncComponent(() => import('@/views/personal-center.vue'))
 const route = useRoute()
