@@ -1715,12 +1715,22 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
   assert.deepEqual(appLocks, [PROACTIVE_CANARY_FEATURE_ID, UNKNOWN_STATE_RECONCILIATION_FEATURE_ID].sort());
   for (const featureId of appLocks) {
     const feature = manifest.features.find((entry) => entry.featureId === featureId);
-    assert.deepEqual(feature.unlock, NEWAPI_READONLY_PREFLIGHT_UNLOCK);
-    assert.deepEqual(feature.unlockHistory.at(-1), NEWAPI_CONFIG_SCOPED_CAPABILITY_UNLOCK);
-    assert.deepEqual(feature.unlockHistory.at(-2), NEWAPI_SIX_MODEL_PRODUCTION_COPY_UNLOCK);
-    assert.deepEqual(feature.unlockHistory.at(-3), NEWAPI_SIX_MODEL_REMEDIATION_UNLOCK);
-    assert.deepEqual(feature.unlockHistory.at(-4), CANVAS_BILLING_LOGIN_UNLOCK);
-    assert.deepEqual(feature.unlockHistory.at(-5), FAILED_GENERATION_RESUBMIT_UNLOCK);
+    if (featureId === PROACTIVE_CANARY_FEATURE_ID) {
+      assert.deepEqual(feature.unlock, APP_UPDATE_DIALOG_UNLOCK);
+      assert.deepEqual(feature.unlockHistory.at(-1), NEWAPI_READONLY_PREFLIGHT_UNLOCK);
+      assert.deepEqual(feature.unlockHistory.at(-2), NEWAPI_CONFIG_SCOPED_CAPABILITY_UNLOCK);
+      assert.deepEqual(feature.unlockHistory.at(-3), NEWAPI_SIX_MODEL_PRODUCTION_COPY_UNLOCK);
+      assert.deepEqual(feature.unlockHistory.at(-4), NEWAPI_SIX_MODEL_REMEDIATION_UNLOCK);
+      assert.deepEqual(feature.unlockHistory.at(-5), CANVAS_BILLING_LOGIN_UNLOCK);
+      assert.deepEqual(feature.unlockHistory.at(-6), FAILED_GENERATION_RESUBMIT_UNLOCK);
+    } else {
+      assert.deepEqual(feature.unlock, NEWAPI_READONLY_PREFLIGHT_UNLOCK);
+      assert.deepEqual(feature.unlockHistory.at(-1), NEWAPI_CONFIG_SCOPED_CAPABILITY_UNLOCK);
+      assert.deepEqual(feature.unlockHistory.at(-2), NEWAPI_SIX_MODEL_PRODUCTION_COPY_UNLOCK);
+      assert.deepEqual(feature.unlockHistory.at(-3), NEWAPI_SIX_MODEL_REMEDIATION_UNLOCK);
+      assert.deepEqual(feature.unlockHistory.at(-4), CANVAS_BILLING_LOGIN_UNLOCK);
+      assert.deepEqual(feature.unlockHistory.at(-5), FAILED_GENERATION_RESUBMIT_UNLOCK);
+    }
   }
 });
 
