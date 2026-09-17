@@ -2172,14 +2172,26 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-09-03 NewAPI 中转站成本同步管理路由注册获批",
+          "approvedBy": "product-owner 2026-09-03 newapi-config-scoped-capability-binding",
+          "impactTests": [
+            "backend-node/test/providerPricingSync.test.js",
+            "backend-node/test/modelPrice.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/redrawProductMediaChain.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-03 NewAPI 中转站成本同步管理路由注册获批",
-        "approvedBy": "product-owner 2026-09-03 newapi-config-scoped-capability-binding",
+        "reason": "2026-09-18 转绘默认关闭独立 TTS、优先原生视频音频交付获批",
+        "approvedBy": "product-owner 2026-09-18 redraw-tts-cleanup-delivery",
         "impactTests": [
-          "backend-node/test/providerPricingSync.test.js",
-          "backend-node/test/modelPrice.test.js",
+          "backend-node/test/ttsPolicy.test.js",
+          "backend-node/test/redrawProviderAdapters.test.js",
           "backend-node/test/redrawRoutes.test.js",
           "backend-node/test/redrawProductMediaChain.test.js",
           "backend-node/test/featureLockManifest.test.js",
@@ -2215,36 +2227,48 @@
       "fixCommit": null,
       "unlockHistory": [
         {
-        "reason": "2026-08-28 一键转绘 clean provider 本地媒体登记 Task D 获批",
-        "approvedBy": "product-owner 2026-08-28 redraw-product-media-registration-task-d",
-        "impactTests": [
-          "backend-node/test/redrawAssets.test.js",
-          "backend-node/test/redrawReferencePreparationOrchestration.test.js",
-          "backend-node/test/redrawReferenceBundle.test.js",
-          "backend-node/test/featureLockManifest.test.js",
-          "backend-node/test/incrementalReleaseScope.test.js"
-        ]
+          "reason": "2026-08-28 一键转绘 clean provider 本地媒体登记 Task D 获批",
+          "approvedBy": "product-owner 2026-08-28 redraw-product-media-registration-task-d",
+          "impactTests": [
+            "backend-node/test/redrawAssets.test.js",
+            "backend-node/test/redrawReferencePreparationOrchestration.test.js",
+            "backend-node/test/redrawReferenceBundle.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         },
         {
-        "reason": "2026-08-28 clean provider 本地媒体双字段污染 P1 修复获批",
-        "approvedBy": "product-owner 2026-08-28 redraw-clean-local-media-dual-field-p1-fix",
-        "impactTests": [
-          "backend-node/test/redrawAssets.test.js",
-          "backend-node/test/redrawReferencePreparationOrchestration.test.js",
-          "backend-node/test/redrawReferenceBundle.test.js",
-          "backend-node/test/featureLockManifest.test.js",
-          "backend-node/test/incrementalReleaseScope.test.js"
-        ]
+          "reason": "2026-08-28 clean provider 本地媒体双字段污染 P1 修复获批",
+          "approvedBy": "product-owner 2026-08-28 redraw-clean-local-media-dual-field-p1-fix",
+          "impactTests": [
+            "backend-node/test/redrawAssets.test.js",
+            "backend-node/test/redrawReferencePreparationOrchestration.test.js",
+            "backend-node/test/redrawReferenceBundle.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
+        },
+        {
+          "reason": "2026-08-28 clean provider 默认 adapter 与 legacy 双字段 P2 修复获批",
+          "approvedBy": "product-owner 2026-08-28 redraw-clean-adapter-legacy-fields-task-d-p2",
+          "impactTests": [
+            "backend-node/test/redrawAssets.test.js",
+            "backend-node/test/redrawProviderAdapters.test.js",
+            "backend-node/test/redrawReferencePreparationOrchestration.test.js",
+            "backend-node/test/redrawReferenceBundle.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-08-28 clean provider 默认 adapter 与 legacy 双字段 P2 修复获批",
-        "approvedBy": "product-owner 2026-08-28 redraw-clean-adapter-legacy-fields-task-d-p2",
+        "reason": "2026-09-18 转绘默认关闭独立 TTS、优先原生视频音频交付获批",
+        "approvedBy": "product-owner 2026-09-18 redraw-tts-cleanup-delivery",
         "impactTests": [
-          "backend-node/test/redrawAssets.test.js",
+          "backend-node/test/ttsPolicy.test.js",
           "backend-node/test/redrawProviderAdapters.test.js",
+          "backend-node/test/redrawAssets.test.js",
           "backend-node/test/redrawReferencePreparationOrchestration.test.js",
-          "backend-node/test/redrawReferenceBundle.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]
@@ -2297,14 +2321,26 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-09-03 NewAPI 中转站成本同步管理路由注册获批",
+          "approvedBy": "product-owner 2026-09-03 newapi-config-scoped-capability-binding",
+          "impactTests": [
+            "backend-node/test/providerPricingSync.test.js",
+            "backend-node/test/modelPrice.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/redrawProductMediaChain.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-03 NewAPI 中转站成本同步管理路由注册获批",
-        "approvedBy": "product-owner 2026-09-03 newapi-config-scoped-capability-binding",
+        "reason": "2026-09-18 转绘默认关闭独立 TTS、优先原生视频音频交付获批",
+        "approvedBy": "product-owner 2026-09-18 redraw-tts-cleanup-delivery",
         "impactTests": [
-          "backend-node/test/providerPricingSync.test.js",
-          "backend-node/test/modelPrice.test.js",
+          "backend-node/test/ttsPolicy.test.js",
+          "backend-node/test/redrawProviderAdapters.test.js",
           "backend-node/test/redrawRoutes.test.js",
           "backend-node/test/redrawProductMediaChain.test.js",
           "backend-node/test/featureLockManifest.test.js",
