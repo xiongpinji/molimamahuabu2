@@ -2144,7 +2144,11 @@ async function prepareGenericReferencesThroughUi(page, versionId, interaction, w
     `).all(Number(versionId))
     if (pending.length) {
       await waitForRequestsToSettle()
-      await page.locator('.redraw-step').filter({ hasText: '资产审核' }).click()
+      const nextUrl = new URL(page.url())
+      nextUrl.searchParams.set('step', '2')
+      await page.goto(nextUrl.toString())
+      await waitForRequestsToSettle()
+      await expect(page.locator('.redraw-asset-step')).toBeVisible({ timeout: 15_000 })
       await expect(page.getByRole('heading', { name: '确认本地化资产后再进入批量转绘' })).toBeVisible()
       await page.locator('.asset-tabs').getByRole('button', { name: '场景', exact: true }).click()
       for (const asset of pending) {
