@@ -139,14 +139,12 @@ async function loadWorkspace() {
     work.value = isExistingWorkId(workId.value) ? await redrawAPI.getWork(workId.value) : null
     applyProjectEventsState(await eventsRequest)
     const backendStepNow = normalizeStep(work.value?.current_step || 1)
-    const routeStepNow = route.query.step == null || String(route.query.step).trim() === ''
-      ? backendStepNow
-      : normalizeStep(route.query.step)
-    // 刷新时若 URL 仍停留在旧 step，而后端门禁已前进，则跟随后端进度。
-    const nextStep = routeStepNow < backendStepNow
-      ? backendStepNow
-      : Math.min(routeStepNow, backendStepNow)
-    if (String(route.query.step || '1') !== String(nextStep)) {
+    const hasExplicitStep = route.query.step != null && String(route.query.step).trim() !== ''
+    // 无显式 step 时跟随后端；有显式 step 时只做门禁钳制，允许回看已解锁的前序步骤。
+    const nextStep = hasExplicitStep
+      ? Math.min(normalizeStep(route.query.step), backendStepNow)
+      : backendStepNow
+    if (String(route.query.step || '') !== String(nextStep)) {
       router.replace({ query: { ...route.query, step: nextStep } })
     }
   } finally {
