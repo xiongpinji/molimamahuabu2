@@ -31,15 +31,12 @@
         </el-button>
       </div>
     </div>
-    <RedrawVoicePicker
-      v-if="activeKind === 'voice'"
-      :characters="characterAssets"
-      :voices="productionVoices"
-      :loading="voiceBinding"
-      :previewing-voice-id="previewingVoiceId"
-      @assign="selectVoice"
-      @preview="previewVoice"
-      @preview-stop="stopVoicePreview"
+    <el-alert
+      class="native-audio-notice"
+      type="info"
+      :closable="false"
+      show-icon
+      :title="NATIVE_VIDEO_AUDIO_NOTICE"
     />
     <div class="asset-grid">
       <RedrawAssetCard
@@ -64,6 +61,7 @@ import { redrawAPI } from '@/api/redraw'
 import { isRedrawCharacterIdentityPackReady } from '@/utils/redrawCharacterIdentity'
 import {
   ASSET_KINDS,
+  NATIVE_VIDEO_AUDIO_NOTICE,
   assetBatchCredits,
   assetBatchProgress,
   assetBatchQuoteApplicable,
@@ -79,129 +77,6 @@ import {
 import RedrawAssetCard from './RedrawAssetCard.vue'
 import RedrawCharacterLibraryPanel from './RedrawCharacterLibraryPanel.vue'
 import RedrawReviewGate from './RedrawReviewGate.vue'
-import RedrawVoicePicker from './RedrawVoicePicker.vue'
-
-function createVoicePreviewController(options = {}) {
-  const createAudio = options.createAudio || (() => new Audio())
-  const fetchPreview = options.fetchPreview || (() => Promise.reject(new Error('音色预览请求不可用')))
-  const createObjectURL = options.createObjectURL || ((blob) => URL.createObjectURL(blob))
-  const revokeObjectURL = options.revokeObjectURL || ((url) => URL.revokeObjectURL(url))
-  const onPlayingChange = options.onPlayingChange || (() => {})
-  const onError = options.onError || (() => {})
-  let player = null
-  let loadedVoiceId = null
-  let loadedPreviewUrl = ''
-  let loadedObjectUrl = ''
-  let playingVoiceId = null
-  let operationId = 0
-  let disposed = false
-
-  const setPlaying = (voiceId) => {
-    playingVoiceId = voiceId
-    onPlayingChange(voiceId)
-  }
-  const releaseLoadedPreview = () => {
-    if (loadedObjectUrl) revokeObjectURL(loadedObjectUrl)
-    loadedObjectUrl = ''
-    loadedVoiceId = null
-    loadedPreviewUrl = ''
-    if (player) {
-      player.removeAttribute('src')
-      player.load()
-    }
-  }
-  const handleEnded = () => {
-    operationId += 1
-    setPlaying(null)
-    releaseLoadedPreview()
-  }
-  const ensurePlayer = () => {
-    if (player) return player
-    player = createAudio()
-    player.addEventListener('ended', handleEnded)
-    return player
-  }
-  const stop = () => {
-    operationId += 1
-    if (player && !player.paused) player.pause()
-    setPlaying(null)
-    releaseLoadedPreview()
-    return false
-  }
-
-  const toggle = async (voice = {}) => {
-    const voiceId = voice.id
-    const previewUrl = String(voice.preview_url || '').trim()
-    if (disposed || voiceId == null || !previewUrl) return false
-    const audio = ensurePlayer()
-    if (playingVoiceId != null
-      && String(playingVoiceId) === String(voiceId)
-      && !audio.paused) {
-      operationId += 1
-      audio.pause()
-      setPlaying(null)
-      return false
-    }
-
-    const nextOperationId = ++operationId
-    if (playingVoiceId != null || !audio.paused) {
-      audio.pause()
-      setPlaying(null)
-    }
-    if (loadedVoiceId == null
-      || String(loadedVoiceId) !== String(voiceId)
-      || loadedPreviewUrl !== previewUrl) {
-      releaseLoadedPreview()
-      let objectUrl = ''
-      try {
-        const blob = await fetchPreview(voice)
-        if (disposed || nextOperationId !== operationId) return false
-        objectUrl = createObjectURL(blob)
-        if (disposed || nextOperationId !== operationId) {
-          revokeObjectURL(objectUrl)
-          return false
-        }
-        audio.src = objectUrl
-        loadedVoiceId = voiceId
-        loadedPreviewUrl = previewUrl
-        loadedObjectUrl = objectUrl
-      } catch (error) {
-        if (objectUrl) revokeObjectURL(objectUrl)
-        if (disposed || nextOperationId !== operationId) return false
-        setPlaying(null)
-        onError(error)
-        return false
-      }
-    }
-    try {
-      await audio.play()
-      if (disposed || nextOperationId !== operationId) return false
-      setPlaying(voiceId)
-      return true
-    } catch (error) {
-      if (disposed || nextOperationId !== operationId) return false
-      setPlaying(null)
-      releaseLoadedPreview()
-      onError(error)
-      return false
-    }
-  }
-
-  const dispose = () => {
-    if (disposed) return
-    disposed = true
-    operationId += 1
-    if (player) {
-      player.pause()
-      player.removeEventListener('ended', handleEnded)
-    }
-    releaseLoadedPreview()
-    player = null
-    setPlaying(null)
-  }
-
-  return { toggle, stop, dispose }
-}
 
 const props = defineProps({
   work: { type: Object, default: null },
@@ -210,12 +85,9 @@ const props = defineProps({
 const emit = defineEmits(['work-updated', 'gate-updated'])
 const assets = ref([])
 const characterPlan = ref(null)
-const productionVoices = ref([])
 const gate = ref({ ok: false, missing: [] })
 const activeKind = ref('character')
 const loading = ref(false)
-const voiceBinding = ref(false)
-const previewingVoiceId = ref(null)
 const quote = ref(0)
 const batchQuote = ref(null)
 const batchWork = ref(null)
@@ -225,10 +97,8 @@ const pendingQuoteContext = ref('')
 const batchQuoteApplicable = ref(null)
 const batchQuoteError = ref('')
 const loadError = ref('')
-let pollTimer = null
 const resolvedVersionId = computed(() => props.versionId || props.work?.version_id || props.work?.current_version_id)
 const visibleAssets = computed(() => groupAssets(assets.value, activeKind.value))
-const characterAssets = computed(() => groupAssets(assets.value, 'character'))
 const wardrobeReferenceAssets = computed(() => assets.value.filter((asset) => {
   const assetId = Number(asset?.asset_id)
   return asset.kind !== 'voice' && Number.isSafeInteger(assetId) && assetId > 0
@@ -239,11 +109,9 @@ const batchProgress = computed(() => assetBatchProgress(activeBatch.value))
 const batchReady = computed(() => canStartAssetBatch(batchQuote.value, activeBatch.value) && !batchSubmitting.value)
 const failedIds = computed(() => failedAssetIds({ items: assets.value }))
 const canRetryFailedAssets = computed(() => activeBatch.value?.status === 'partial_failed')
-const previewController = createVoicePreviewController({
-  fetchPreview: (voice) => redrawAPI.getVoicePreview(resolvedVersionId.value, voice.id),
-  onPlayingChange: (voiceId) => { previewingVoiceId.value = voiceId },
-  onError: (error) => ElMessage.error(error?.message || '音色试听失败'),
-})
+const batchPoll = useIntervalPoll(async () => {
+  await pollBatchWork()
+}, 3000)
 
 function quoteHash(result) {
   return result?.quote_hash || result?.hash || ''
@@ -268,16 +136,6 @@ function nextIdempotencyKey() {
 
 function isCurrentVersion(versionId) {
   return isAssetVersionContextCurrent(versionId, resolvedVersionId.value)
-}
-
-async function loadProductionVoices(versionId = resolvedVersionId.value) {
-  if (!versionId) {
-    productionVoices.value = []
-    return
-  }
-  const items = await redrawAPI.listProductionVoices(versionId)
-  if (!isCurrentVersion(versionId)) return
-  productionVoices.value = Array.isArray(items) ? items : []
 }
 
 async function loadAssetBatchQuote(assetIds = null) {
@@ -338,7 +196,6 @@ async function refresh(options = {}) {
       batchQuoteError.value = ''
       pendingQuoteContext.value = ''
     }
-    if (activeKind.value === 'voice') await loadProductionVoices(versionId)
     loadError.value = ''
   } finally {
     loading.value = false
@@ -361,7 +218,7 @@ async function generate(asset) {
       return
     }
     const confirmation = confirmSingleAssetQuote(asset, quoteResult)
-    if (asset.kind === 'voice' && !confirmation.confirmed) {
+    if (!confirmation.confirmed) {
       assets.value = assets.value.map((item) => (
         String(item.id) === String(asset.id) ? confirmation.asset : item
       ))
@@ -421,7 +278,7 @@ async function pollBatchWork() {
     batchWork.value = normalizeBatch(work?.asset_batch)
     await refresh({ quoteBatch: false })
     if (batchTerminal(batchWork.value)) {
-      stopBatchPolling()
+      batchPoll.stop()
       batchIdempotencyKey.value = null
     }
   } catch (error) {
@@ -430,15 +287,11 @@ async function pollBatchWork() {
 }
 
 function startBatchPolling() {
-  stopBatchPolling()
-  pollTimer = window.setInterval(pollBatchWork, 3000)
-  pollBatchWork()
+  batchPoll.start()
 }
 
 function stopBatchPolling() {
-  if (!pollTimer) return
-  window.clearInterval(pollTimer)
-  pollTimer = null
+  batchPoll.stop()
 }
 
 async function startAssetBatch(assetIds = null) {
@@ -480,48 +333,15 @@ function retryFailedAssets() {
   startAssetBatch(failedIds.value)
 }
 
-async function selectVoice(selection = {}) {
-  const characterAssetId = Number(selection.character_asset_id)
-  const voiceAssetId = Number(selection.voice_asset_id)
-  const expectedUpdatedAt = selection.expected_updated_at
-  if (voiceBinding.value
-    || !Number.isInteger(characterAssetId) || characterAssetId <= 0
-    || !Number.isInteger(voiceAssetId) || voiceAssetId <= 0) return
-  voiceBinding.value = true
-  try {
-    await redrawAPI.assignVoice(characterAssetId, {
-      voice_asset_id: voiceAssetId,
-      expected_updated_at: expectedUpdatedAt,
-    })
-    await refresh()
-    ElMessage.success('角色音色已绑定')
-  } catch (error) {
-    ElMessage.error(error.message || '角色音色绑定失败')
-  } finally {
-    voiceBinding.value = false
-  }
-}
-
-function previewVoice(voice) {
-  return previewController.toggle(voice)
-}
-
-function stopVoicePreview() {
-  previewController.stop()
-}
-
 onMounted(async () => {
   await refreshSafely()
   if (['pending', 'processing'].includes(String(activeBatch.value?.status || ''))) startBatchPolling()
 })
 onUnmounted(() => {
   stopBatchPolling()
-  previewController.dispose()
 })
 watch(resolvedVersionId, async () => {
   stopBatchPolling()
-  stopVoicePreview()
-  productionVoices.value = []
   batchQuote.value = null
   batchWork.value = null
   batchIdempotencyKey.value = null
@@ -529,18 +349,6 @@ watch(resolvedVersionId, async () => {
   batchQuoteError.value = ''
   loadError.value = ''
   await refreshSafely()
-})
-watch(activeKind, async (kind) => {
-  if (kind !== 'voice') {
-    stopVoicePreview()
-    return
-  }
-  if (productionVoices.value.length) return
-  try {
-    await loadProductionVoices()
-  } catch (error) {
-    ElMessage.error(error.message || '已验证音色列表加载失败')
-  }
 })
 
 defineExpose({ refresh: refreshSafely, generationGateOpen })
@@ -552,7 +360,7 @@ defineExpose({ refresh: refreshSafely, generationGateOpen })
 .section-heading > div { min-width: 0; }
 .eyebrow { margin: 0 0 5px; color: #ff9a6d; font-size: 12px; font-weight: 800; }
 h2 { margin: 0; font-size: 20px; overflow-wrap: anywhere; }
-.asset-tabs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.asset-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .asset-tabs button { min-width: 0; padding: 10px; border: 1px solid #2f2f2f; border-radius: 6px; background: #121212; color: #aaa; }
 .asset-tabs button.active { border-color: #ff7139; color: #fff; }
 .asset-batch-panel { display: grid; gap: 10px; padding: 12px; border: 1px solid #333; border-radius: 6px; background: #141414; }
@@ -561,6 +369,7 @@ h2 { margin: 0; font-size: 20px; overflow-wrap: anywhere; }
 .asset-batch-credits strong { color: #ffd166; overflow-wrap: anywhere; }
 .asset-batch-progress { display: grid; gap: 6px; color: #aaa; font-size: 13px; }
 .asset-batch-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.native-audio-notice { margin-top: 2px; }
 .asset-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; min-width: 0; }
 .empty-state { grid-column: 1 / -1; padding: 30px; border: 1px dashed #363636; color: #888; text-align: center; }
 @media (max-width: 720px) { .section-heading { align-items: stretch; flex-direction: column; } .asset-grid { grid-template-columns: 1fr; } }
