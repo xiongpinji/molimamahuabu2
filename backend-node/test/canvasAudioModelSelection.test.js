@@ -5,6 +5,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const Database = require('better-sqlite3');
+
+process.env.TTS_ENABLED = '1';
 const createAudioRoutes = require('../src/routes/audio');
 const minimalMp3 = require('./fixtures/minimalMp3');
 

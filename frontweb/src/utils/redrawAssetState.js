@@ -2,8 +2,10 @@ export const ASSET_KINDS = [
   { key: 'character', label: '角色' },
   { key: 'scene', label: '场景' },
   { key: 'prop', label: '物品' },
-  { key: 'voice', label: '音色' },
+  // 产品决策：独立 TTS 音色已停用，改用视频模型原生语音
 ]
+
+export const NATIVE_VIDEO_AUDIO_NOTICE = '已停用独立 TTS：转绘成片使用视频模型原生语音，无需单独配音。'
 
 export function isApprovedAsset(asset) {
   return asset?.approval_status === 'approved'

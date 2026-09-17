@@ -6,6 +6,8 @@ const test = require('node:test');
 const Database = require('better-sqlite3');
 const sharp = require('sharp');
 
+process.env.TTS_ENABLED = '1';
+
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const realAssetService = require('../src/services/assetService');
 const redrawAssetService = require('../src/services/redrawAssetService');

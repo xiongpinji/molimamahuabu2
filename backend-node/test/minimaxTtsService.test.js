@@ -5,6 +5,9 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
+// 本文件验证 TTS 合成行为本身，需显式打开产品开关
+process.env.TTS_ENABLED = '1';
+
 const { synthesize } = require('../src/services/ttsService');
 const { createRedrawProviderAdapters } = require('../src/services/redrawProviderAdapters');
 const validMp3Bytes = require('./fixtures/minimalMp3');

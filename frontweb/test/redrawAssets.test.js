@@ -10,7 +10,6 @@ const apiSource = readSource('../src/api/redraw.js')
 const workspaceSource = readSource('../src/views/RedrawWorkspace.vue')
 const assetStepSource = readSource('../src/components/redraw/RedrawAssetStep.vue')
 const assetCardSource = readSource('../src/components/redraw/RedrawAssetCard.vue')
-const voicePickerSource = readSource('../src/components/redraw/RedrawVoicePicker.vue')
 const reviewGateSource = readSource('../src/components/redraw/RedrawReviewGate.vue')
 const stateSource = readSource('../src/utils/redrawAssetState.js')
 
@@ -23,16 +22,19 @@ test('资产步骤 API 覆盖版本、资产生成、审核和门禁回读', () 
   assert.match(apiSource, /asset.*quote|quote.*asset/)
 })
 
-test('资产步骤展示三视图、场景分段、物品、音色和审核定位', () => {
+test('资产步骤展示三视图、场景分段、物品、原生语音提示和审核定位', () => {
   assert.match(assetStepSource, /RedrawAssetCard/)
-  assert.match(assetStepSource, /RedrawVoicePicker/)
+  assert.match(assetStepSource, /NATIVE_VIDEO_AUDIO_NOTICE/)
+  assert.match(assetStepSource, /native-audio-notice/)
+  assert.doesNotMatch(assetStepSource, /RedrawVoicePicker/)
   assert.match(assetStepSource, /RedrawReviewGate/)
   assert.match(assetCardSource, /三视图/)
   assert.match(assetCardSource, /原场景/)
   assert.match(assetCardSource, /本地化/)
   assert.match(assetCardSource, /去人净景/)
   assert.match(assetCardSource, /预计扣除/)
-  assert.match(voicePickerSource, /试听/)
+  assert.match(stateSource, /已停用独立 TTS/)
+  assert.doesNotMatch(stateSource, /key:\s*'voice'/)
   assert.match(reviewGateSource, /missing/)
   assert.match(reviewGateSource, /scrollIntoView/)
 })
@@ -194,9 +196,9 @@ test('资产批量 API 与 UI 只使用服务端报价、hash 确认和安全创
   assert.doesNotMatch(assetStepSource, /createAssetBatch\([^)]*credit_amount/)
 })
 
-test('单项音色生成只提交用户已看到且再次确认未变化的 quote_hash', async () => {
+test('单项资产生成只提交用户已看到且再次确认未变化的 quote_hash', async () => {
   const state = await import('../src/utils/redrawAssetState.js')
-  let displayed = { id: 1, kind: 'voice', quote_hash: 'H1', quote_credits: 3 }
+  let displayed = { id: 1, kind: 'character', quote_hash: 'H1', quote_credits: 3 }
   let generateCalls = 0
   const changed = state.confirmSingleAssetQuote(displayed, { priced: true, quote_hash: 'H2', credits: 4 })
   if (changed.confirmed) generateCalls += 1
@@ -211,7 +213,6 @@ test('单项音色生成只提交用户已看到且再次确认未变化的 quot
 
   assert.match(assetStepSource, /getAssetQuote\(asset\.id\)/)
   assert.match(assetStepSource, /confirmSingleAssetQuote\(asset,\s*quoteResult\)/)
-  assert.match(assetStepSource, /asset\.kind === 'voice' && !confirmation\.confirmed/)
   assert.match(assetStepSource, /generateAsset\(asset\.id,\s*\{\s*prompt:\s*asset\.prompt,\s*quote_hash:\s*confirmation\.quoteHash,?\s*\}\)/)
   assert.doesNotMatch(assetStepSource, /generateAsset\(asset\.id,[^)]*model/)
   assert.doesNotMatch(assetStepSource, /generateAsset\(asset\.id,[^)]*credits/)

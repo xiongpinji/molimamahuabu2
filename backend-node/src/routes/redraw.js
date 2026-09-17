@@ -2864,6 +2864,9 @@ function sendCompositionError(res, error, fallbackMessage, log, meta = {}) {
 
 function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
   const code = String(error?.code || '');
+  if (code === 'TTS_DISABLED') {
+    return response.error(res, 410, code, error.message || fallbackMessage);
+  }
   if (['REDRAW_CANDIDATE_NOT_FOUND', 'REDRAW_EPISODE_RELEASE_VERSION_NOT_FOUND', 'REDRAW_VERSION_NOT_FOUND']
     .includes(code)) {
     return response.error(res, 404, code, error.message || fallbackMessage);
@@ -3846,6 +3849,10 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
   }
 
   async function registerLocalProductionVoice(req, res) {
+    const { isTtsEnabled, TTS_DISABLED_CODE, TTS_DISABLED_MESSAGE } = require('../services/ttsPolicy');
+    if (!isTtsEnabled()) {
+      return response.error(res, 410, TTS_DISABLED_CODE, TTS_DISABLED_MESSAGE);
+    }
     const currentOwner = owner(req);
     if (!String(req.get?.('x-tenant-id') || '').trim()
       || !currentOwner.tenantId || !currentOwner.userId) {
@@ -4054,6 +4061,10 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
   }
 
   function assignVoice(req, res) {
+    const { isTtsEnabled, TTS_DISABLED_CODE, TTS_DISABLED_MESSAGE } = require('../services/ttsPolicy');
+    if (!isTtsEnabled()) {
+      return response.error(res, 410, TTS_DISABLED_CODE, TTS_DISABLED_MESSAGE);
+    }
     const currentOwner = owner(req);
     const character = findOwnedAsset(req.params.id, currentOwner);
     if (!character || character.kind !== 'character') {

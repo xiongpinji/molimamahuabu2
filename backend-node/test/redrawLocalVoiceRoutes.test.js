@@ -105,9 +105,11 @@ function routeFixture(t, registrationService = null, input = {}) {
   const previous = {
     publicMode: process.env.PUBLIC_PLATFORM_MODE,
     jwtSecret: process.env.PLATFORM_JWT_SECRET,
+    ttsEnabled: process.env.TTS_ENABLED,
   };
   process.env.PUBLIC_PLATFORM_MODE = 'true';
   process.env.PLATFORM_JWT_SECRET = 'redraw-local-voice-route-secret-at-least-32-bytes';
+  process.env.TTS_ENABLED = '1';
   t.after(() => {
     db.close();
     fs.rmSync(storageRoot, { recursive: true, force: true });
@@ -115,6 +117,8 @@ function routeFixture(t, registrationService = null, input = {}) {
     else process.env.PUBLIC_PLATFORM_MODE = previous.publicMode;
     if (previous.jwtSecret === undefined) delete process.env.PLATFORM_JWT_SECRET;
     else process.env.PLATFORM_JWT_SECRET = previous.jwtSecret;
+    if (previous.ttsEnabled === undefined) delete process.env.TTS_ENABLED;
+    else process.env.TTS_ENABLED = previous.ttsEnabled;
   });
   const user = userAuthService.register(db, {
     email: `redraw-local-voice-${crypto.randomUUID()}@example.test`,
@@ -225,6 +229,23 @@ test('local production voice route is always registered and fails closed when de
     assert.equal((await response.json()).error.code, 'REDRAW_LOCAL_TTS_NOT_READY');
   });
   assert.equal(fixture.db.prepare('SELECT COUNT(*) AS count FROM redraw_local_voice_registrations').get().count, 0);
+});
+
+test('local production voice route returns 410 when TTS is disabled by policy', async (t) => {
+  const fixture = routeFixture(t, { async registerLocalProductionVoice() { throw new Error('should not run'); } });
+  const previous = process.env.TTS_ENABLED;
+  delete process.env.TTS_ENABLED;
+  t.after(() => {
+    if (previous === undefined) delete process.env.TTS_ENABLED;
+    else process.env.TTS_ENABLED = previous;
+  });
+  await withServer(fixture.router, async (baseUrl) => {
+    const response = await post(baseUrl, fixture, {
+      idempotency_key: 'tts-disabled', expected_updated_at: NOW,
+    });
+    assert.equal(response.status, 410);
+    assert.equal((await response.json()).error.code, 'TTS_DISABLED');
+  });
 });
 
 test('local production voice route authenticates and hides absent or foreign owner scope', async (t) => {

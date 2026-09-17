@@ -26,6 +26,7 @@ test('前端必须提供串行运行通用整集产品链的独立 E2E 命令', 
 test('Hosted Canvas E2E 必须以零真实供应商模式运行通用整集产品链', () => {
   assert.match(frontendWorkflow, /name: Run redraw full product E2E/)
   assert.match(frontendWorkflow, /REDRAW_E2E_FAKE_PROVIDER:\s*'1'/)
+  assert.match(frontendWorkflow, /TTS_ENABLED:\s*'1'/)
   assert.match(frontendWorkflow, /run: npm run test:e2e:redraw-full-product/)
 })
 

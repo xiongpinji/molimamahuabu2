@@ -419,6 +419,8 @@ async function synthesize(db, log, {
   timeout_ms,
   max_response_bytes,
 }) {
+  const { assertTtsEnabled } = require('./ttsPolicy');
+  assertTtsEnabled();
   if (!text || !text.trim()) throw new Error('text 不能为空');
   const aiConfigService = require('./aiConfigService');
   const ttsConfig = config || (() => {

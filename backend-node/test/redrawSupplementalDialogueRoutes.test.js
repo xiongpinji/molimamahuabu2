@@ -2,6 +2,8 @@ const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const test = require('node:test');
 
+process.env.TTS_ENABLED = '1';
+
 const Database = require('better-sqlite3');
 const express = require('express');
 

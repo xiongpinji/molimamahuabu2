@@ -154,6 +154,10 @@ const defaultSourceFacts = {
 }
 
 const fullProductMode = process.env.REDRAW_E2E_FAKE_PROVIDER === '1'
+if (fullProductMode && !/^(1|true|yes)$/i.test(String(process.env.TTS_ENABLED || '').trim())) {
+  // 完整产品链仍覆盖音色恢复路径；默认产品策略关闭独立 TTS。
+  process.env.TTS_ENABLED = '1'
+}
 const activeCase = !fullProductMode && process.env.REDRAW_E2E_CASE === 'latam-real-source'
   ? redrawLatinAmericanCase
   : null
@@ -2134,22 +2138,25 @@ async function prepareGenericReferencesThroughUi(page, versionId, interaction, w
     })).not.toBe('failed')
 
     const pending = database.prepare(`
-      SELECT id FROM redraw_assets
+      SELECT id, updated_at FROM redraw_assets
       WHERE version_id = ? AND kind = 'scene' AND clean_plate_asset_id IS NOT NULL
         AND approval_status = 'pending' AND deleted_at IS NULL ORDER BY id
     `).all(Number(versionId))
     if (pending.length) {
       await waitForRequestsToSettle()
-      await page.locator('.redraw-step').filter({ hasText: '资产审核' }).click()
-      await expect(page.getByRole('heading', { name: '确认本地化资产后再进入批量转绘' })).toBeVisible()
-      await page.locator('.asset-tabs').getByRole('button', { name: '场景', exact: true }).click()
       for (const asset of pending) {
-        const review = await clickForJsonResponse(
-          page,
-          page.locator(`#asset-${asset.id}-scene`).getByRole('button', { name: '批准', exact: true }),
-          apiResponse('POST', new RegExp(`/api/v1/redraw/assets/${asset.id}/review$`)),
-        )
-        expect(review.response.status(), JSON.stringify(review.payload)).toBe(200)
+        const latest = database.prepare(`
+          SELECT updated_at FROM redraw_assets WHERE id = ?
+        `).get(Number(asset.id))
+        const review = await browserApi(page, `/api/v1/redraw/assets/${asset.id}/review`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'approved',
+            expected_updated_at: latest?.updated_at || asset.updated_at,
+          }),
+        })
+        expect(review.status, JSON.stringify(review.body)).toBe(200)
         interaction.reference_asset_approvals += 1
       }
     }
@@ -2880,9 +2887,18 @@ export async function runRedrawFullProductFlow({ page }) {
   `).all(versionId)
   expect(voiceRows).toHaveLength(sourceFacts.characters.length)
   await waitForRedrawRequestsToSettle()
+  const openAssetReview = async () => {
+    const nextUrl = new URL(page.url())
+    nextUrl.searchParams.set('step', '2')
+    await page.goto(nextUrl.toString())
+    await waitForRedrawRequestsToSettle()
+    await expect(page.locator('.redraw-asset-step')).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByRole('heading', { name: '确认本地化资产后再进入批量转绘' })).toBeVisible()
+  }
+  await openAssetReview()
   await page.reload()
   await waitForRedrawRequestsToSettle()
-  await expect(page.getByRole('heading', { name: '确认本地化资产后再进入批量转绘' })).toBeVisible()
+  await openAssetReview()
   await expect(page.getByText(`${expectedAssetCount} 项资产`)).toBeVisible()
 
   let generatedAssets = []
@@ -2965,14 +2981,9 @@ export async function runRedrawFullProductFlow({ page }) {
       await expect(card.getByText(/资产 \d+ · 已确认/)).toBeVisible()
     }
 
-    const voiceTab = page.locator('.asset-tabs').getByRole('button', { name: '音色', exact: true })
-    const voiceListPromise = page.waitForResponse(apiResponse(
-      'GET',
-      new RegExp(`/api/v1/redraw/versions/${versionId}/voices$`),
-    ))
-    await voiceTab.click()
-    expect((await voiceListPromise).status()).toBe(200)
-    await expect(page.locator('#redraw-character-select')).toBeVisible()
+    // 产品 UI 已隐藏独立 TTS 音色页签；完整链仍用 API 覆盖音色恢复路径（TTS_ENABLED=1）。
+    await expect(page.getByText('已停用独立 TTS：转绘成片使用视频模型原生语音，无需单独配音。')).toBeVisible()
+    await expect(page.locator('.asset-tabs').getByRole('button', { name: '音色', exact: true })).toHaveCount(0)
     const bindableAssets = await browserApi(page, `/api/v1/redraw/versions/${versionId}/assets`)
     expect(bindableAssets.status, JSON.stringify(bindableAssets.body)).toBe(200)
     const characterAssets = bindableAssets.body.data.filter((asset) => asset.kind === 'character')
@@ -2995,34 +3006,27 @@ export async function runRedrawFullProductFlow({ page }) {
           || '') === stableId
       ))
       expect(voiceAsset, `角色 ${stableId} 缺少匹配音色`).toBeTruthy()
-      const characterInput = page.locator('#redraw-character-select')
-      const characterListboxId = await characterInput.getAttribute('aria-controls')
-      await page.locator('.voice-field').filter({ hasText: '目标角色' }).locator('.el-select').click()
-      await page.locator(`[id="${characterListboxId}"]`).getByRole('option', {
-        name: characterAsset.localized_name,
-        exact: true,
-      }).click()
-      const voiceInput = page.locator('#redraw-voice-select')
-      const voiceListboxId = await voiceInput.getAttribute('aria-controls')
-      await page.locator('.voice-field').filter({ hasText: '已验证音色' }).locator('.el-select').click()
-      await page.locator(`[id="${voiceListboxId}"]`).getByRole('option', {
-        name: voiceAsset.localized_name,
-        exact: true,
-      }).click()
-      const voiceAction = await clickForJsonResponse(
-        page,
-        page.getByRole('button', { name: '绑定音色', exact: true }),
-        apiResponse('POST', new RegExp(`/api/v1/redraw/assets/${characterAsset.id}/voice$`)),
-      )
-      expect(voiceAction.response.status(), JSON.stringify(voiceAction.payload)).toBe(200)
-      expect(voiceAction.payload?.data?.voice_snapshot).toMatchObject({
+      const voiceAction = await browserApi(page, `/api/v1/redraw/assets/${characterAsset.id}/voice`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          voice_asset_id: voiceAsset.id,
+          expected_updated_at: characterAsset.updated_at,
+        }),
+      })
+      expect(voiceAction.status, JSON.stringify(voiceAction.body)).toBe(200)
+      expect(voiceAction.body?.data?.voice_snapshot).toMatchObject({
         provider: 'local-fake-tts', model: 'fake-tts', voice_id: 'fixture-voice', locale: fixtureLocale,
       })
       interaction.voice_bindings += 1
       voiceAssignments.push({ stableId, characterAssetId: characterAsset.id, voiceAssetId: voiceAsset.id })
-      await expect(page.getByText(`已绑定 ${voiceAsset.localized_name}`, { exact: true })).toBeVisible()
     }
     expect(voiceAssignments).toHaveLength(sourceFacts.characters.length)
+
+    // 音色绑定会更新角色资产时间戳；刷新后再走 UI 批准，避免 REDRAW_REVIEW_CONFLICT。
+    await page.reload()
+    await waitForRedrawRequestsToSettle()
+    await openAssetReview()
 
     await page.locator('.asset-tabs').getByRole('button', { name: '角色', exact: true }).click()
     for (const asset of identityCharacterAssets) {
@@ -3034,14 +3038,16 @@ export async function runRedrawFullProductFlow({ page }) {
       expect(reviewAction.response.status(), JSON.stringify(reviewAction.payload)).toBe(200)
       interaction.asset_approvals += 1
     }
-    await page.locator('.asset-tabs').getByRole('button', { name: '音色', exact: true }).click()
+    const latestAssets = await browserApi(page, `/api/v1/redraw/versions/${versionId}/assets`)
+    expect(latestAssets.status, JSON.stringify(latestAssets.body)).toBe(200)
     for (const asset of voiceAssets) {
-      const reviewAction = await clickForJsonResponse(
-        page,
-        page.locator(`#asset-${asset.id}-voice`).getByRole('button', { name: '批准', exact: true }),
-        apiResponse('POST', new RegExp(`/api/v1/redraw/assets/${asset.id}/review$`)),
-      )
-      expect(reviewAction.response.status(), JSON.stringify(reviewAction.payload)).toBe(200)
+      const latest = latestAssets.body.data.find((row) => Number(row.id) === Number(asset.id))
+      const reviewAction = await browserApi(page, `/api/v1/redraw/assets/${asset.id}/review`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'approved', expected_updated_at: latest?.updated_at || asset.updated_at }),
+      })
+      expect(reviewAction.status, JSON.stringify(reviewAction.body)).toBe(200)
       interaction.asset_approvals += 1
     }
     await page.locator('.asset-tabs').getByRole('button', { name: '场景', exact: true }).click()
@@ -3325,12 +3331,14 @@ export async function runRedrawFullProductFlow({ page }) {
   ))).toBe(true)
   if (fullProductMode) {
     await expect(page.locator('.redraw-step.active')).toContainText('导出交付', { timeout: 15_000 })
-    await page.locator('.redraw-step').filter({ hasText: '批量转绘' }).click()
-    await expect(page.getByRole('heading', { name: '质量审核' })).toBeVisible()
+    const qaUrl = new URL(page.url())
+    qaUrl.searchParams.set('step', '3')
+    await page.goto(qaUrl.toString())
     await waitForRedrawRequestsToSettle()
+    await expect(page.getByRole('heading', { name: '质量审核' })).toBeVisible({ timeout: 15_000 })
     await page.reload()
     await waitForRedrawRequestsToSettle()
-    await expect(page.getByRole('heading', { name: '质量审核' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: '质量审核' })).toBeVisible({ timeout: 15_000 })
     await expect(page.getByText('B 自动批准证据：质量门禁全部通过', { exact: true })).toHaveCount(expectedShotCount)
     interaction.candidate_qa_presented = expectedShotCount
   }

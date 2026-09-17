@@ -1092,19 +1092,16 @@ test('项目画布通过真实后端保存节点配置并在刷新后恢复', as
   const audioButton = panel.getByRole('button', { name: '配音', exact: true })
   await expect(audioButton).toBeEnabled()
   await audioButton.click()
-  await expect.poll(() => ttsProviderRequests.at(-1)).toEqual(expect.objectContaining({
-    model: 'canvas-tts-beta',
-    input: '小茉：终于等到你了。',
+  await expect.poll(() => failedResponses.find((item) => (
+    item.method === 'POST' && item.path === '/api/v1/audio/extract'
+  ))).toEqual(expect.objectContaining({
+    status: 410,
+    body: expect.stringContaining('TTS_DISABLED'),
   }))
-  await expect.poll(() => ({
-    audioLocalPath: readDatabase((db) => db.prepare(
-      'SELECT audio_local_path FROM storyboards WHERE id = ?',
-    ).get(storyboardId).audio_local_path),
-    failedResponses,
-  })).toEqual({
-    audioLocalPath: expect.stringMatching(/^audio\/tts_sb/),
-    failedResponses: [],
-  })
+  expect(ttsProviderRequests).toEqual([])
+  expect(readDatabase((db) => db.prepare(
+    'SELECT audio_local_path FROM storyboards WHERE id = ?',
+  ).get(storyboardId).audio_local_path)).toBeFalsy()
 
   expect(forwardedRequests).toEqual(expect.arrayContaining([
     `GET /api/v1/dramas/${dramaId}`,

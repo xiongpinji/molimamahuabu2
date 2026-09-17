@@ -19,6 +19,8 @@ test('TTS 服务的日志调用不得直接引用 API Key', () => {
 });
 
 test('OpenAI 兼容 TTS 请求使用 API Key 但日志不泄露密钥', async () => {
+  const previousTtsEnabled = process.env.TTS_ENABLED;
+  process.env.TTS_ENABLED = '1';
   const secret = 'tts-secret-behavior-test';
   let authorization = '';
   const server = http.createServer((req, res) => {
@@ -68,5 +70,21 @@ test('OpenAI 兼容 TTS 请求使用 API Key 但日志不泄露密钥', async ()
     for (const method of consoleMethods) console[method] = originalConsoleMethods[method];
     await new Promise((resolve) => server.close(resolve));
     fs.rmSync(storageBase, { recursive: true, force: true });
+    if (previousTtsEnabled === undefined) delete process.env.TTS_ENABLED;
+    else process.env.TTS_ENABLED = previousTtsEnabled;
+  }
+});
+
+test('synthesize 在默认停用 TTS 时直接拒绝', async () => {
+  const previousTtsEnabled = process.env.TTS_ENABLED;
+  delete process.env.TTS_ENABLED;
+  try {
+    await assert.rejects(
+      () => synthesize(null, { info() {}, warn() {}, error() {} }, { text: 'blocked', config: { provider: 'openai' } }),
+      (error) => error.code === 'TTS_DISABLED',
+    );
+  } finally {
+    if (previousTtsEnabled === undefined) delete process.env.TTS_ENABLED;
+    else process.env.TTS_ENABLED = previousTtsEnabled;
   }
 });

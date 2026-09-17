@@ -69,6 +69,8 @@ jobs:
         working-directory: frontweb
         env:
           REDRAW_E2E_FAKE_PROVIDER: '1'
+          # 完整转绘产品链仍覆盖音色注册/绑定恢复路径；默认产品策略关闭独立 TTS。
+          TTS_ENABLED: '1'
         run: npm run test:e2e:redraw-full-product
 
       - name: Upload Playwright artifacts

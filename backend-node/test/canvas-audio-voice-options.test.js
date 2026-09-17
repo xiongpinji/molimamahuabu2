@@ -2,6 +2,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { readFileSync } = require('node:fs');
 const path = require('node:path');
+
+process.env.TTS_ENABLED = '1';
 const createAudioRoutes = require('../src/routes/audio');
 
 const audioSource = readFileSync(path.join(__dirname, '../src/routes/audio.js'), 'utf8');
