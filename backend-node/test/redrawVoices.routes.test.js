@@ -5,6 +5,9 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
+// 音色绑定路由测试覆盖临时恢复路径，需显式打开产品开关
+process.env.TTS_ENABLED = '1';
+
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const redrawRoutes = require('../src/routes/redraw');
 const redrawVoiceService = require('../src/services/redrawVoiceService');

@@ -18,6 +18,10 @@ function routes(db, log, cfg, options = {}) {
   return {
     /** 为单条分镜生成 TTS：对白 → audio_local_path；旁白 → narration_audio_local_path（body.tts_kind === 'narration'） */
     extract: async (req, res) => {
+      const { isTtsEnabled, TTS_DISABLED_CODE, TTS_DISABLED_MESSAGE } = require('../services/ttsPolicy');
+      if (!isTtsEnabled()) {
+        return response.error(res, 410, TTS_DISABLED_CODE, TTS_DISABLED_MESSAGE);
+      }
       const {
         drama_id, storyboard_id, text, tts_kind, tts_model, voice_id, speed,
         volume, pitch, emotion, pronunciation_tones,
@@ -260,6 +264,10 @@ function routes(db, log, cfg, options = {}) {
 
     /** 批量为多条分镜生成 TTS */
     extractBatch: async (req, res) => {
+      const { isTtsEnabled, TTS_DISABLED_CODE, TTS_DISABLED_MESSAGE } = require('../services/ttsPolicy');
+      if (!isTtsEnabled()) {
+        return response.error(res, 410, TTS_DISABLED_CODE, TTS_DISABLED_MESSAGE);
+      }
       const { storyboard_ids } = req.body || {};
       if (!Array.isArray(storyboard_ids) || storyboard_ids.length === 0) {
         return response.badRequest(res, 'storyboard_ids 不能为空');

@@ -7,6 +7,8 @@ const path = require('node:path');
 const express = require('express');
 const Database = require('better-sqlite3');
 
+process.env.TTS_ENABLED = '1';
+
 const createAudioRoutes = require('../src/routes/audio');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const { createStaticOwnershipMiddleware } = require('../src/middleware/resourceOwnership');
