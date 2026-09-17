@@ -727,6 +727,8 @@ function createRedrawProviderAdapters(deps = {}) {
   }
 
   async function generateVoiceAsset(request, normalized, storageRoot, versionDir) {
+    const { assertTtsEnabled } = require('./ttsPolicy');
+    assertTtsEnabled();
     const { attempt, input, sourceRef, model, provider } = normalized;
     const text = trim(attempt.prompt || input.prompt || attempt.localized_description || attempt.localizedDescription
       || input.localizedDescription || input.localized_description || sourceRef.text || sourceRef.prompt);
@@ -915,6 +917,8 @@ function createRedrawProviderAdapters(deps = {}) {
   }
 
   async function generateDialogueAsset(request, normalized, storageRoot, versionDir) {
+    const { assertTtsEnabled } = require('./ttsPolicy');
+    assertTtsEnabled();
     const ctx = dialogueContext(request, normalized);
     const synthesize = requireMethod(deps, 'ttsService', './ttsService', 'synthesize');
     const createAsset = requireMethod(deps, 'assetService', './assetService', 'create');
