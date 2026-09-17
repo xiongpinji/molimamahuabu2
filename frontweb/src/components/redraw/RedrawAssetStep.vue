@@ -58,6 +58,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { redrawAPI } from '@/api/redraw'
+import { useIntervalPoll } from '@/composables/useIntervalPoll'
 import { isRedrawCharacterIdentityPackReady } from '@/utils/redrawCharacterIdentity'
 import {
   ASSET_KINDS,
