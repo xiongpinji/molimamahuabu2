@@ -30,6 +30,8 @@
     "cropperjs": "1.6.2",
     "element-plus": "^2.5.0",
     "pinia": "^2.1.0",
+    "@types/three": "https://pkg.threepipe.org/dep/@types/three/-/v0.163.10003/package.tgz",
+    "three": "https://pkg.threepipe.org/dep/three/-/v0.163.10003/package.tgz",
     "threepipe": "^0.5.1",
     "vue": "^3.4.0",
     "vue-router": "^4.2.0"
