@@ -154,6 +154,10 @@ const defaultSourceFacts = {
 }
 
 const fullProductMode = process.env.REDRAW_E2E_FAKE_PROVIDER === '1'
+if (fullProductMode && !/^(1|true|yes)$/i.test(String(process.env.TTS_ENABLED || '').trim())) {
+  // 完整产品链仍覆盖音色恢复路径；默认产品策略关闭独立 TTS。
+  process.env.TTS_ENABLED = '1'
+}
 const activeCase = !fullProductMode && process.env.REDRAW_E2E_CASE === 'latam-real-source'
   ? redrawLatinAmericanCase
   : null
