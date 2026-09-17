@@ -3020,6 +3020,11 @@ export async function runRedrawFullProductFlow({ page }) {
     }
     expect(voiceAssignments).toHaveLength(sourceFacts.characters.length)
 
+    // 音色绑定会更新角色资产时间戳；刷新后再走 UI 批准，避免 REDRAW_REVIEW_CONFLICT。
+    await page.reload()
+    await waitForRedrawRequestsToSettle()
+    await openAssetReview()
+
     await page.locator('.asset-tabs').getByRole('button', { name: '角色', exact: true }).click()
     for (const asset of identityCharacterAssets) {
       const reviewAction = await clickForJsonResponse(
@@ -3030,9 +3035,10 @@ export async function runRedrawFullProductFlow({ page }) {
       expect(reviewAction.response.status(), JSON.stringify(reviewAction.payload)).toBe(200)
       interaction.asset_approvals += 1
     }
+    const latestAssets = await browserApi(page, `/api/v1/redraw/versions/${versionId}/assets`)
+    expect(latestAssets.status, JSON.stringify(latestAssets.body)).toBe(200)
     for (const asset of voiceAssets) {
-      const latest = (await browserApi(page, `/api/v1/redraw/versions/${versionId}/assets`))
-        .body.data.find((row) => Number(row.id) === Number(asset.id))
+      const latest = latestAssets.body.data.find((row) => Number(row.id) === Number(asset.id))
       const reviewAction = await browserApi(page, `/api/v1/redraw/assets/${asset.id}/review`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
