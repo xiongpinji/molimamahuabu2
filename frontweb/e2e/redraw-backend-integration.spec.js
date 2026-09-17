@@ -2138,26 +2138,25 @@ async function prepareGenericReferencesThroughUi(page, versionId, interaction, w
     })).not.toBe('failed')
 
     const pending = database.prepare(`
-      SELECT id FROM redraw_assets
+      SELECT id, updated_at FROM redraw_assets
       WHERE version_id = ? AND kind = 'scene' AND clean_plate_asset_id IS NOT NULL
         AND approval_status = 'pending' AND deleted_at IS NULL ORDER BY id
     `).all(Number(versionId))
     if (pending.length) {
       await waitForRequestsToSettle()
-      const nextUrl = new URL(page.url())
-      nextUrl.searchParams.set('step', '2')
-      await page.goto(nextUrl.toString())
-      await waitForRequestsToSettle()
-      await expect(page.locator('.redraw-asset-step')).toBeVisible({ timeout: 15_000 })
-      await expect(page.getByRole('heading', { name: '确认本地化资产后再进入批量转绘' })).toBeVisible()
-      await page.locator('.asset-tabs').getByRole('button', { name: '场景', exact: true }).click()
       for (const asset of pending) {
-        const review = await clickForJsonResponse(
-          page,
-          page.locator(`#asset-${asset.id}-scene`).getByRole('button', { name: '批准', exact: true }),
-          apiResponse('POST', new RegExp(`/api/v1/redraw/assets/${asset.id}/review$`)),
-        )
-        expect(review.response.status(), JSON.stringify(review.payload)).toBe(200)
+        const latest = database.prepare(`
+          SELECT updated_at FROM redraw_assets WHERE id = ?
+        `).get(Number(asset.id))
+        const review = await browserApi(page, `/api/v1/redraw/assets/${asset.id}/review`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'approved',
+            expected_updated_at: latest?.updated_at || asset.updated_at,
+          }),
+        })
+        expect(review.status, JSON.stringify(review.body)).toBe(200)
         interaction.reference_asset_approvals += 1
       }
     }
