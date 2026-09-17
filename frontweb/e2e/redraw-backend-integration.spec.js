@@ -2884,8 +2884,11 @@ export async function runRedrawFullProductFlow({ page }) {
   `).all(versionId)
   expect(voiceRows).toHaveLength(sourceFacts.characters.length)
   await waitForRedrawRequestsToSettle()
+  await page.getByRole('button', { name: /资产审核/ }).click()
+  await expect(page.getByRole('heading', { name: '确认本地化资产后再进入批量转绘' })).toBeVisible()
   await page.reload()
   await waitForRedrawRequestsToSettle()
+  await page.getByRole('button', { name: /资产审核/ }).click()
   await expect(page.getByRole('heading', { name: '确认本地化资产后再进入批量转绘' })).toBeVisible()
   await expect(page.getByText(`${expectedAssetCount} 项资产`)).toBeVisible()
 
