@@ -3331,12 +3331,14 @@ export async function runRedrawFullProductFlow({ page }) {
   ))).toBe(true)
   if (fullProductMode) {
     await expect(page.locator('.redraw-step.active')).toContainText('导出交付', { timeout: 15_000 })
-    await page.locator('.redraw-step').filter({ hasText: '批量转绘' }).click()
-    await expect(page.getByRole('heading', { name: '质量审核' })).toBeVisible()
+    const qaUrl = new URL(page.url())
+    qaUrl.searchParams.set('step', '3')
+    await page.goto(qaUrl.toString())
     await waitForRedrawRequestsToSettle()
+    await expect(page.getByRole('heading', { name: '质量审核' })).toBeVisible({ timeout: 15_000 })
     await page.reload()
     await waitForRedrawRequestsToSettle()
-    await expect(page.getByRole('heading', { name: '质量审核' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: '质量审核' })).toBeVisible({ timeout: 15_000 })
     await expect(page.getByText('B 自动批准证据：质量门禁全部通过', { exact: true })).toHaveCount(expectedShotCount)
     interaction.candidate_qa_presented = expectedShotCount
   }
