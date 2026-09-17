@@ -2884,12 +2884,18 @@ export async function runRedrawFullProductFlow({ page }) {
   `).all(versionId)
   expect(voiceRows).toHaveLength(sourceFacts.characters.length)
   await waitForRedrawRequestsToSettle()
-  await page.getByRole('button', { name: /资产审核/ }).click()
-  await expect(page.getByRole('heading', { name: '确认本地化资产后再进入批量转绘' })).toBeVisible()
+  const openAssetReview = async () => {
+    const nextUrl = new URL(page.url())
+    nextUrl.searchParams.set('step', '2')
+    await page.goto(nextUrl.toString())
+    await waitForRedrawRequestsToSettle()
+    await expect(page.locator('.redraw-asset-step')).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByRole('heading', { name: '确认本地化资产后再进入批量转绘' })).toBeVisible()
+  }
+  await openAssetReview()
   await page.reload()
   await waitForRedrawRequestsToSettle()
-  await page.getByRole('button', { name: /资产审核/ }).click()
-  await expect(page.getByRole('heading', { name: '确认本地化资产后再进入批量转绘' })).toBeVisible()
+  await openAssetReview()
   await expect(page.getByText(`${expectedAssetCount} 项资产`)).toBeVisible()
 
   let generatedAssets = []
