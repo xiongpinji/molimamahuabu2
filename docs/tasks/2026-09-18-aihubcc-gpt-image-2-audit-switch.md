@@ -19,6 +19,12 @@
 - PNG 魔数：`89 50 4E 47 0D 0A 1A 0A`
 - `readablePng`：true
 
+### 复测（同配置）
+
+- 路径：`%TEMP%/aihubcc-smoke/artifacts/gpt-image-2-1789704447166.png`
+- bytes：410510
+- HTTP 200，约 37077ms，`readablePng`：true
+
 ## 代码对齐
 
 - 前后端 `isAudited*Reference*` 模型条件改为 `gpt-image-2`
