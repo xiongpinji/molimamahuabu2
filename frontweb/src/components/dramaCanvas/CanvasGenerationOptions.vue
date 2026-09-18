@@ -1,13 +1,14 @@
 <template>
   <div class="generation-options" :class="{ compact }">
     <span class="options-label">{{ label }}</span>
+    <span v-if="showCatalogEmptyHint" class="catalog-empty-hint">暂无可用模型，请先在 AI 配置中添加并完成真实生成验证</span>
     <el-select
       v-if="mode === 'image' || mode === 'both'"
       :model-value="options.imageModel || ''"
       size="small"
       class="model-select"
       :disabled="!imageModelOptions.length"
-      :placeholder="imageModelOptions.length ? '图像模型' : '平台默认'"
+      :placeholder="imageModelOptions.length ? '图像模型' : '暂无可用模型'"
       @change="update('imageModel', $event)"
     >
       <el-option label="跟随项目默认" value="" />
@@ -19,7 +20,7 @@
       size="small"
       class="model-select"
       :disabled="!videoModelOptions.length"
-      :placeholder="videoModelOptions.length ? '视频模型' : '平台默认'"
+      :placeholder="videoModelOptions.length ? '视频模型' : '暂无可用模型'"
       @change="onVideoModelChange"
     >
       <el-option label="跟随项目默认" value="" />
@@ -31,7 +32,7 @@
       size="small"
       class="model-select"
       :disabled="!audioModelOptions.length"
-      :placeholder="audioModelOptions.length ? '音频模型' : '平台默认'"
+      :placeholder="audioModelOptions.length ? '音频模型' : '暂无可用模型'"
       @change="update('audioModel', $event)"
     >
       <el-option label="跟随项目默认" value="" />
@@ -172,6 +173,13 @@ onMounted(async () => {
   align-items: center;
   flex-wrap: wrap;
   gap: 6px;
+}
+.catalog-empty-hint {
+  color: var(--el-color-warning);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: normal;
+  max-width: 280px;
 }
 .options-label {
   color: #a1a1aa;
