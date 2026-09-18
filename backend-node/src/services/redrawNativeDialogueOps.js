@@ -56,7 +56,15 @@ function assertNativeEvidenceShape(evidence = {}) {
     errors.push('validation_hash');
   }
   const human = evidence.human_review || {};
-  if (String(human.status || '') !== 'approved') errors.push('human_review.status');
+  const humanStatus = String(human.status || '');
+  // Promote/preflight historically used "approved"; capability gate used "passed".
+  // Accept both so a single human-review document can pass both validators.
+  if (!['approved', 'passed'].includes(humanStatus)) errors.push('human_review.status');
+  if (humanStatus === 'passed') {
+    for (const key of ['speaker_order', 'lip_sync', 'extra_dialogue']) {
+      if (String(human[key] || '') !== 'passed') errors.push(`human_review.${key}`);
+    }
+  }
   const verification = evidence.verification || {};
   if (verification.language_verified !== true) errors.push('language_verified');
   const config = evidence.config || evidence.invocation || {};
@@ -144,7 +152,87 @@ function dryRunPromote(options = {}) {
     evidence_sha256: fileHash,
     redacted: redactEvidence(evidence),
     sideEffects,
-    note: 'armed; caller must open a DB transaction and write only settings.redraw_locale_capabilities',
+    note: 'armed; call commitPromoteLocaleCapabilities(db, ...) to write settings.redraw_locale_capabilities',
+  };
+}
+
+/**
+ * Write only settings.redraw_locale_capabilities for one AI config row.
+ * Requires prior dryRunPromote ready/armed gatekeeping by the caller.
+ */
+function commitPromoteLocaleCapabilities(db, options = {}) {
+  const configId = Number(options.configId || options.aiServiceConfigId);
+  const evidence = options.evidence;
+  const backupDir = options.backupDir || path.resolve(process.cwd(), 'data/promote-backups');
+  if (!db || typeof db.prepare !== 'function') {
+    throw new Error('db required');
+  }
+  if (!Number.isSafeInteger(configId) || configId <= 0) {
+    throw new Error('configId required');
+  }
+  if (!evidence || typeof evidence !== 'object') {
+    throw new Error('evidence object required');
+  }
+  const shapeErrors = assertNativeEvidenceShape(evidence);
+  if (shapeErrors.length) {
+    throw new Error(`evidence_invalid: ${shapeErrors.join(',')}`);
+  }
+
+  const row = db.prepare(`
+    SELECT id, settings FROM ai_service_configs
+    WHERE id = ? AND deleted_at IS NULL
+  `).get(configId);
+  if (!row) throw new Error(`config ${configId} not found`);
+
+  let settings = {};
+  try {
+    settings = row.settings ? JSON.parse(row.settings) : {};
+  } catch (_) {
+    settings = {};
+  }
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) settings = {};
+
+  fs.mkdirSync(backupDir, { recursive: true });
+  const backupPath = path.join(
+    backupDir,
+    `ai-config-${configId}-settings-${Date.now()}.json`,
+  );
+  fs.writeFileSync(backupPath, `${JSON.stringify(settings, null, 2)}\n`, 'utf8');
+
+  const packId = String(options.packId || evidence.locale_pack || evidence.pack_id || 'es@1');
+  const language = String(options.language || evidence.verification?.language || 'es');
+  const nextEntries = Array.isArray(settings.redraw_locale_capabilities)
+    ? [...settings.redraw_locale_capabilities]
+    : [];
+  const entry = {
+    pack_id: packId,
+    language,
+    locale: language,
+    market: '',
+    target_locale: null,
+    native_dialogue_audio: true,
+    video_evidence: evidence,
+  };
+  const idx = nextEntries.findIndex((item) => String(item?.pack_id || '') === packId);
+  if (idx >= 0) nextEntries[idx] = { ...nextEntries[idx], ...entry };
+  else nextEntries.push(entry);
+  settings.redraw_locale_capabilities = nextEntries;
+
+  const tx = db.transaction(() => {
+    db.prepare(`
+      UPDATE ai_service_configs
+      SET settings = ?, updated_at = datetime('now')
+      WHERE id = ? AND deleted_at IS NULL
+    `).run(JSON.stringify(settings), configId);
+  });
+  tx();
+
+  return {
+    ok: true,
+    config_id: configId,
+    pack_id: packId,
+    backup_path: backupPath,
+    entry_count: nextEntries.length,
   };
 }
 
@@ -157,4 +245,5 @@ module.exports = {
   assertNativeEvidenceShape,
   dryRunCanary,
   dryRunPromote,
+  commitPromoteLocaleCapabilities,
 };

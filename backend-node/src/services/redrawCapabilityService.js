@@ -39,7 +39,10 @@ function carrierConfigId(evidence) {
 function nativeReviewPassed(review) {
   if (!review || typeof review !== 'object' || Array.isArray(review)) return false;
   if (review.manual_override === true) return false;
-  if (review.status !== 'passed') return false;
+  const status = String(review.status || '');
+  // Align with promote/preflight: accept approved or passed.
+  if (status === 'approved') return true;
+  if (status !== 'passed') return false;
   for (const key of ['speaker_order', 'lip_sync', 'extra_dialogue']) {
     if (review[key] !== 'passed') return false;
   }

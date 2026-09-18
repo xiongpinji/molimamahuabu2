@@ -75,6 +75,33 @@ test('promote 默认 dry-run 且校验 evidence 形状', () => {
   }
 });
 
+test('human_review 同时接受 approved 与 passed（含三项清单）', () => {
+  const base = {
+    contract: 'redraw-native-dialogue-audio-v1',
+    artifact_sha256: 'c'.repeat(64),
+    validation_hash: 'd'.repeat(64),
+    verification: { language_verified: true },
+    config: { provider: 'toapis', model: 'seedance-2-fast', ai_service_config_id: 7 },
+  };
+  assert.deepEqual(assertNativeEvidenceShape({
+    ...base,
+    human_review: { status: 'approved' },
+  }), []);
+  assert.deepEqual(assertNativeEvidenceShape({
+    ...base,
+    human_review: {
+      status: 'passed',
+      speaker_order: 'passed',
+      lip_sync: 'passed',
+      extra_dialogue: 'passed',
+    },
+  }), []);
+  assert.ok(assertNativeEvidenceShape({
+    ...base,
+    human_review: { status: 'passed', speaker_order: 'passed' },
+  }).includes('human_review.lip_sync'));
+});
+
 test('CLI scripts 默认 dry-run 且退出码稳定', () => {
   const previousCode = process.exitCode;
   try {

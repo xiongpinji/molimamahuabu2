@@ -1,0 +1,36 @@
+{
+  "contract": "redraw-native-dialogue-canary-v1",
+  "note": "Chinese AAC track canary only; NOT es@1 promote evidence; no secrets",
+  "archived_at": "2026-09-18T03:36:54.689Z",
+  "status": "completed",
+  "provider_task_id": "tsk_vid_01M2S7RY4SXJQRYX7H2YSMCCYC",
+  "config_id": 16,
+  "model": "seedance-2-fast",
+  "generate_audio": true,
+  "aspect_ratio": "9:16",
+  "resolution": "480p",
+  "duration_s": 5,
+  "transport": {
+    "base_url": "https://toapis.cn",
+    "note": "live deployed normalizeToapisBaseUrl requires toapis.cn"
+  },
+  "sample": {
+    "path_basename": "sample-5s.mp4",
+    "sha256": "a48340131b30157ea31ccaff37a6ea4df04e4e1b8b7db10b1fad26f1fc5884a0",
+    "dialogue_source": "不是哥们你谁啊"
+  },
+  "artifact": {
+    "path_basename": "canary-output.mp4",
+    "sha256": "c1e52761a204f93fc3b35d1f24f8e85cd0079694b705d957d55c6065c07b96b2",
+    "audio_codec": "aac",
+    "has_audio": true,
+    "has_video": true,
+    "probe_duration": "5.088000"
+  },
+  "verdict": {
+    "ok": true,
+    "reason": "native_audio_track_present"
+  },
+  "started_at": "2026-09-18T03:08:16.048Z",
+  "finished_at": "2026-09-18T03:10:37.096Z"
+}
