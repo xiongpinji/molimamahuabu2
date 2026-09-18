@@ -38,8 +38,9 @@ export function canStartDialogue(quote, task) {
     && DIALOGUE_QUOTE_HASH.test(String(quote?.quote_hash || ''))
 }
 
-export function canStartComposition(shots = [], dialogueTask, compositionTask) {
-  if (dialogueTask?.status !== 'completed') return false
+export function canStartComposition(shots = [], dialogueTask, compositionTask, options = {}) {
+  const audioMode = String(options?.audioMode || 'native').trim() || 'native'
+  if (audioMode === 'replace' && dialogueTask?.status !== 'completed') return false
   if (compositionTask && ['pending', 'processing'].includes(compositionTask.status)) return false
   const normalized = normalizeTimelineShots(shots)
   return normalized.length > 0 && normalized.every((shot) => ['completed', 'approved', 'included'].includes(shot.status))

@@ -434,12 +434,15 @@ test('语言验证预检检查全部签名 pack 且消息只列 pack id', () => 
       },
     });
     const check = report.checks.find((item) => item.id === 'redraw_locale_verifier');
-    assert.equal(calls, 1);
+    assert.equal(calls, 2);
     assert.equal(check?.status, 'pass');
     assert.match(check?.message || '', /en-US@1/);
     assert.match(check?.message || '', /es@1/);
     assert.equal(check?.message.includes('C:\\secret'), false);
     assert.equal(check?.message.includes('Hola, pequeño.'), false);
+    const nativeCheck = report.checks.find((item) => item.id === 'redraw_native_dialogue_evidence');
+    assert.equal(nativeCheck?.status, 'pass');
+    assert.equal(nativeCheck?.code, 'REDRAW_NATIVE_DIALOGUE_EVIDENCE_NOT_REQUIRED');
   } finally {
     db.close();
   }
@@ -477,5 +480,54 @@ test('package exposes a read-only redraw locale preflight command', () => {
   assert.equal(
     packageJson.scripts['preflight:redraw-locale'],
     'node scripts/preproduction-check.js --redraw-locale',
+  );
+});
+
+test('language-scope pack 未提升 native evidence 时生产预检 fail closed', () => {
+  const db = createDb();
+  try {
+    const report = runProductionPreflight({
+      config: productionConfig(),
+      env: {
+        ...productionEnv(),
+        REDRAW_LOCALE_VERIFIER_ENABLED: 'true',
+      },
+      db,
+      localeRegistry: {
+        listReadyPacks() {
+          return [{
+            id: 'es@1',
+            language: 'es',
+            locale: null,
+            scope: 'language',
+            prompt_language_label: 'Spanish',
+            model_manifest_sha256: 'a'.repeat(64),
+            calibration_manifest_sha256: 'b'.repeat(64),
+            thresholds: {
+              dialogue_similarity_min: 0.7,
+              language_probability_min: 0.8,
+              speech_chars_per_second_max: 20,
+            },
+          }];
+        },
+      },
+    });
+    const check = report.checks.find((item) => item.id === 'redraw_native_dialogue_evidence');
+    assert.equal(check?.status, 'fail');
+    assert.equal(check?.code, 'REDRAW_NATIVE_DIALOGUE_EVIDENCE_MISSING');
+    assert.match(check?.message || '', /es@1/);
+  } finally {
+    db.close();
+  }
+});
+
+test('package exposes native dialogue verify/promote scripts', () => {
+  assert.equal(
+    packageJson.scripts['verify:redraw-native-dialogue'],
+    'node scripts/verify-redraw-native-dialogue-audio.js',
+  );
+  assert.equal(
+    packageJson.scripts['promote:redraw-native-dialogue'],
+    'node scripts/promote-redraw-native-dialogue-evidence.js',
   );
 });

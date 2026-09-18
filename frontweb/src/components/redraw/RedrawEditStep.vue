@@ -3,7 +3,7 @@
     <header class="section-heading">
       <div>
         <p class="eyebrow">04 · 预览导出</p>
-        <h2>{{ dialogueLanguageLabel }}配音、合成预览与下载</h2>
+        <h2>视频原生语音、合成预览与下载</h2>
       </div>
       <el-tag>{{ statusLabel(worstStatus) }}</el-tag>
     </header>
@@ -20,24 +20,26 @@
       <aside class="edit-sidebar">
         <RedrawTimeline :shots="shots" :selected-shot-id="selectedShotId" @select="selectedShotId = $event" />
         <section class="dialogue-card">
-          <h3>{{ dialogueLanguageLabel }}配音</h3>
-          <p v-if="dialogueCredits !== null" class="credit-callout">本次预计扣除 {{ dialogueCredits }} 积分</p>
-          <p v-else class="muted">积分待管理员配置</p>
+          <h3>视频原生语音</h3>
+          <p class="muted">默认保留分镜视频模型生成的对白音轨；独立 TTS 配音仅作应急回退。</p>
+          <p v-if="dialogueCredits !== null" class="credit-callout">TTS 回退预计扣除 {{ dialogueCredits }} 积分</p>
+          <p v-else class="muted">TTS 回退积分待管理员配置</p>
           <p v-if="dialogueTask">任务 {{ dialogueTask.id || dialogueTask.task_id }} · {{ statusLabel(dialogueTask.status) }}</p>
           <p v-if="dialogueTask?.status === 'failed' || dialogueTask?.status === 'needs_attention'" class="error-text">
             {{ dialogueTask.message || dialogueTask.error_message || 'failed / needs_attention' }}
           </p>
-          <el-button :disabled="dialogueStarting || !canStartDialogue(dialogueQuote, dialogueTask)" :loading="dialogueStarting" :title="`使用服务端报价启动${dialogueLanguageLabel}配音`" @click="startDialogue">
-            生成{{ dialogueLanguageLabel }}配音
+          <el-button :disabled="dialogueStarting || !canStartDialogue(dialogueQuote, dialogueTask)" :loading="dialogueStarting" :title="`使用服务端报价启动${dialogueLanguageLabel}TTS 回退配音`" @click="startDialogue">
+            启动{{ dialogueLanguageLabel }}TTS 回退
           </el-button>
         </section>
         <section class="compose-card">
           <h3>合成</h3>
+          <p class="muted">默认 audio_mode=native，按源片顺序拼接并保留片内音轨。</p>
           <p v-if="compositionTask">任务 {{ compositionTask.id || compositionTask.task_id }} · {{ statusLabel(compositionTask.status) }}</p>
           <p v-if="compositionTask?.status === 'failed' || compositionTask?.status === 'needs_attention'" class="error-text">
             {{ compositionTask.message || compositionTask.error_message || 'failed / needs_attention' }}
           </p>
-          <el-button :disabled="!canStartComposition(shots, dialogueTask, compositionTask)" :loading="composing" title="按固定源片顺序合成，音频 replace" @click="compose">
+          <el-button :disabled="!canStartComposition(shots, dialogueTask, compositionTask, { audioMode: 'native' })" :loading="composing" title="按固定源片顺序合成，保留视频原生音轨" @click="compose">
             合成成片
           </el-button>
         </section>
@@ -232,10 +234,10 @@ const compositionIdempotencyKey = ref(idempotencyKey('compose'))
 
 async function compose() {
   const versionId = resolvedVersionId.value
-  if (!versionId || !canStartComposition(shots.value, dialogueTask.value, compositionTask.value)) return
+  if (!versionId || !canStartComposition(shots.value, dialogueTask.value, compositionTask.value, { audioMode: 'native' })) return
   composing.value = true
   try {
-    const result = await redrawAPI.composeVersion(versionId, { idempotency_key: compositionIdempotencyKey.value, audio_mode: 'replace' })
+    const result = await redrawAPI.composeVersion(versionId, { idempotency_key: compositionIdempotencyKey.value, audio_mode: 'native' })
     const nextTask = result?.task || result
     compositionTask.value = {
       ...nextTask,

@@ -11,6 +11,8 @@
     "migrate:07": "node scripts/run-migration-07.js",
     "preflight:production": "npm run audit:canvas-credit-contract -- --require-build && node scripts/preproduction-check.js",
     "preflight:redraw-locale": "node scripts/preproduction-check.js --redraw-locale",
+    "verify:redraw-native-dialogue": "node scripts/verify-redraw-native-dialogue-audio.js",
+    "promote:redraw-native-dialogue": "node scripts/promote-redraw-native-dialogue-evidence.js",
     "backup:create": "node scripts/database-backup.js create",
     "backup:list": "node scripts/database-backup.js list",
     "backup:verify": "node scripts/database-backup.js verify",

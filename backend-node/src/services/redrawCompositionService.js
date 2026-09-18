@@ -67,7 +67,7 @@ function sha256File(filePath) {
 function requestHash(input) {
   return sha256(stableStringify({
     version_id: Number(input.versionId),
-    audio_mode: input.audioMode || 'replace',
+    audio_mode: normalizeAudioMode(input.audioMode),
     input_hash: input.inputHash || '',
   }));
 }
@@ -90,10 +90,16 @@ function normalizeVersionId(versionId) {
   return id;
 }
 
-function assertAudioMode(audioMode) {
-  if ((audioMode || 'replace') !== 'replace') {
-    throw codedError('REDRAW_COMPOSITION_AUDIO_MODE_INVALID', 'audioMode P0 only allows replace');
+function normalizeAudioMode(audioMode) {
+  const mode = String(audioMode || 'native').trim();
+  if (mode !== 'native' && mode !== 'replace') {
+    throw codedError('REDRAW_COMPOSITION_AUDIO_MODE_INVALID', 'audioMode must be native or replace');
   }
+  return mode;
+}
+
+function assertAudioMode(audioMode) {
+  return normalizeAudioMode(audioMode);
 }
 
 function storageRoot(ctx) {
@@ -286,10 +292,27 @@ async function collectAudio(ctx, root, shots) {
   return audio.sort((a, b) => a.start_ms - b.start_ms || a.asset_id - b.asset_id);
 }
 
+function assertNativeShotsReady(shots) {
+  for (const shot of shots) {
+    const draft = parseJson(shot.draft_json, {}, 'draft_json');
+    const validation = draft?.native_audio_validation;
+    if (!validation || typeof validation !== 'object') {
+      throw codedError('REDRAW_COMPOSITION_NATIVE_AUDIO_REQUIRED', 'shot missing native audio validation');
+    }
+    if (String(validation.human_review?.status || '') !== 'approved') {
+      throw codedError('REDRAW_COMPOSITION_NATIVE_AUDIO_REQUIRED', 'native audio not human-approved');
+    }
+    const validationHash = String(validation.validation_hash || '').toLowerCase();
+    if (!/^[a-f0-9]{64}$/.test(validationHash)) {
+      throw codedError('REDRAW_COMPOSITION_NATIVE_AUDIO_REQUIRED', 'native audio validation hash invalid');
+    }
+  }
+}
+
 async function buildCompositionPlan(ctx, input) {
   const db = ctx.db;
   const versionId = normalizeVersionId(input.versionId);
-  assertAudioMode(input.audioMode || 'replace');
+  const audioMode = assertAudioMode(input.audioMode);
   const version = db.prepare(`
     SELECT * FROM redraw_versions
     WHERE id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
@@ -327,7 +350,12 @@ async function buildCompositionPlan(ctx, input) {
     expectedSize ||= { width: verified.width, height: verified.height };
     videoInputs.push(verified);
   }
-  const audioInputs = await collectAudio(ctx, root, shots);
+  let audioInputs = [];
+  if (audioMode === 'replace') {
+    audioInputs = await collectAudio(ctx, root, shots);
+  } else {
+    assertNativeShotsReady(shots);
+  }
   const subtitles = redrawSubtitleService.buildSubtitlesForLocalizedShots(shots, { locale: version.locale || 'en-US' });
   if (subtitles.status !== 'ready') {
     throw codedError('REDRAW_COMPOSITION_SUBTITLE_NEEDS_REWRITE', 'subtitle needs rewrite', subtitles.errors);
@@ -339,7 +367,7 @@ async function buildCompositionPlan(ctx, input) {
     user_id: String(ctx.userId),
     locale: version.locale,
     market: version.market,
-    audio_mode: 'replace',
+    audio_mode: audioMode,
     total_duration_ms: totalDurationMs,
     dimensions: expectedSize,
     timeline,
@@ -350,6 +378,7 @@ async function buildCompositionPlan(ctx, input) {
     release_hash: episodeRelease.release_hash,
     input_hash: sha256(stableStringify({
       release_hash: episodeRelease.release_hash,
+      audio_mode: audioMode,
       timeline,
       videos: videoInputs.map(({ id, relative_path, duration_ms, width, height, hash }) => ({ id, relative_path, duration_ms, width, height, hash })),
       audio: audioInputs.map(({ asset_id, relative_path, start_ms, end_ms, duration_ms, hash }) => ({ asset_id, relative_path, start_ms, end_ms, duration_ms, hash })),
@@ -374,13 +403,14 @@ async function createComposition(ctx, input) {
   const versionId = normalizeVersionId(input.versionId);
   const key = String(input.idempotencyKey || '').trim();
   if (!key) throw codedError('REDRAW_COMPOSITION_IDEMPOTENCY_REQUIRED', 'idempotencyKey required');
-  const plan = await buildCompositionPlan(ctx, { versionId, audioMode: input.audioMode || 'replace' });
-  const hash = requestHash({ versionId, audioMode: input.audioMode || 'replace', inputHash: plan.input_hash });
+  const audioMode = assertAudioMode(input.audioMode);
+  const plan = await buildCompositionPlan(ctx, { versionId, audioMode });
+  const hash = requestHash({ versionId, audioMode, inputHash: plan.input_hash });
   const createdAt = now(ctx);
   const manifest = {
     idempotency_key: key,
     request_hash: hash,
-    audio_mode: 'replace',
+    audio_mode: audioMode,
     episode_release: plan.episode_release,
     plan: stripAbsolutePaths(plan),
   };
@@ -481,6 +511,32 @@ function prepareOutputWorkspace(root, versionId, exportId) {
 function ffmpegArgs(plan, outputs) {
   const args = ['-hide_banner', '-loglevel', 'error', '-y'];
   for (const input of plan.video_inputs) args.push('-i', input.absolute_path);
+
+  if (plan.audio_mode === 'native') {
+    const streamLabels = plan.video_inputs.map((_input, index) => {
+      const vLabel = `v${index}`;
+      const aLabel = `a${index}`;
+      return [
+        `[${index}:v]setpts=PTS-STARTPTS,scale=${plan.dimensions.width}:${plan.dimensions.height}:flags=lanczos,setsar=1,format=yuv420p[${vLabel}]`,
+        `[${index}:a]asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[${aLabel}]`,
+      ].join(';');
+    });
+    const concatInputs = plan.video_inputs.map((_input, index) => `[v${index}][a${index}]`).join('');
+    args.push(
+      '-filter_complex',
+      [...streamLabels, `${concatInputs}concat=n=${plan.video_inputs.length}:v=1:a=1[vcat][aout]`].join(';'),
+      '-map', '[vcat]',
+      '-map', '[aout]',
+      '-c:v', 'libx264',
+      '-pix_fmt', 'yuv420p',
+      '-c:a', 'aac',
+      '-movflags', '+faststart',
+      '-t', String(plan.total_duration_ms / 1000),
+      outputs.mp4.absolute,
+    );
+    return args;
+  }
+
   for (const input of plan.audio_inputs) args.push('-i', input.absolute_path);
   if (!plan.audio_inputs.length) {
     args.push('-f', 'lavfi', '-t', String(plan.total_duration_ms / 1000), '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000');
@@ -642,13 +698,14 @@ async function runComposition(ctx, exportId) {
   } catch (error) {
     throw codedError('REDRAW_COMPOSITION_INPUT_DRIFT', 'stored episode release hash invalid', error);
   }
+  const audioMode = assertAudioMode(existingManifest.audio_mode || 'native');
   const plan = await buildCompositionPlan(ctx, {
     versionId: row.version_id,
-    audioMode: 'replace',
+    audioMode,
   });
   const expectedHash = requestHash({
     versionId: row.version_id,
-    audioMode: existingManifest.audio_mode || 'replace',
+    audioMode,
     inputHash: plan.input_hash,
   });
   if (existingManifest?.plan?.input_hash !== plan.input_hash
@@ -700,7 +757,7 @@ async function runComposition(ctx, exportId) {
     };
     const currentPlan = await buildCompositionPlan(ctx, {
       versionId: row.version_id,
-      audioMode: 'replace',
+      audioMode,
     });
     const currentRow = db.prepare(`
       SELECT status, release_hash, manifest_json FROM redraw_exports
@@ -714,7 +771,7 @@ async function runComposition(ctx, exportId) {
     }
     const currentRequestHash = requestHash({
       versionId: row.version_id,
-      audioMode: currentManifest.audio_mode || 'replace',
+      audioMode: currentManifest.audio_mode || audioMode,
       inputHash: currentPlan.input_hash,
     });
     if (currentRow?.status !== 'processing'
@@ -751,7 +808,7 @@ async function runComposition(ctx, exportId) {
       const manifest = {
         idempotency_key: existingManifest.idempotency_key,
         request_hash: existingManifest.request_hash,
-        audio_mode: 'replace',
+        audio_mode: audioMode,
         episode_release: plan.episode_release,
         inputs: {
           shot_ids: plan.timeline.map((item) => item.shot_id),
