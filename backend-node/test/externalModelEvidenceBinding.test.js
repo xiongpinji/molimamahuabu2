@@ -69,7 +69,7 @@ function wan3ConfigFingerprint(config) {
     id: String(config.id),
     provider: 'toapis_wan3',
     model: 'wan3.0-video',
-    base_url: 'https://toapis.xyz',
+    base_url: 'https://toapis.cn',
     api_key: config.api_key,
   })).digest('hex');
 }
@@ -80,7 +80,7 @@ function wan3Config(overrides = {}) {
     service_type: 'video',
     provider: 'toapis_wan3',
     api_protocol: 'toapis_wan3_video',
-    base_url: 'https://toapis.xyz',
+    base_url: 'https://toapis.cn',
     api_key: 'wan3-runtime-key',
     model: ['wan3.0-video'],
     default_model: 'wan3.0-video',
@@ -181,7 +181,7 @@ test('Wan 3.0 evidence binding fails closed when the active target config identi
       wan3Config({ id: 100 }),
       wan3Config({ provider: 'toapis' }),
       wan3Config({ api_protocol: 'toapis_video' }),
-      wan3Config({ base_url: 'https://toapis.xyz/v1' }),
+      wan3Config({ base_url: 'https://toapis.cn/v1' }),
       wan3Config({ api_key: 'rotated-key' }),
       wan3Config({ model: ['seedance-2-fast'] }),
       wan3Config({ default_model: 'seedance-2-fast' }),

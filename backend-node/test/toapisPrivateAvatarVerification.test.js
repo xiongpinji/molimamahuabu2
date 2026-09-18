@@ -26,7 +26,7 @@ function createSplitVerificationDatabase(databasePath, overrides = {}) {
     provider: 'toapis',
     api_protocol: 'toapis_video',
     name: 'ToAPIs Fast private avatar verification',
-    base_url: 'https://toapis.xyz',
+    base_url: 'https://toapis.cn',
     api_key: overrides.fastApiKey || 'test-fast-key',
     model: ['seedance-2-fast'],
     default_model: 'seedance-2-fast',
@@ -36,7 +36,7 @@ function createSplitVerificationDatabase(databasePath, overrides = {}) {
     provider: 'toapis',
     api_protocol: 'toapis_video',
     name: 'ToAPIs Mini private avatar verification',
-    base_url: 'https://toapis.xyz',
+    base_url: 'https://toapis.cn',
     api_key: overrides.miniApiKey || 'test-mini-key',
     model: ['seedance-2-mini'],
     default_model: 'seedance-2-mini',
@@ -346,7 +346,7 @@ test('恢复已完成状态时仍校验当前单例人民币硬上限，不提�
   fs.writeFileSync(path.join(outputDir, 'toapis-private-avatar-verification-state.json'), JSON.stringify({
     contract_version: 'toapis-private-avatar-video-verification-v1',
     audit_run_id: 'resume-cap-run',
-    provider_origin: 'https://toapis.xyz',
+    provider_origin: 'https://toapis.cn',
     config_fingerprints: {
       'seedance-2-fast': fastFingerprint,
       'seedance-2-mini': miniFingerprint,
@@ -369,7 +369,7 @@ test('恢复已完成状态时仍校验当前单例人民币硬上限，不提�
         model: 'seedance-2-fast',
         resolution: '480p',
         duration: 4,
-        provider_origin: 'https://toapis.xyz',
+        provider_origin: 'https://toapis.cn',
         config_fingerprint: fastFingerprint,
         status: 'completed',
         billing: {

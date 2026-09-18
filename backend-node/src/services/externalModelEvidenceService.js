@@ -29,7 +29,7 @@ const WAN3_CONTRACT = 'toapis-wan3-video-real-verification-v1';
 const WAN3_MODEL = 'wan3.0-video';
 const WAN3_PROVIDER = 'toapis_wan3';
 const WAN3_PROTOCOL = 'toapis_wan3_video';
-const WAN3_BASE_URL = 'https://toapis.xyz';
+const WAN3_BASE_URL = 'https://toapis.cn';
 
 function evidenceContractForModel(model) {
   return CONTRACT_BY_MODEL[String(model || '').trim().toLowerCase()] || null;

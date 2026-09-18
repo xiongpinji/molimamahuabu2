@@ -42,7 +42,7 @@ function makeDb() {
 
 const config = {
   id: 70,
-  base_url: 'https://toapis.xyz/v1',
+  base_url: 'https://toapis.cn/v1',
   api_key: 'secret-key',
 };
 
@@ -97,9 +97,9 @@ test('ToAPIs 虚拟人像客户端使用官方建组、建素材和查询路径'
   assert.equal(active.asset_url, 'asset://pa_asset1');
 
   assert.deepEqual(calls.map((item) => [item.init.method, item.url]), [
-    ['POST', 'https://toapis.xyz/v1/videos/doubao-seedance-2-0/private-avatar/groups'],
-    ['POST', 'https://toapis.xyz/v1/videos/doubao-seedance-2-0/private-avatar/assets'],
-    ['GET', 'https://toapis.xyz/v1/videos/doubao-seedance-2-0/private-avatar/assets/pa_asset1'],
+    ['POST', 'https://toapis.cn/v1/videos/doubao-seedance-2-0/private-avatar/groups'],
+    ['POST', 'https://toapis.cn/v1/videos/doubao-seedance-2-0/private-avatar/assets'],
+    ['GET', 'https://toapis.cn/v1/videos/doubao-seedance-2-0/private-avatar/assets/pa_asset1'],
   ]);
   assert.equal(calls.every((item) => item.init.headers.Authorization === 'Bearer secret-key'), true);
   assert.deepEqual(JSON.parse(calls[1].init.body), {

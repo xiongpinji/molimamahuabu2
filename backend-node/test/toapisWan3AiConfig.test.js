@@ -18,7 +18,7 @@ test('Wan 3.0 管理配置接受 2 秒并保持独立协议且不公开 Key', ()
       provider: 'toapis',
       api_protocol: 'toapis_wan3_video',
       name: 'ToAPIs Wan 3.0',
-      base_url: 'https://toapis.xyz',
+      base_url: 'https://toapis.cn',
       api_key: 'wan3-secret',
       model: ['wan3.0-video'],
       default_model: 'wan3.0-video',
@@ -49,7 +49,7 @@ test('Wan 3.0 连接测试只读模型目录且优先使用独立配置 Key', as
     provider: 'toapis',
     api_protocol: 'toapis_wan3_video',
     name: 'ToAPIs Wan 3.0',
-    base_url: 'https://toapis.xyz',
+    base_url: 'https://toapis.cn',
     api_key: 'wan3-secret',
     model: ['wan3.0-video'],
     default_model: 'wan3.0-video',
@@ -79,7 +79,7 @@ test('Wan 3.0 连接测试只读模型目录且优先使用独立配置 Key', as
   await aiConfig.testConnection(config);
 
   assert.equal(requests.length, 1);
-  assert.equal(requests[0].url, 'https://toapis.xyz/v1/models?type=video');
+  assert.equal(requests[0].url, 'https://toapis.cn/v1/models?type=video');
   assert.equal(requests[0].options.method, 'GET');
   assert.equal(requests[0].options.headers.Authorization, 'Bearer wan3-secret');
   assert.equal(requests[0].options.body, undefined);
@@ -108,7 +108,7 @@ test('旧 ToAPIs FAST/MINI 连接测试继续使用 legacy Key 解析', async (t
     service_type: 'video',
     provider: 'toapis',
     api_protocol: 'toapis_video',
-    base_url: 'https://toapis.xyz',
+    base_url: 'https://toapis.cn',
     api_key: 'config-fast-key-must-not-override-legacy-env',
     model: ['seedance-2-fast'],
   });

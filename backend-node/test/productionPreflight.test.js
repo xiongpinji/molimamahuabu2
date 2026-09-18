@@ -99,7 +99,7 @@ function installWan3Evidence(config) {
     id: String(config.id),
     provider: 'toapis_wan3',
     model: 'wan3.0-video',
-    base_url: 'https://toapis.xyz',
+    base_url: 'https://toapis.cn',
     api_key: config.api_key,
   })).digest('hex');
   const evidence = Buffer.from(JSON.stringify({
@@ -147,7 +147,7 @@ test('Wan 3.0 生产预检将共享证据强绑定到当前启用配置', () => 
     db.prepare(`UPDATE ai_service_configs
       SET provider = 'toapis_wan3', api_protocol = 'toapis_wan3_video',
           model = '["wan3.0-video"]', default_model = 'wan3.0-video',
-          base_url = 'https://toapis.xyz', api_key = ?, verified_capabilities = ?
+          base_url = 'https://toapis.cn', api_key = ?, verified_capabilities = ?
       WHERE id = ?`).run(config.api_key, JSON.stringify({
         'wan3.0-video': {
           evidence_contract: 'toapis-wan3-video-real-verification-v1',

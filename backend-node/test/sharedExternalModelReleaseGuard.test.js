@@ -215,9 +215,9 @@ function protectedRuntimeSources(candidate) {
       'seedance-2-mini': Object.freeze({ durations: Object.freeze([4, 8, 10, 12, 15]), resolutions: Object.freeze(['480p', '720p']) }),
     });
     function normalizeToapisBaseUrl(value) {
-      const parsed = new URL(value || 'https://toapis.xyz');
-      if (parsed.protocol !== 'https:' || parsed.hostname !== 'toapis.xyz' || parsed.username || parsed.password) throw new Error('official only');
-      return 'https://toapis.xyz';
+      const parsed = new URL(value || 'https://toapis.cn');
+      if (parsed.protocol !== 'https:' || parsed.hostname !== 'toapis.cn' || parsed.username || parsed.password) throw new Error('official only');
+      return 'https://toapis.cn';
     }
     function validateToapisVideoOptions(opts) {
       const first = opts.first_frame_url;
@@ -673,7 +673,7 @@ function toapisEvidence(evidenceRoot, times) {
   });
   return {
     contract_version: TOAPIS_CONTRACT,
-    provider_origin: 'https://toapis.xyz',
+    provider_origin: 'https://toapis.cn',
     generated_at: times.generatedAt,
     valid_until: times.validUntil,
     results,
@@ -1187,7 +1187,7 @@ describeRootEvidence('shared evidence path and freshness safety', () => {
       fs.cpSync(fixture.candidate, expectedCurrent, { recursive: true });
       makeEvidenceStaleButUnexpired(fixture, TOAPIS_FILE);
       const client = path.join(fixture.candidate, 'backend-node/src/services/toapisVideoClient.js');
-      const changed = fs.readFileSync(client, 'utf8').replace("return 'https://toapis.xyz';", "return 'https://toapis.example';");
+      const changed = fs.readFileSync(client, 'utf8').replace("return 'https://toapis.cn';", "return 'https://toapis.example';");
       fs.writeFileSync(client, changed);
       assertFail(runGuard(fixture.candidate, fixture.evidenceRoot, { expectedCurrent }), /ToAPIs.*stale|24 hours/i);
     } finally {
@@ -1816,8 +1816,8 @@ describeRootEvidence('candidate runtime and callout audit', () => {
 
   for (const [name, mutate] of [
     ['allows one global API key fallback', (source) => source.replace(
-      "const BASE_URL = 'https://toapis.xyz';",
-      "const BASE_URL = 'https://toapis.xyz';\nconst legacyKey = process.env.TOAPIS_API_KEY;",
+      "const BASE_URL = 'https://toapis.cn';",
+      "const BASE_URL = 'https://toapis.cn';\nconst legacyKey = process.env.TOAPIS_API_KEY;",
     )],
     ['does not require the FAST target config id', (source) => source.replaceAll(
       'TOAPIS_VERIFY_FAST_CONFIG_ID',

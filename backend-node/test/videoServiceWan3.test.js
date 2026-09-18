@@ -43,7 +43,7 @@ function createWan3EvidenceRoot() {
       id: String(config.id),
       provider: 'toapis_wan3',
       model: WAN3_MODEL,
-      base_url: 'https://toapis.xyz',
+      base_url: 'https://toapis.cn',
       api_key: apiKey,
     })).digest('hex');
     const bytes = Buffer.from(JSON.stringify({
@@ -123,7 +123,7 @@ function configureWan3(db, evidence, options = {}) {
     provider: options.provider || 'toapis_wan3',
     api_protocol: options.apiProtocol || 'toapis_wan3_video',
     name: options.name || 'ToAPIs Wan 3.0',
-    base_url: 'https://toapis.xyz',
+    base_url: 'https://toapis.cn',
     api_key: apiKey,
     model: [WAN3_MODEL],
     default_model: WAN3_MODEL,

@@ -15,7 +15,7 @@ function setupRoute() {
     (service_type, provider, api_protocol, name, base_url, api_key, model, default_model,
      priority, is_default, is_active, settings, logical_model_id, failover_enabled,
      verification_status, created_at, updated_at)
-    VALUES ('video', 'toapis_wan3', 'toapis_video', 'Wan3', 'https://toapis.xyz',
+    VALUES ('video', 'toapis_wan3', 'toapis_video', 'Wan3', 'https://toapis.cn',
       'secret-key-must-not-leak', '["wan3.0-video"]', 'wan3.0-video', 10, 0, 1,
       '{"canvas_capabilities":{"resolutions":["480p"],"durations":[2]}}',
       'wan3.0-video', 0, 'verified', ?, ?)`)

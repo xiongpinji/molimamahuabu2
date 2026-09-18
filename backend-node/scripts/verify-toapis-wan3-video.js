@@ -18,7 +18,7 @@ const {
   safeChildProcessEnv,
 } = require('./verify-toapis-video-models');
 
-const BASE_URL = 'https://toapis.xyz';
+const BASE_URL = 'https://toapis.cn';
 const STATE_VERSION = 'toapis-wan3-video-verification-state-v1';
 const EVIDENCE_VERSION = 'toapis-wan3-video-real-verification-v1';
 const PUBLIC_ASSET_BASE_URL = 'https://molimama.vip/verification-assets/toapis';

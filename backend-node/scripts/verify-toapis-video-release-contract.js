@@ -93,7 +93,7 @@ function hasMatchingSpeedEvidence(evidence, results) {
 
 function auditEvidence(evidence, violations) {
   if (evidence?.contract_version !== 'toapis-video-real-verification-v1'
-      || evidence?.provider_origin !== 'https://toapis.xyz') {
+      || evidence?.provider_origin !== 'https://toapis.cn') {
     violations.push('真实验证证据版本或 ToAPIs 官方域名不正确');
   }
   const results = Array.isArray(evidence?.results) ? evidence.results : [];

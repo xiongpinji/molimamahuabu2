@@ -46,7 +46,10 @@ request.interceptors.response.use(
     // 提取后端实际错误信息（优先 API 返回的 message，而非 axios 通用 "status code 500"）
     const backendMsg = apiErrorMessage(error.response?.data)
     const msg = userHttpErrorMessage(error)
-    if (!unauthorized && !error.config?.silentError) ElMessage.error(msg)
+    // 仅静默“登录态失效”的 401，避免与跳转登录页重复弹窗；
+    // 登录失败（INVALID_CREDENTIALS）等业务 401 仍需提示。
+    const suppressUnauthorizedToast = unauthorized && errorCode === 'UNAUTHORIZED'
+    if (!suppressUnauthorizedToast && !error.config?.silentError) ElMessage.error(msg)
     // 将真实错误信息写回 message，使组件 catch 块可直接用 e.message 获取可读内容
     if (backendMsg || msg !== error.message) error.message = msg
     return Promise.reject(error)

@@ -50,7 +50,7 @@ function createSplitVerificationDatabase(databasePath, overrides = {}) {
     provider: 'toapis',
     api_protocol: 'toapis_video',
     name: 'ToAPIs Fast',
-    base_url: 'https://toapis.xyz',
+    base_url: 'https://toapis.cn',
     api_key: overrides.fastApiKey || 'test-fast-key',
     model: ['seedance-2-fast'],
     default_model: 'seedance-2-fast',
@@ -60,7 +60,7 @@ function createSplitVerificationDatabase(databasePath, overrides = {}) {
     provider: overrides.miniProvider || 'toapis',
     api_protocol: 'toapis_video',
     name: 'ToAPIs Mini',
-    base_url: 'https://toapis.xyz',
+    base_url: 'https://toapis.cn',
     api_key: overrides.miniApiKey || 'test-mini-key',
     model: ['seedance-2-mini'],
     default_model: 'seedance-2-mini',
@@ -404,7 +404,7 @@ describe('ToAPIs real video verification contract', () => {
       verificationClients: {
         'seedance-2-fast': {
           apiKey: 'test-key',
-          config: { base_url: 'https://toapis.xyz', api_key: 'test-key' },
+          config: { base_url: 'https://toapis.cn', api_key: 'test-key' },
         },
       },
       outputDir,
@@ -413,7 +413,7 @@ describe('ToAPIs real video verification contract', () => {
       statePath,
       state: {
         state_version: 'toapis-video-verification-state-v1',
-        provider_origin: 'https://toapis.xyz',
+        provider_origin: 'https://toapis.cn',
         config_fingerprints: {
           'seedance-2-fast': 'a'.repeat(64),
           'seedance-2-mini': 'b'.repeat(64),
@@ -553,7 +553,7 @@ describe('ToAPIs real video verification contract', () => {
       let balanceCalls = 0;
       let createCalls = 0;
       await assert.rejects(() => withProcessEnv({
-        TOAPIS_BASE_URL: 'https://toapis.xyz',
+        TOAPIS_BASE_URL: 'https://toapis.cn',
         TOAPIS_VERIFY_DEDICATED_TOKEN: '1',
         TOAPIS_VERIFY_FAST_CONFIG_ID: configIds.miniId,
         TOAPIS_VERIFY_MINI_CONFIG_ID: configIds.fastId,
@@ -601,7 +601,7 @@ describe('ToAPIs real video verification contract', () => {
       const balanceKeys = [];
       let createCalls = 0;
       await assert.rejects(() => withProcessEnv({
-        TOAPIS_BASE_URL: 'https://toapis.xyz',
+        TOAPIS_BASE_URL: 'https://toapis.cn',
         TOAPIS_VERIFY_DEDICATED_TOKEN: '1',
         TOAPIS_VERIFY_FAST_CONFIG_ID: configIds.fastId,
         TOAPIS_VERIFY_MINI_CONFIG_ID: configIds.miniId,
@@ -647,7 +647,7 @@ describe('ToAPIs real video verification contract', () => {
       const submitKeys = [];
       const pollKeys = [];
       await assert.rejects(() => withProcessEnv({
-        TOAPIS_BASE_URL: 'https://toapis.xyz',
+        TOAPIS_BASE_URL: 'https://toapis.cn',
         TOAPIS_VERIFY_DEDICATED_TOKEN: '1',
         TOAPIS_VERIFY_FAST_CONFIG_ID: configIds.fastId,
         TOAPIS_VERIFY_MINI_CONFIG_ID: configIds.miniId,
@@ -727,11 +727,11 @@ describe('ToAPIs real video verification contract', () => {
       verificationClients: {
         'seedance-2-fast': {
           apiKey: 'test-fast-key',
-          config: { base_url: 'https://toapis.xyz', api_key: 'test-fast-key' },
+          config: { base_url: 'https://toapis.cn', api_key: 'test-fast-key' },
         },
         'seedance-2-mini': {
           apiKey: 'test-mini-key',
-          config: { base_url: 'https://toapis.xyz', api_key: 'test-mini-key' },
+          config: { base_url: 'https://toapis.cn', api_key: 'test-mini-key' },
         },
       },
       outputDir,
@@ -740,7 +740,7 @@ describe('ToAPIs real video verification contract', () => {
       statePath: path.join(outputDir, 'state.json'),
       state: {
         state_version: 'toapis-video-verification-state-v1',
-        provider_origin: 'https://toapis.xyz',
+        provider_origin: 'https://toapis.cn',
         config_fingerprints: fingerprints,
         cases: {},
       },
@@ -853,7 +853,7 @@ describe('ToAPIs real video verification contract', () => {
       let getCalls = 0;
       let postCalls = 0;
       await assert.rejects(() => withProcessEnv({
-        TOAPIS_BASE_URL: 'https://toapis.xyz',
+        TOAPIS_BASE_URL: 'https://toapis.cn',
         TOAPIS_VERIFY_DEDICATED_TOKEN: '1',
         TOAPIS_VERIFY_FAST_CONFIG_ID: configIds.fastId,
         TOAPIS_VERIFY_MINI_CONFIG_ID: configIds.miniId,
@@ -924,7 +924,7 @@ describe('ToAPIs real video verification contract', () => {
         let balanceCalls = 0;
         let createCalls = 0;
         await assert.rejects(() => withProcessEnv({
-          TOAPIS_BASE_URL: 'https://toapis.xyz',
+          TOAPIS_BASE_URL: 'https://toapis.cn',
           TOAPIS_VERIFY_DEDICATED_TOKEN: '1',
           TOAPIS_VERIFY_FAST_CONFIG_ID: configIds.fastId,
           TOAPIS_VERIFY_MINI_CONFIG_ID: configIds.miniId,
@@ -966,7 +966,7 @@ describe('ToAPIs real video verification contract', () => {
         verificationClients: {
           'seedance-2-fast': {
             apiKey: 'test-key',
-            config: { base_url: 'https://toapis.xyz', api_key: 'test-key' },
+            config: { base_url: 'https://toapis.cn', api_key: 'test-key' },
           },
         },
         outputDir,
@@ -1000,7 +1000,7 @@ describe('ToAPIs real video verification contract', () => {
         let balanceCalls = 0;
         let createCalls = 0;
         await assert.rejects(() => withProcessEnv({
-          TOAPIS_BASE_URL: 'https://toapis.xyz',
+          TOAPIS_BASE_URL: 'https://toapis.cn',
           TOAPIS_VERIFY_DEDICATED_TOKEN: '1',
           TOAPIS_VERIFY_FAST_CONFIG_ID: configIds.fastId,
           TOAPIS_VERIFY_MINI_CONFIG_ID: configIds.miniId,
@@ -1036,7 +1036,7 @@ describe('ToAPIs real video verification contract', () => {
       const balanceCallsByKey = new Map();
       let createCalls = 0;
       await assert.rejects(() => withProcessEnv({
-        TOAPIS_BASE_URL: 'https://toapis.xyz',
+        TOAPIS_BASE_URL: 'https://toapis.cn',
         TOAPIS_VERIFY_DEDICATED_TOKEN: '1',
         TOAPIS_VERIFY_FAST_CONFIG_ID: configIds.fastId,
         TOAPIS_VERIFY_MINI_CONFIG_ID: configIds.miniId,
@@ -1100,7 +1100,7 @@ describe('ToAPIs real video verification contract', () => {
         name: 'legacy-v1-origin',
         state: {
           state_version: 'toapis-video-verification-state-v1',
-          provider_origin: 'https://toapis.xyz/v1',
+          provider_origin: 'https://toapis.cn/v1',
           cases: {},
         },
         error: /状态.*官方入口|版本不兼容/,
@@ -1109,7 +1109,7 @@ describe('ToAPIs real video verification contract', () => {
         name: 'fingerprint',
         state: {
           state_version: 'toapis-video-verification-state-v1',
-          provider_origin: 'https://toapis.xyz',
+          provider_origin: 'https://toapis.cn',
           config_fingerprints: { 'seedance-2-fast': 'old-fast', 'seedance-2-mini': 'old-mini' },
           cases: {},
         },
@@ -1120,13 +1120,13 @@ describe('ToAPIs real video verification contract', () => {
         buildState(fingerprints) {
           return {
             state_version: 'toapis-video-verification-state-v1',
-            provider_origin: 'https://toapis.xyz',
+            provider_origin: 'https://toapis.cn',
             config_fingerprints: fingerprints,
             cases: {
               'fast-t2v-480': {
                 id: 'fast-t2v-480',
                 model: 'seedance-2-fast',
-                provider_origin: 'https://toapis.xyz',
+                provider_origin: 'https://toapis.cn',
                 config_fingerprint: '0'.repeat(64),
                 submission_state: 'accepted',
                 provider_task_id: 'task-old-config',
@@ -1156,7 +1156,7 @@ describe('ToAPIs real video verification contract', () => {
         let balanceCalls = 0;
         let createCalls = 0;
         await assert.rejects(() => withProcessEnv({
-          TOAPIS_BASE_URL: 'https://toapis.xyz',
+          TOAPIS_BASE_URL: 'https://toapis.cn',
           TOAPIS_VERIFY_DEDICATED_TOKEN: '1',
           TOAPIS_VERIFY_FAST_CONFIG_ID: configIds.fastId,
           TOAPIS_VERIFY_MINI_CONFIG_ID: configIds.miniId,
@@ -1195,13 +1195,13 @@ describe('ToAPIs real video verification contract', () => {
       fs.mkdirSync(outputDir, { recursive: true });
       fs.writeFileSync(path.join(outputDir, 'toapis-video-verification-state.json'), JSON.stringify({
         state_version: 'toapis-video-verification-state-v1',
-        provider_origin: 'https://toapis.xyz',
+        provider_origin: 'https://toapis.cn',
         config_fingerprints: fingerprints,
         cases: {
           'mini-omni-480': {
             id: 'mini-omni-480',
             model: 'seedance-2-mini',
-            provider_origin: 'https://toapis.xyz',
+            provider_origin: 'https://toapis.cn',
             config_fingerprint: fingerprints['seedance-2-mini'],
             submission_state: 'indeterminate',
           },
@@ -1210,7 +1210,7 @@ describe('ToAPIs real video verification contract', () => {
       let balanceCalls = 0;
       let createCalls = 0;
       await assert.rejects(() => withProcessEnv({
-        TOAPIS_BASE_URL: 'https://toapis.xyz',
+        TOAPIS_BASE_URL: 'https://toapis.cn',
         TOAPIS_VERIFY_DEDICATED_TOKEN: '1',
         TOAPIS_VERIFY_FAST_CONFIG_ID: configIds.fastId,
         TOAPIS_VERIFY_MINI_CONFIG_ID: configIds.miniId,
@@ -1412,7 +1412,7 @@ describe('ToAPIs real video verification contract', () => {
         };
 
         await assert.rejects(() => withProcessEnv({
-          TOAPIS_BASE_URL: 'https://toapis.xyz',
+          TOAPIS_BASE_URL: 'https://toapis.cn',
           TOAPIS_VERIFY_DEDICATED_TOKEN: '1',
           TOAPIS_VERIFY_FAST_CONFIG_ID: configIds.fastId,
           TOAPIS_VERIFY_MINI_CONFIG_ID: configIds.miniId,
@@ -1450,7 +1450,7 @@ describe('ToAPIs real video verification contract', () => {
       });
       const fingerprints = Object.fromEntries(snapshots.map((item) => [item.model, item.fingerprint]));
       for (const item of results) {
-        item.provider_origin = 'https://toapis.xyz';
+        item.provider_origin = 'https://toapis.cn';
         item.config_fingerprint = fingerprints[item.model];
       }
       fs.mkdirSync(outputDir, { recursive: true });
@@ -1463,7 +1463,7 @@ describe('ToAPIs real video verification contract', () => {
       }
       fs.writeFileSync(statePath, JSON.stringify({
         state_version: 'toapis-video-verification-state-v1',
-        provider_origin: 'https://toapis.xyz',
+        provider_origin: 'https://toapis.cn',
         config_fingerprints: fingerprints,
         cases: Object.fromEntries(results.map((item) => [item.id, item])),
       }));
@@ -1472,7 +1472,7 @@ describe('ToAPIs real video verification contract', () => {
       let createCalls = 0;
 
       const run = await withProcessEnv({
-        TOAPIS_BASE_URL: 'https://toapis.xyz',
+        TOAPIS_BASE_URL: 'https://toapis.cn',
         TOAPIS_VERIFY_DEDICATED_TOKEN: '1',
         TOAPIS_VERIFY_FAST_CONFIG_ID: configIds.fastId,
         TOAPIS_VERIFY_MINI_CONFIG_ID: configIds.miniId,

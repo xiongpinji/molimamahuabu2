@@ -1,7 +1,7 @@
 import request from '@/utils/request'
 
-export function login(data) {
-  return request.post('/auth/login', data)
+export function login(data, config = {}) {
+  return request.post('/auth/login', data, config)
 }
 
 export function logout() {
@@ -12,16 +12,16 @@ export function requestRegistrationCode(data) {
   return request.post('/auth/register/code', data)
 }
 
-export function register(data) {
-  return request.post('/auth/register', data)
+export function register(data, config = {}) {
+  return request.post('/auth/register', data, config)
 }
 
 export function requestPasswordResetCode(data) {
   return request.post('/auth/password/code', data)
 }
 
-export function resetPassword(data) {
-  return request.post('/auth/password/reset', data)
+export function resetPassword(data, config = {}) {
+  return request.post('/auth/password/reset', data, config)
 }
 
 export function changePassword(data) {

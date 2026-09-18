@@ -171,7 +171,7 @@ async function submit() {
         email: email.value,
         verification_code: verificationCode.value,
         new_password: password.value,
-      })
+      }, { silentError: true })
       switchMode('login')
       ElMessage.success('密码已重置，请使用新密码登录')
       return
@@ -181,14 +181,16 @@ async function submit() {
         email: email.value,
         password: password.value,
         verification_code: verificationCode.value,
-      })
-      : await login({ email: email.value, password: password.value })
+      }, { silentError: true })
+      : await login({ email: email.value, password: password.value }, { silentError: true })
     saveSession(session)
     const redirect = typeof route.query.redirect === 'string' && route.query.redirect.startsWith('/')
       ? route.query.redirect
       : '/'
     await router.replace(redirect)
     ElMessage.success(mode.value === 'register' ? '注册成功' : '登录成功')
+  } catch (error) {
+    ElMessage.error(error?.message || '操作失败，请稍后重试')
   } finally {
     loading.value = false
   }

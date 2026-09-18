@@ -10,19 +10,22 @@ const charactersApiSource = readFileSync(fileURLToPath(new URL('../src/api/chara
 const useCharactersSource = readFileSync(fileURLToPath(new URL('../src/composables/filmCreate/useCharacters.js', import.meta.url)), 'utf8')
 
 test('请求层支持静默错误，供素材库多来源探测避免全局错误弹窗', () => {
-  assert.match(requestSource, /if \(!unauthorized && !error\.config\?\.silentError\) ElMessage\.error\(msg\)/)
+  assert.match(requestSource, /suppressUnauthorizedToast/)
+  assert.match(requestSource, /if \(!suppressUnauthorizedToast && !error\.config\?\.silentError\) ElMessage\.error\(msg\)/)
 })
 
-test('未登录响应不作为普通错误重复弹窗', () => {
+test('仅静默登录态失效的 401，登录失败仍会弹窗', () => {
   assert.match(requestSource, /const unauthorized = Number\(error\.response\?\.status\) === 401/)
-  assert.match(requestSource, /if \(!unauthorized && !error\.config\?\.silentError\) ElMessage\.error\(msg\)/)
+  assert.match(requestSource, /errorCode === 'UNAUTHORIZED'/)
+  assert.match(requestSource, /suppressUnauthorizedToast/)
+  assert.match(requestSource, /if \(!suppressUnauthorizedToast && !error\.config\?\.silentError\) ElMessage\.error\(msg\)/)
 })
 
 test('画布保存 API 可透传静默错误配置且不静默未登录处理', () => {
   assert.match(dramaApiSource, /saveCanvasLayout\(id, canvasLayout, workflowGroups, baseCanvasRevision, config = \{\}\)/)
   assert.match(dramaApiSource, /request\.put\(`\/dramas\/\$\{id\}\/canvas-layout`, body, config\)/)
   assert.match(requestSource, /const unauthorized = Number\(error\.response\?\.status\) === 401/)
-  assert.match(requestSource, /if \(!unauthorized && !error\.config\?\.silentError\) ElMessage\.error\(msg\)/)
+  assert.match(requestSource, /if \(!suppressUnauthorizedToast && !error\.config\?\.silentError\) ElMessage\.error\(msg\)/)
 })
 
 test('素材和音色 API 列表方法可透传请求配置', () => {
