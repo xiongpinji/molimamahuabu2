@@ -32,7 +32,8 @@ function routes(db, log, runtime = {}) {
   return {
     getAccount: (req, res) => {
       try {
-        const userId = String(req.user.id);
+        // 本地单用户模式不注入 req.user，与 scriptAnalysis 等路由保持一致使用 'local'
+        const userId = String(req.user?.id || 'local');
         const tenantId = req.tenant?.id;
         const account = tenantId
           ? creditLedger.getTenantAccountBreakdown(db, tenantId, runtime.nowValue ?? Date.now())
@@ -46,7 +47,7 @@ function routes(db, log, runtime = {}) {
     },
     listAuditEvents: (req, res) => {
       try {
-        const events = auditEvents.listForUser(db, req.user.id, req.query?.limit);
+        const events = auditEvents.listForUser(db, req.user?.id || 'local', req.query?.limit);
         response.success(res, events);
       } catch (error) {
         log.error('billing list audit events', { error: error.message });

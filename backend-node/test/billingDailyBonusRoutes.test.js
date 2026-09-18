@@ -33,3 +33,24 @@ test('租户账户接口保留总余额并返回永久和今日赠送明细', ()
   });
 });
 
+test('本地单用户模式无 req.user 时仍返回默认积分账户', () => {
+  const db = new Database(':memory:');
+  credits.ensureSchema(db);
+  const handlers = billingRoutes(db, { error() {} });
+  const result = {};
+  const res = {
+    status(code) { result.status = code; return this; },
+    json(body) { result.body = body; return this; },
+  };
+
+  handlers.getAccount({}, res);
+
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body.data, {
+    user_id: 'local',
+    available: 0,
+    held: 0,
+    spent: 0,
+  });
+});
+
