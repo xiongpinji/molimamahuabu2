@@ -43,3 +43,16 @@ test('useCanvasStoryboardMedia keeps cache and concurrency contracts', async () 
   assert.match(source, /function invalidateCache/)
   assert.match(source, /refreshInBackground/)
 })
+
+test('HomeCanvasNode no longer serial-blocks protected reference previews', async () => {
+  const require = createRequire(import.meta.url)
+  const fs = require('node:fs')
+  const path = require('node:path')
+  const source = fs.readFileSync(
+    path.join(process.cwd(), 'src/components/dramaCanvas/HomeCanvasNode.vue'),
+    'utf8',
+  )
+  assert.match(source, /peekProtectedMediaPreview/)
+  assert.match(source, /Promise\.all\(protectedJobs\.map/)
+  assert.doesNotMatch(source, /isProtectedStaticMediaUrl\(url\) \? '' : url/)
+})

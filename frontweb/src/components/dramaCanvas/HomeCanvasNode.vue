@@ -566,7 +566,11 @@ import {
   resolveFreeCanvasVideoReferenceInput,
 } from '@/utils/freeCanvasGeneration'
 import { videoDurationOptionsForCapability } from '@/utils/videoDuration'
-import { isProtectedStaticMediaUrl, loadProtectedMediaPreview } from '@/utils/protectedMediaPreview'
+import {
+  isProtectedStaticMediaUrl,
+  loadProtectedMediaPreview,
+  peekProtectedMediaPreview,
+} from '@/utils/protectedMediaPreview'
 import ImageNodeToolbar from './ImageNodeToolbar.vue'
 import VideoNodeToolbar from './VideoNodeToolbar.vue'
 
@@ -603,7 +607,6 @@ const mentionEnd = ref(-1)
 const mentionQuery = ref('')
 const referencePreviewUrls = ref(new Map())
 let referencePreviewRun = 0
-let referenceObjectUrls = new Set()
 const draft = reactive({
   title: '',
   content: '',
@@ -750,15 +753,18 @@ function referencePreviewUrl(reference) {
   const url = String(reference?.url || '')
   if (!url) return ''
   const key = String(reference?.nodeId || '')
-  return referencePreviewUrls.value.get(key) || (isProtectedStaticMediaUrl(url) ? '' : url)
+  // 优先已解析预览；受保护 /static/ 与节点本体一致，先直接展示，避免连线槽长时间停在「等待图片」
+  return referencePreviewUrls.value.get(key)
+    || peekProtectedMediaPreview(url)
+    || url
 }
 
 async function refreshReferencePreviews() {
   const run = ++referencePreviewRun
   const next = new Map()
-  const nextObjectUrls = new Set()
   const references = [...inputReferences.value, ...referenceCandidates.value]
   const seen = new Set()
+  const protectedJobs = []
   for (const reference of references) {
     const nodeId = String(reference?.nodeId || '')
     const url = String(reference?.url || '')
@@ -768,26 +774,34 @@ async function refreshReferencePreviews() {
       next.set(nodeId, url)
       continue
     }
-    try {
-      const preview = await loadProtectedMediaPreview(url)
-      if (run !== referencePreviewRun) {
-        if (preview.startsWith('blob:')) URL.revokeObjectURL(preview)
-        return
-      }
-      if (preview) {
-        next.set(nodeId, preview)
-        if (preview.startsWith('blob:')) nextObjectUrls.add(preview)
-      }
-    } catch (_) {
-      // 受保护素材加载失败时保留占位符，不把未授权地址交给媒体标签。
+    const cached = peekProtectedMediaPreview(url)
+    if (cached) {
+      next.set(nodeId, cached)
+      continue
     }
+    // 先用同源 /static/ 立刻占位展示（与 media-stage 一致），后台再并发换 blob
+    next.set(nodeId, url)
+    protectedJobs.push({ nodeId, url })
   }
   if (run !== referencePreviewRun) return
-  referenceObjectUrls.forEach((url) => {
-    if (!nextObjectUrls.has(url)) URL.revokeObjectURL(url)
-  })
-  referenceObjectUrls = nextObjectUrls
   referencePreviewUrls.value = next
+
+  if (!protectedJobs.length) return
+
+  const settled = await Promise.all(protectedJobs.map(async ({ nodeId, url }) => {
+    try {
+      const preview = await loadProtectedMediaPreview(url)
+      return { nodeId, preview }
+    } catch (_) {
+      return { nodeId, preview: '' }
+    }
+  }))
+  if (run !== referencePreviewRun) return
+  for (const { nodeId, preview } of settled) {
+    if (!preview) continue
+    next.set(nodeId, preview)
+  }
+  referencePreviewUrls.value = new Map(next)
 }
 
 const voiceListId = computed(() => `free-node-voices-${String(props.id || 'node').replace(/[^a-zA-Z0-9_-]/g, '-')}`)
@@ -1441,8 +1455,6 @@ onBeforeUnmount(() => {
   if (draftSaveTimer) window.clearTimeout(draftSaveTimer)
   if (mediaOpenTimer) window.clearTimeout(mediaOpenTimer)
   referencePreviewRun += 1
-  referenceObjectUrls.forEach((url) => URL.revokeObjectURL(url))
-  referenceObjectUrls = new Set()
 })
 
 watch(() => props.data, () => {
