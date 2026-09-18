@@ -10,7 +10,8 @@ import {
 
 test('AIHubCC image catalog follows the 2026-07-24 protocol document', () => {
   assert.equal(AIHUBCC_IMAGE_MODELS.includes('gpt-image-2-4k'), false)
-  assert.equal(AIHUBCC_IMAGE_MODELS.includes('gpt-image-2-3.5k'), true)
+  assert.equal(AIHUBCC_IMAGE_MODELS.includes('gpt-image-2'), true)
+  assert.equal(AIHUBCC_IMAGE_MODELS.includes('gpt-image-2-3.5k'), false)
   assert.equal(AIHUBCC_IMAGE_MODELS.includes('gemini-3.1-flash-image-landscape'), true)
   assert.equal(AIHUBCC_IMAGE_MODELS.includes('gemini-3.0-pro-image-portrait-2k'), true)
   assert.equal(AIHUBCC_IMAGE_MODELS.includes('imagen-4.0-generate-preview-landscape'), true)

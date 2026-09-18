@@ -3499,7 +3499,7 @@ test('电影级光影校正通过参考图供应商生成同尺寸派生素材�
   assert.deepEqual(temporaryFiles, []);
 });
 
-test('AIHubCC gpt-image-2-3.5k 配置开放全部已审计图片节点能力', (t) => {
+test('AIHubCC gpt-image-2 配置开放全部已审计图片节点能力', (t) => {
   const db = new Database(':memory:');
   t.after(() => db.close());
   runMigrationsAndEnsure(db);
@@ -3511,8 +3511,8 @@ test('AIHubCC gpt-image-2-3.5k 配置开放全部已审计图片节点能力', (
     name: 'AIHubCC 图片节点',
     base_url: 'https://aihubcc.cc/v1',
     api_key: 'test-key',
-    model: ['gpt-image-2-3.5k'],
-    default_model: 'gpt-image-2-3.5k',
+    model: ['gpt-image-2'],
+    default_model: 'gpt-image-2',
     is_default: true,
     settings: JSON.stringify({
       supports_outpaint: true,
@@ -3550,7 +3550,7 @@ test('AIHubCC gpt-image-2-3.5k 配置开放全部已审计图片节点能力', (
   ]) {
     assert.equal(res.payload.data.operations[operation].available, true, operation);
     assert.equal(res.payload.data.operations[operation].protocol, 'aihubcc', operation);
-    assert.equal(res.payload.data.operations[operation].model, 'gpt-image-2-3.5k', operation);
+    assert.equal(res.payload.data.operations[operation].model, 'gpt-image-2', operation);
   }
 });
 

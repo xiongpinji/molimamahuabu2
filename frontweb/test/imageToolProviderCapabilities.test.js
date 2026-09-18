@@ -11,13 +11,17 @@ const auditedConfig = {
   serviceType: 'storyboard_image',
   provider: 'aihubcc',
   protocol: 'aihubcc',
-  model: 'gpt-image-2-3.5k',
+  model: 'gpt-image-2',
 }
 
-test('仅 AIHubCC gpt-image-2-3.5k 匹配已审计图片节点适配器', () => {
+test('仅 AIHubCC gpt-image-2 匹配已审计图片节点适配器', () => {
   assert.equal(isAuditedImageToolReferenceConfig(auditedConfig), true)
   assert.equal(
     isAuditedImageToolReferenceConfig({ ...auditedConfig, model: 'gpt-image-2-2k' }),
+    false,
+  )
+  assert.equal(
+    isAuditedImageToolReferenceConfig({ ...auditedConfig, model: 'gpt-image-2-3.5k' }),
     false,
   )
   assert.equal(

@@ -2,7 +2,6 @@ export const AIHUBCC_IMAGE_MODELS = [
   'gpt-image-2',
   'gpt-image-2-1k',
   'gpt-image-2-2k',
-  'gpt-image-2-3.5k',
   'gemini-image',
   'gemini-image-pro',
   'nano-banana-pro-4K',

@@ -414,7 +414,7 @@
           type="success"
           :closable="false"
           show-icon
-          title="该配置已匹配通过审计的 AIHubCC gpt-image-2-3.5k 参考图适配器；保存后将启用图片节点的扩图、修图、光影、全景与参考图推演能力。"
+          title="该配置已匹配通过审计的 AIHubCC gpt-image-2 参考图适配器；保存后将启用图片节点的扩图、修图、光影、全景与参考图推演能力。"
           style="margin-bottom: 18px"
         />
 

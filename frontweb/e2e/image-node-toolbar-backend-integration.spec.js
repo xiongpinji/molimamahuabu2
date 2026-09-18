@@ -110,11 +110,11 @@ function configureReferenceImageCapability() {
         ('storyboard_image', 'aihubcc', 'aihubcc', ?, ?, ?, ?, ?,
          '/videos', 100, 1, 1, ?, 'verified', ?, ?, ?, ?)`,
     ).run(
-      'AIHubCC gpt-image-2-3.5k 图片节点真实同链',
+      'AIHubCC gpt-image-2 图片节点真实同链',
       realAihubccBaseUrl || 'https://example.invalid/v1',
       realAihubccApiKey || 'e2e-capability-only-key',
-      JSON.stringify([realAihubccModel || 'gpt-image-2-3.5k']),
-      realAihubccModel || 'gpt-image-2-3.5k',
+      JSON.stringify([realAihubccModel || 'gpt-image-2']),
+      realAihubccModel || 'gpt-image-2',
       JSON.stringify({
         supports_upscale: true,
         supports_detail_enhance: true,
@@ -716,7 +716,7 @@ test('专业调色、LUT 最近项与专业设定具有可操作交互', async (
   await expect(page.locator(`.vue-flow__node[data-id="${nodeId}"] img`)).toHaveAttribute('src', sourceUrl)
 })
 
-test('图片工具栏逐项真实触发 AIHubCC gpt-image-2-3.5k 并完成供应商产物持久化同链', async ({ page }, testInfo) => {
+test('图片工具栏逐项真实触发 AIHubCC gpt-image-2 并完成供应商产物持久化同链', async ({ page }, testInfo) => {
   test.skip(!realAihubccEnabled, '需要显式启用真实 AIHubCC 付费同链')
   testInfo.setTimeout(28_800_000)
   const requestedOperations = new Set(
