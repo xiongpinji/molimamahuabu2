@@ -161,7 +161,28 @@ async function addReadyVersion(state, options = {}) {
     dialogue: localizedTwo,
     draft: {},
   }));
-  if (!options.silent) {
+  if (options.native) {
+    for (const item of [
+      { shotRowId: shotOneId, videoId: 101, bytes: options.video1Bytes || 'media' },
+      { shotRowId: shotTwoId, videoId: 102, bytes: options.video2Bytes || 'media' },
+    ]) {
+      const artifactSha256 = sha256(item.bytes);
+      const validationHash = sha256(`native-validation-${item.shotRowId}-${artifactSha256}`);
+      state.db.prepare('UPDATE redraw_shots SET draft_json = ? WHERE id = ?').run(JSON.stringify({
+        native_audio_validation: {
+          contract: 'redraw-native-audio-validation-v1',
+          artifact_sha256: artifactSha256,
+          validation_hash: validationHash,
+          candidate: { artifact_sha256: artifactSha256 },
+          human_review: {
+            status: 'approved',
+            reviewer_id: 'user-a',
+            reviewed_at: state.now,
+          },
+        },
+      }), item.shotRowId);
+    }
+  } else if (!options.silent) {
     for (const item of [
       {
         shotRowId: shotOneId, localized: localizedOne[0], assetId: 201, relative: 'audio/a1.mp3',
@@ -385,7 +406,7 @@ test('buildCompositionPlan hashes exact video and audio bytes, including invalid
   }
 });
 
-test('buildCompositionPlan rejects non-replace audio mode and subtitle needs_rewrite', async () => {
+test('buildCompositionPlan rejects unsupported audio mode and subtitle needs_rewrite', async () => {
   const state = setup();
   try {
     await addReadyVersion(state);
@@ -508,6 +529,7 @@ test('runComposition uses ffmpeg args for concat plus delayed replacement audio 
         assert.ok(argText.includes('apad'));
         assert.ok(argText.includes('atrim=0:3'));
         assert.ok(argText.includes('setpts=PTS-STARTPTS'));
+        assert.ok(argText.includes('concat=n=2:v=1:a=0'));
         assert.deepEqual(job.args.slice(job.args.indexOf('-t'), job.args.indexOf('-t') + 2), ['-t', '3']);
         assert.deepEqual(job.args.slice(0, 4), ['-hide_banner', '-loglevel', 'error', '-y']);
         assert.equal(job.args.some((arg) => /atempo/i.test(arg)), false);
@@ -517,6 +539,62 @@ test('runComposition uses ffmpeg args for concat plus delayed replacement audio 
     }), created.id);
 
     assert.equal(calls.length, 1);
+  } finally {
+    cleanup(state);
+  }
+});
+
+test('native composition plan keeps per-shot audio and skips TTS assets', async () => {
+  const state = setup();
+  const calls = [];
+  try {
+    await addReadyVersion(state, { native: true });
+    const plan = await buildCompositionPlan(ctx(state), { versionId: state.versionId, audioMode: 'native' });
+    assert.equal(plan.audio_mode, 'native');
+    assert.deepEqual(plan.audio_inputs, []);
+    assert.equal(plan.video_inputs.length, 2);
+
+    const created = await createComposition(ctx(state), {
+      versionId: state.versionId,
+      idempotencyKey: 'compose-native',
+      audioMode: 'native',
+    });
+    assert.equal(JSON.parse(created.manifest_json).audio_mode, 'native');
+
+    await runComposition(ctx(state, {
+      compositionRunner: async (job) => {
+        calls.push(job);
+        const argText = job.args.join(' ');
+        assert.ok(argText.includes('concat=n=2:v=1:a=1'));
+        assert.ok(argText.includes('aresample=48000'));
+        assert.ok(argText.includes('aformat=sample_fmts=fltp:channel_layouts=stereo'));
+        assert.equal(argText.includes('amix='), false);
+        assert.equal(argText.includes('adelay='), false);
+        assert.equal(argText.includes('anullsrc'), false);
+        assert.equal((job.args.filter((arg) => arg === '-i')).length, 2);
+        fs.mkdirSync(path.dirname(job.outputPath), { recursive: true });
+        fs.writeFileSync(job.outputPath, 'mp4');
+      },
+    }), created.id);
+    assert.equal(calls.length, 1);
+  } finally {
+    cleanup(state);
+  }
+});
+
+test('native composition rejects shots without approved native audio validation', async () => {
+  const state = setup();
+  try {
+    await addReadyVersion(state, { native: true });
+    const row = state.db.prepare('SELECT id, draft_json FROM redraw_shots WHERE shot_index = 1').get();
+    const draft = JSON.parse(row.draft_json);
+    draft.native_audio_validation.human_review.status = 'pending';
+    state.db.prepare('UPDATE redraw_shots SET draft_json = ? WHERE id = ?').run(JSON.stringify(draft), row.id);
+    await assert.rejects(
+      () => buildCompositionPlan(ctx(state), { versionId: state.versionId, audioMode: 'native' }),
+      (error) => error.code === 'REDRAW_COMPOSITION_INPUT_DRIFT'
+        || error.code === 'REDRAW_COMPOSITION_NATIVE_AUDIO_REQUIRED',
+    );
   } finally {
     cleanup(state);
   }

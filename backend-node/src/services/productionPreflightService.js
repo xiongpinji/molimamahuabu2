@@ -4,6 +4,7 @@ const { createRedrawLocalePackRegistry } = require('./redrawLocalePackRegistry')
 const { hasTrustedEvidenceBinding } = require('./externalModelEvidenceService');
 
 const REDRAW_LOCALE_PRECHECK_ID = 'redraw_locale_verifier';
+const REDRAW_NATIVE_DIALOGUE_PRECHECK_ID = 'redraw_native_dialogue_evidence';
 const REDRAW_LOCALE_DEFAULTS = {
   socketPath: '/run/moli-drama/redraw-locale-verifier.sock',
   readyPath: '/run/moli-drama/redraw-locale-verifier.ready.json',
@@ -115,6 +116,94 @@ function createRedrawLocaleRegistryFromEnv(env = process.env) {
     readyPath: options.readyPath,
     socketPath: options.socketPath,
   });
+}
+
+function packsRequiringNativeEvidence(packs = []) {
+  return (Array.isArray(packs) ? packs : []).filter((pack) => (
+    pack
+    && pack.scope === 'language'
+    && pack.thresholds
+    && typeof pack.thresholds === 'object'
+  ));
+}
+
+function hasPromotedNativeDialogueEvidence(db) {
+  let configs;
+  try {
+    configs = db.prepare(`
+      SELECT id, service_type, settings
+      FROM ai_service_configs
+      WHERE deleted_at IS NULL AND is_active = 1 AND verification_status = 'verified'
+    `).all();
+  } catch (_) {
+    return false;
+  }
+  for (const config of configs) {
+    if (String(config.service_type || '').toLowerCase() !== 'video') continue;
+    let settings = {};
+    try {
+      settings = JSON.parse(String(config.settings || '{}')) || {};
+    } catch (_) {
+      settings = {};
+    }
+    const entries = settings.redraw_locale_capabilities || settings.redrawLocaleCapabilities || [];
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries) {
+      const evidence = entry?.native_dialogue_audio || entry?.capabilities?.native_dialogue_audio;
+      if (evidence && evidence.human_review?.status === 'approved'
+        && /^[a-f0-9]{64}$/i.test(String(evidence.validation_hash || evidence.evidence_hash || ''))) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function runNativeDialogueEvidencePreflight({ env = process.env, db, localeRegistry } = {}) {
+  const options = redrawLocaleVerifierOptions(env);
+  if (!options.enabled) {
+    return {
+      id: REDRAW_NATIVE_DIALOGUE_PRECHECK_ID,
+      status: 'pass',
+      message: 'Native dialogue evidence check skipped; locale verifier disabled.',
+      code: 'REDRAW_NATIVE_DIALOGUE_EVIDENCE_SKIPPED',
+    };
+  }
+  try {
+    const registry = localeRegistry || createRedrawLocaleRegistryFromEnv(env);
+    const packs = packsRequiringNativeEvidence(registry.listReadyPacks());
+    if (!packs.length) {
+      return {
+        id: REDRAW_NATIVE_DIALOGUE_PRECHECK_ID,
+        status: 'pass',
+        message: 'No language-scope native packs enabled; native dialogue evidence not required yet.',
+        code: 'REDRAW_NATIVE_DIALOGUE_EVIDENCE_NOT_REQUIRED',
+      };
+    }
+    const packIds = packs.map((pack) => pack.id).sort();
+    if (!db || !hasPromotedNativeDialogueEvidence(db)) {
+      return {
+        id: REDRAW_NATIVE_DIALOGUE_PRECHECK_ID,
+        status: 'fail',
+        message: `REDRAW_NATIVE_DIALOGUE_EVIDENCE_MISSING: language packs require promoted native evidence (${packIds.join(', ')}).`,
+        code: 'REDRAW_NATIVE_DIALOGUE_EVIDENCE_MISSING',
+      };
+    }
+    return {
+      id: REDRAW_NATIVE_DIALOGUE_PRECHECK_ID,
+      status: 'pass',
+      message: `Promoted native dialogue evidence present for packs: ${packIds.join(', ')}.`,
+      code: 'REDRAW_NATIVE_DIALOGUE_EVIDENCE_READY',
+    };
+  } catch (error) {
+    const code = error && error.code ? String(error.code) : 'REDRAW_NATIVE_DIALOGUE_EVIDENCE_UNAVAILABLE';
+    return {
+      id: REDRAW_NATIVE_DIALOGUE_PRECHECK_ID,
+      status: 'fail',
+      message: `${code}: native dialogue evidence could not be verified.`,
+      code,
+    };
+  }
 }
 
 function runRedrawLocaleVerifierPreflight({ env = process.env, localeRegistry } = {}) {
@@ -242,6 +331,7 @@ function runProductionPreflight({ config, env = process.env, db, localeRegistry,
   );
 
   checks.push(runRedrawLocaleVerifierPreflight({ env, localeRegistry }));
+  checks.push(runNativeDialogueEvidencePreflight({ env, db, localeRegistry }));
 
   try {
     const integrity = db.pragma('quick_check', { simple: true });
@@ -328,5 +418,6 @@ module.exports = {
   createRedrawLocaleRegistryFromEnv,
   externalModelEvidenceBindingsReady,
   runRedrawLocaleVerifierPreflight,
+  runNativeDialogueEvidencePreflight,
   runProductionPreflight,
 };

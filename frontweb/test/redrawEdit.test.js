@@ -23,7 +23,7 @@ async function editState() {
   }
 }
 
-test('第四步状态纯函数固定源片顺序并只在配音完成后允许合成', async () => {
+test('第四步状态纯函数固定源片顺序并默认允许原生音轨合成', async () => {
   const {
     normalizeTimelineShots,
     canStartDialogue,
@@ -56,10 +56,12 @@ test('第四步状态纯函数固定源片顺序并只在配音完成后允许�
   assert.equal(canStartDialogue({ ...readyQuote, quote_hash: 'A'.repeat(64) }, null), false)
   assert.equal(canStartDialogue(readyQuote, { status: 'processing' }), false)
   assert.equal(dialogueQuoteCredits({ ...readyQuote, priced: false }), null)
-  assert.equal(canStartComposition(shots, { status: 'completed' }, null), false)
-  assert.equal(canStartComposition(shots.filter((shot) => shot.status === 'completed'), { status: 'completed' }, null), true)
-  assert.equal(canStartComposition(shots.filter((shot) => shot.status === 'completed'), { status: 'failed' }, null), false)
-  assert.equal(canStartComposition(shots.filter((shot) => shot.status === 'completed'), { status: 'completed' }, { status: 'processing' }), false)
+  assert.equal(canStartComposition(shots, null, null, { audioMode: 'native' }), false)
+  assert.equal(canStartComposition(shots.filter((shot) => shot.status === 'completed'), null, null, { audioMode: 'native' }), true)
+  assert.equal(canStartComposition(shots.filter((shot) => shot.status === 'completed'), { status: 'failed' }, null, { audioMode: 'native' }), true)
+  assert.equal(canStartComposition(shots.filter((shot) => shot.status === 'completed'), { status: 'failed' }, null, { audioMode: 'replace' }), false)
+  assert.equal(canStartComposition(shots.filter((shot) => shot.status === 'completed'), { status: 'completed' }, null, { audioMode: 'replace' }), true)
+  assert.equal(canStartComposition(shots.filter((shot) => shot.status === 'completed'), null, { status: 'processing' }, { audioMode: 'native' }), false)
   assert.equal(exportByKind([{ kind: 'mp4', id: 9 }], 'mp4')?.id, 9)
   assert.deepEqual(expandExportArtifacts({
     id: 88,
@@ -116,8 +118,10 @@ test('第四步提交 payload 不接受客户端模型、价格、路径或产�
   assert.match(stepSource, /startDialogue\(versionId,\s*\{\s*quote_hash:\s*dialogueQuote\.value\.quote_hash,\s*idempotency_key/)
   assert.match(stepSource, /dialogueStarting\.value\s*\|\|\s*!versionId/)
   assert.match(stepSource, /dialogueCredits\s*!==\s*null/)
-  assert.match(stepSource, /本次预计扣除\s*\{\{\s*dialogueCredits\s*\}\}\s*积分/)
-  assert.match(stepSource, /composeVersion\(versionId,\s*\{\s*idempotency_key:\s*compositionIdempotencyKey\.value,\s*audio_mode:\s*['"]replace['"]/)
+  assert.match(stepSource, /TTS 回退预计扣除\s*\{\{\s*dialogueCredits\s*\}\}\s*积分/)
+  assert.match(stepSource, /composeVersion\(versionId,\s*\{\s*idempotency_key:\s*compositionIdempotencyKey\.value,\s*audio_mode:\s*['"]native['"]/)
+  assert.match(stepSource, /视频原生语音/)
+  assert.match(stepSource, /audio_mode=native/)
   for (const sourceText of [stepSource, exportSource]) {
     assert.doesNotMatch(sourceText, /model\s*:/)
     assert.doesNotMatch(sourceText, /credits?\s*:/)

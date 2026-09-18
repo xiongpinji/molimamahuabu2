@@ -156,6 +156,60 @@ async function readyEpisode(t) {
   return state;
 }
 
+async function addApprovedNativeShot(state, {
+  index, startMs, endMs, text = null, textField = 'localized_text',
+}) {
+  const videoRelative = write(state, `video/shot-${index}.mp4`, `video-${index}`);
+  const videoId = Number(state.db.prepare(`INSERT INTO video_generations
+    (tenant_id, user_id, local_path, status, duration, aspect_ratio, created_at, updated_at)
+    VALUES ('tenant-a', 'user-a', ?, 'completed', ?, '16:9', ?, ?)`).run(
+    videoRelative, (endMs - startMs) / 1000, NOW, NOW,
+  ).lastInsertRowid);
+  const localized = text == null ? [] : [{
+    segment_id: `line-${index}`, speaker_id: `speaker-${index}`,
+    start_ms: startMs + 100, end_ms: endMs - 100, [textField]: text,
+  }];
+  const artifactSha256 = sha256(`video-${index}`);
+  const validationHash = sha256(`native-${index}-${artifactSha256}`);
+  const draft = {
+    native_audio_validation: {
+      contract: 'redraw-native-audio-validation-v1',
+      artifact_sha256: artifactSha256,
+      validation_hash: validationHash,
+      candidate: { artifact_sha256: artifactSha256 },
+      human_review: { status: 'approved', reviewer_id: 'user-a', reviewed_at: NOW },
+    },
+  };
+  const shotId = Number(state.db.prepare(`INSERT INTO redraw_shots
+    (version_id, tenant_id, user_id, batch_index, shot_index, start_ms, end_ms, duration_ms,
+     source_dialogue_json, localized_dialogue_json, references_json, prompt, compiled_prompt_json,
+     draft_json, preparation_state, preparation_version, preparation_evidence_hash,
+     video_generation_id, status, created_at, updated_at)
+    VALUES (?, 'tenant-a', 'user-a', 1, ?, ?, ?, ?, '[]', ?, '[]', ?, '{}', ?,
+      'reference_ready', 1, ?, ?, 'candidate_ready', ?, ?)`).run(
+    state.versionId, index, startMs, endMs, endMs - startMs, JSON.stringify(localized),
+    `prompt-${index}`, JSON.stringify(draft), sha256(`prep-${index}`), videoId, NOW, NOW,
+  ).lastInsertRowid);
+  const review = await reviewCandidate(state.ctx, {
+    shot_id: shotId,
+    video_generation_id: videoId,
+    decision_source: 'automatic',
+  });
+  state.shotIds.push(shotId);
+  state.videoIds.push(videoId);
+  return { shotId, videoId, review, validationHash };
+}
+
+async function readyNativeEpisode(t) {
+  const state = setup(t);
+  await addApprovedNativeShot(state, {
+    index: 1, startMs: 0, endMs: 1000, text: ' Come with me. ', textField: 'target_text',
+  });
+  await addApprovedNativeShot(state, { index: 2, startMs: 1000, endMs: 2000 });
+  await addApprovedNativeShot(state, { index: 3, startMs: 2000, endMs: 3000, text: 'We are safe.' });
+  return state;
+}
+
 test('release 只锁定当前版本全部批准候选的服务端重算哈希', async (t) => {
   const state = await readyEpisode(t);
   const release = await buildEpisodeRelease(state.ctx, { version_id: state.versionId });
@@ -311,4 +365,20 @@ test('dialogue orchestrator 只处理当前批准候选指针', async (t) => {
     ...state.ctx,
     versionId: state.versionId,
   }), { code: 'REDRAW_DIALOGUE_CANDIDATE_NOT_APPROVED' });
+});
+
+test('release 认 native_audio_validation 且不要求 TTS dialogue 资产', async (t) => {
+  const state = await readyNativeEpisode(t);
+  const release = await buildEpisodeRelease(state.ctx, { version_id: state.versionId });
+  assert.equal(release.shots.length, 3);
+  assert.equal(release.shots.every((shot) => /^[a-f0-9]{64}$/.test(shot.audio_sha256)), true);
+
+  const row = state.db.prepare('SELECT id, draft_json FROM redraw_shots WHERE shot_index = 1').get();
+  const draft = JSON.parse(row.draft_json);
+  draft.native_audio_validation.human_review.status = 'pending';
+  state.db.prepare('UPDATE redraw_shots SET draft_json = ? WHERE id = ?')
+    .run(JSON.stringify(draft), row.id);
+  await assert.rejects(buildEpisodeRelease(state.ctx, { version_id: state.versionId }), {
+    code: 'REDRAW_EPISODE_RELEASE_AUDIO_CONTRACT_INVALID',
+  });
 });

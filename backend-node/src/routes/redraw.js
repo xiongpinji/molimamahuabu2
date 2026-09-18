@@ -2588,9 +2588,9 @@ function compositionStartInput(body) {
   if (!idempotencyKey) {
     throw codedRouteError('REDRAW_COMPOSITION_IDEMPOTENCY_REQUIRED', 'idempotency_key required');
   }
-  const audioMode = String(input.audio_mode || 'replace').trim();
-  if (audioMode !== 'replace') {
-    throw codedRouteError('REDRAW_COMPOSITION_AUDIO_MODE_UNSUPPORTED', 'audio_mode 目前只能为 replace');
+  const audioMode = String(input.audio_mode || 'native').trim();
+  if (audioMode !== 'native' && audioMode !== 'replace') {
+    throw codedRouteError('REDRAW_COMPOSITION_AUDIO_MODE_UNSUPPORTED', 'audio_mode 只能为 native 或 replace');
   }
   return { idempotencyKey, audioMode };
 }

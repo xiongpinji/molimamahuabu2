@@ -207,8 +207,48 @@ function ownedAudio(ctx, shot, segment, index) {
   };
 }
 
+function ownedNativeAudio(shot, localized) {
+  const draft = parseJson(shot.draft_json, {}, 'draft_json');
+  const validation = draft?.native_audio_validation;
+  if (!validation || typeof validation !== 'object') {
+    throw releaseError('REDRAW_EPISODE_RELEASE_AUDIO_CONTRACT_INVALID', 'native dialogue audio validation missing');
+  }
+  if (String(validation.human_review?.status || '') !== 'approved') {
+    throw releaseError('REDRAW_EPISODE_RELEASE_AUDIO_CONTRACT_INVALID', 'dialogue audio is not completed and confirmed');
+  }
+  const validationHash = String(validation.validation_hash || '').toLowerCase();
+  const artifactSha256 = String(
+    validation.artifact_sha256
+    || validation.candidate?.artifact_sha256
+    || '',
+  ).toLowerCase();
+  if (!SHA256.test(validationHash) || !SHA256.test(artifactSha256)) {
+    throw releaseError('REDRAW_EPISODE_RELEASE_AUDIO_CONTRACT_INVALID', 'dialogue audio asset invalid');
+  }
+  const generated = draft?.dialogue_generation?.segments || [];
+  if (Array.isArray(generated) && generated.length) {
+    throw releaseError('REDRAW_EPISODE_RELEASE_AUDIO_CONTRACT_INVALID', 'native path cannot include TTS dialogue segments');
+  }
+  if (!localized.length) {
+    return sha256(stableJson({
+      dialogue_mode: 'native_silent',
+      validation_hash: validationHash,
+      artifact_sha256: artifactSha256,
+    }));
+  }
+  return sha256(stableJson({
+    dialogue_mode: 'native',
+    validation_hash: validationHash,
+    artifact_sha256: artifactSha256,
+    turn_count: localized.length,
+  }));
+}
+
 function audioHash(ctx, shot, localized) {
   const draft = parseJson(shot.draft_json, {}, 'draft_json');
+  if (draft?.native_audio_validation) {
+    return ownedNativeAudio(shot, localized);
+  }
   const generated = draft?.dialogue_generation?.segments || [];
   if (!Array.isArray(generated)) {
     throw releaseError('REDRAW_EPISODE_RELEASE_AUDIO_CONTRACT_INVALID', 'dialogue audio segments invalid');
