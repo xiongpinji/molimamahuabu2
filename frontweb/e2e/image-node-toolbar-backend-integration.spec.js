@@ -800,7 +800,8 @@ test('图片工具栏逐项真实触发 AIHubCC gpt-image-2-3.5k 并完成供应
       await expect(surface.locator('polyline')).toHaveCount(1)
     } else {
       await expect(dialog.getByLabel('图片效果预览')).toBeVisible()
-      await expect(dialog.locator('.preview-caption')).toContainText('原图保持不变')
+      // 即时预览类操作含「原图保持不变」；供应商参考类（如高清增强）改为左右对照提示
+      await expect(dialog.locator('.preview-caption')).toContainText(/原图保持不变|生成参考/)
     }
     await dialog.getByRole('button', {
       name: item.markup ? '标记并修改' : '应用并生成新素材',
