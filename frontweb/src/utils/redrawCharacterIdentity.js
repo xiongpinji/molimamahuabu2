@@ -136,8 +136,11 @@ export function projectRedrawCharacterPlan(plan = {}) {
       },
       voice: {
         assetId: Number.isSafeInteger(Number(voice.asset_id)) ? Number(voice.asset_id) : null,
-        label: normalizeText(voice.language) || '声音待绑定',
+        label: normalizeText(voice.mode) === 'native_video_audio'
+          ? (normalizeText(voice.label) || '视频原生语音')
+          : (normalizeText(voice.language) || normalizeText(voice.label) || '声音待绑定'),
         ready: voice.ready === true,
+        mode: normalizeText(voice.mode) || '',
         shortHash: shortHash(voice.sha256),
       },
       wardrobe: {

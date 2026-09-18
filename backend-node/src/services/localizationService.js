@@ -1,4 +1,5 @@
 const { createHash, randomUUID } = require('node:crypto');
+const { isTtsEnabled } = require('./ttsPolicy');
 
 const SHA256 = /^[a-f0-9]{64}$/;
 const V2_RESULT_FIELDS = new Set([
@@ -807,10 +808,14 @@ function createLocalizationVersion(db, owner, workId, input) {
          localized_description, prompt, version_number, approval_status, status, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, '', 1, 'pending', 'draft', ?, ?)
     `);
+    // TTS 关闭时不落库独立 voice 资产：角色语音由视频模型原生音频承担。
+    const characterAssetKinds = isTtsEnabled(owner?.env || process.env)
+      ? ['character', 'voice']
+      : ['character'];
     for (const character of Array.isArray(persistedSourceFacts.characters) ? persistedSourceFacts.characters : []) {
       const stableId = String(character?.id || '').trim();
       if (!stableId) continue;
-      for (const kind of ['character', 'voice']) {
+      for (const kind of characterAssetKinds) {
         const asset = insertAsset.run(
           versionId,
           String(tenantId),
@@ -873,7 +878,7 @@ function createLocalizationVersion(db, owner, workId, input) {
       const seen = new Set();
       for (const turn of Array.isArray(sourceDialogue) ? sourceDialogue : []) {
         const stableId = String(turn?.speaker_id || '').trim();
-        for (const kind of ['character', 'voice']) {
+        for (const kind of characterAssetKinds) {
           const assetId = assetByStableId.get(`${kind}:${stableId}`);
           if (!assetId || seen.has(`${kind}:${assetId}`)) continue;
           seen.add(`${kind}:${assetId}`);

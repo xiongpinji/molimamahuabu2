@@ -257,6 +257,18 @@ function normalizeEvidence(value = {}) {
 }
 
 function voiceForCharacter(ctx, version, row, sourceKey, missing) {
+  const { isTtsEnabled } = require('./ttsPolicy');
+  // 产品默认停用独立 TTS：角色声线由视频模型原生语音承担，不再阻塞角色计划。
+  if (!isTtsEnabled(ctx.env || process.env)) {
+    return {
+      asset_id: null,
+      language: String(version.locale || ''),
+      sha256: '',
+      ready: true,
+      mode: 'native_video_audio',
+      label: '视频原生语音',
+    };
+  }
   const payload = parseJson(row.source_ref_json, {});
   const evidence = normalizeEvidence(payload.snapshot?.voice_snapshot);
   const voice = {
@@ -264,6 +276,7 @@ function voiceForCharacter(ctx, version, row, sourceKey, missing) {
     language: evidence.locale || '',
     sha256: /^[0-9a-f]{64}$/.test(evidence.audio_sha256) ? evidence.audio_sha256 : '',
     ready: false,
+    mode: 'tts',
   };
   const voiceRow = ctx.db.prepare(`
     SELECT * FROM redraw_assets
