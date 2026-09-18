@@ -1,0 +1,31 @@
+{
+  "contract": "redraw-native-dialogue-canary-es-v1",
+  "note": "es@1 paid canary: AAC track present; NOT promote-ready until Worker ASR + human_review",
+  "archived_at": "2026-09-18T03:48:29.160Z",
+  "status": "completed",
+  "locale_pack": "es@1",
+  "language": "es",
+  "provider_task_id": "tsk_vid_01M2SA1M29VGERAMJMQ1TM3V0Z",
+  "config_id": 16,
+  "model": "seedance-2-fast",
+  "generate_audio": true,
+  "aspect_ratio": "9:16",
+  "resolution": "480p",
+  "duration_s": 5,
+  "dialogue_source": "¿Quién eres tú, hermano?",
+  "artifact": {
+    "path_basename": "canary-output.mp4",
+    "sha256": "dc0cba02aa50009fa9e4e6f174016350ac09c904b5cd4ed4a56de621b6886511",
+    "audio_codec": "aac",
+    "has_audio": true,
+    "has_video": true,
+    "duration": "5.088000"
+  },
+  "verdict": {
+    "ok": true,
+    "reason": "native_audio_track_present",
+    "note": "ffprobe AAC presence only; Worker ASR + human_review still required before promote"
+  },
+  "started_at": "2026-09-18T03:47:58.237Z",
+  "finished_at": "2026-09-18T03:49:35.326Z"
+}
