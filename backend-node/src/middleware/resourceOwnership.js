@@ -84,6 +84,37 @@ function lookup(db, sql, id) {
   return row?.drama_id == null ? null : numericId(row.drama_id);
 }
 
+/** 平台级/无 drama 归属的已审查前缀；新增写路由不得轻易加入。 */
+const OWNERSHIP_SKIP_ROOTS = new Set([
+  'auth',
+  'billing',
+  'admin',
+  'platform-admin',
+  'tenants',
+  'settings',
+  'scene-model-map',
+  'ai-config',
+  'ai-configs',
+  'video-models',
+  'image-models',
+  'audio-models',
+  'canvas',
+  'voice-catalog',
+  'script-analysis',
+  'redraw',
+  'app',
+  'upload',
+  'uploads',
+  'image-tools',
+  'director',
+  'skills',
+  'prompts',
+  'models',
+  'provider-routes',
+  'home-canvas',
+  'free-canvas',
+]);
+
 function resolveDramaId(db, req) {
   const parts = String(req.path || '').split('/').filter(Boolean);
   const root = parts[0];
@@ -185,9 +216,44 @@ function resolveDramaId(db, req) {
     if (first) return { dramaId: lookup(db, 'SELECT drama_id FROM assets WHERE id = ? AND deleted_at IS NULL', first) };
     return relationFromInput(db, body, query);
   }
+  if (root === 'character-library') {
+    if (first) {
+      return {
+        dramaId: lookup(db, 'SELECT drama_id FROM character_libraries WHERE id = ? AND deleted_at IS NULL', first),
+        allowMissingDrama: true,
+      };
+    }
+    return relationFromInput(db, body, query);
+  }
+  if (root === 'scene-library') {
+    if (first) {
+      return {
+        dramaId: lookup(db, 'SELECT drama_id FROM scene_libraries WHERE id = ? AND deleted_at IS NULL', first),
+        allowMissingDrama: true,
+      };
+    }
+    return relationFromInput(db, body, query);
+  }
+  if (root === 'prop-library') {
+    if (first) {
+      return {
+        dramaId: lookup(db, 'SELECT drama_id FROM prop_libraries WHERE id = ? AND deleted_at IS NULL', first),
+        allowMissingDrama: true,
+      };
+    }
+    return relationFromInput(db, body, query);
+  }
   if (root === 'audio') return relationFromInput(db, body, query);
   if (root === 'tasks' && parts[1]) return { taskId: String(parts[1]) };
-  return relationFromInput(db, body, query);
+
+  const fromInput = relationFromInput(db, body, query);
+  if (!fromInput.skip) return fromInput;
+  if (OWNERSHIP_SKIP_ROOTS.has(root)) return { skip: true };
+
+  // 未登记前缀：读请求可放行（由路由自身鉴权）；写请求默认拒绝，避免新路由静默绕过归属。
+  const method = String(req.method || 'GET').toUpperCase();
+  if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return { skip: true };
+  return { dramaId: null };
 }
 
 function relationFromInput(db, body, query) {
@@ -252,7 +318,11 @@ function createResourceOwnershipMiddleware({ db, enabled } = {}) {
       if (!allOwned) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '资源不存在' } });
       return next();
     }
-    if (!resolved.dramaId) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '资源不存在' } });
+    if (!resolved.dramaId) {
+      // 全局库项（drama_id NULL）允许读路径继续，由路由层 gate 写操作。
+      if (resolved.allowMissingDrama) return next();
+      return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '资源不存在' } });
+    }
     const owned = req.tenant?.id
       ? db.prepare('SELECT id FROM dramas WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL').get(resolved.dramaId, req.tenant.id)
       : db.prepare('SELECT id FROM dramas WHERE id = ? AND user_id = ? AND deleted_at IS NULL').get(resolved.dramaId, req.user?.id);
@@ -333,17 +403,26 @@ function createStaticOwnershipMiddleware({ db, enabled, secret, storageRoot } = 
             UNION ALL
             SELECT id, tenant_id, user_id FROM video_generations
               WHERE local_path = ? AND deleted_at IS NULL
+            UNION ALL
+            SELECT a.id, d.tenant_id, d.user_id FROM assets a
+              JOIN dramas d ON d.id = a.drama_id AND d.deleted_at IS NULL
+              WHERE a.local_path = ? AND a.deleted_at IS NULL
           ) g
           WHERE g.user_id = ? OR EXISTS (
             SELECT 1 FROM tenant_members m
             WHERE m.tenant_id = g.tenant_id AND m.user_id = ? AND m.status = 'active'
           )
           LIMIT 1`)
-        .get(relativePath, relativePath, user.id, user.id);
+        .get(relativePath, relativePath, relativePath, user.id, user.id);
     if (!owned) return res.status(404).end();
     req.user = user;
     return next();
   };
 }
 
-module.exports = { createResourceOwnershipMiddleware, createStaticOwnershipMiddleware, resolveDramaId };
+module.exports = {
+  createResourceOwnershipMiddleware,
+  createStaticOwnershipMiddleware,
+  resolveDramaId,
+  OWNERSHIP_SKIP_ROOTS,
+};

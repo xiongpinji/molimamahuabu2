@@ -62,7 +62,8 @@ function createDefaultRedrawLocaleVerifier(options = {}) {
 
 function setupRouter(cfg, db, log, options = {}) {
   const r = express.Router();
-  const publicPlatformEnabled = /^(1|true|yes)$/i.test(String(process.env.PUBLIC_PLATFORM_MODE || ''));
+  const { createPlatformCapabilities } = require('../services/platformCapabilityService');
+  const { publicPlatformEnabled } = createPlatformCapabilities();
   const drama = dramaRoutes(db, cfg, log, { billingEnabled: publicPlatformEnabled });
   const task = taskRoutes(db, log);
   const settings = settingsRoutes(db, cfg, log);
@@ -128,7 +129,7 @@ function setupRouter(cfg, db, log, options = {}) {
   const generationRateLimit = createRateLimitMiddleware(db, {
     enabled: publicPlatformEnabled,
     scope: 'generation',
-    limit: 20,
+    limit: require('../services/generationLimits').resolveGenerationSubmitLimitPerMinute(),
     windowMs: 60 * 1000,
   });
   const modelGenerationGuard = createModelGenerationGuard(generationRateLimit);
@@ -239,9 +240,9 @@ function setupRouter(cfg, db, log, options = {}) {
   r.get('/audio-models', aiConfig.listPublicAudioModels);
   
   const uploadService = require('../services/uploadService');
-  const charLibrary = characterLibraryRoutes(db, cfg, log);
-  const sceneLibrary = sceneLibraryRoutes(db, cfg, log);
-  const propLibrary = propLibraryRoutes(db, cfg, log);
+  const charLibrary = characterLibraryRoutes(db, cfg, log, { publicPlatformEnabled });
+  const sceneLibrary = sceneLibraryRoutes(db, cfg, log, { publicPlatformEnabled });
+  const propLibrary = propLibraryRoutes(db, cfg, log, { publicPlatformEnabled });
   const characters = characterRoutes(db, cfg, log, uploadService, { billingEnabled: publicPlatformEnabled });
   const scenes = sceneRoutes(db, log, cfg, { billingEnabled: publicPlatformEnabled });
   const storyboards = storyboardRoutes(db, log, { billingEnabled: publicPlatformEnabled });
@@ -501,6 +502,7 @@ function setupRouter(cfg, db, log, options = {}) {
   r.put('/dramas/:id/episodes', drama.saveEpisodes);
   r.put('/dramas/:id/progress', drama.saveProgress);
   r.put('/dramas/:id/canvas-layout', drama.saveCanvasLayout);
+  r.get('/dramas/:id/canvas-revision', drama.getCanvasRevision);
   r.get('/dramas/:id/props', drama.listProps);
   r.get('/dramas/:id', drama.getDrama);
   r.put('/dramas/:id', drama.updateDrama);
@@ -768,19 +770,19 @@ function setupRouter(cfg, db, log, options = {}) {
   r.get('/settings/language', settings.getLanguage);
   r.put('/settings/language', settings.updateLanguage);
   r.get('/settings/generation', settings.getGenerationSettings);
-  r.put('/settings/generation', settings.updateGenerationSettings);
+  r.put('/settings/generation', requireAdmin, settings.updateGenerationSettings);
 
   // ---------- prompt overrides ----------
   r.get('/settings/prompts', promptOverrides.list);
-  r.put('/settings/prompts/:key', promptOverrides.update);
-  r.delete('/settings/prompts/:key', promptOverrides.reset);
+  r.put('/settings/prompts/:key', requireAdmin, promptOverrides.update);
+  r.delete('/settings/prompts/:key', requireAdmin, promptOverrides.reset);
 
   // ---------- scene model map ----------
   r.get('/scene-model-map', sceneModelMap.list);
-  r.post('/scene-model-map', sceneModelMap.create);
+  r.post('/scene-model-map', requireAdmin, sceneModelMap.create);
   r.get('/scene-model-map/:key', sceneModelMap.get);
-  r.put('/scene-model-map/:key', sceneModelMap.update);
-  r.delete('/scene-model-map/:key', sceneModelMap.delete);
+  r.put('/scene-model-map/:key', requireAdmin, sceneModelMap.update);
+  r.delete('/scene-model-map/:key', requireAdmin, sceneModelMap.delete);
 
   // ---------- app version ----------
   r.use('/app', appVersionRoutes);

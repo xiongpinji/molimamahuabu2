@@ -77,6 +77,7 @@ function productionEnv() {
     PLATFORM_JWT_SECRET: 'j'.repeat(40),
     PLATFORM_ADMIN_TOKEN: 'a'.repeat(40),
     REDRAW_PROVIDER_ASSET_HMAC_SECRET: 'r'.repeat(40),
+    AI_CONFIG_MASTER_KEY: 'k'.repeat(40),
     PLATFORM_BOOTSTRAP_ADMIN_EMAIL: 'admin@example.com',
     SMTP_HOST: 'smtp.example.com',
     SMTP_PORT: '465',
@@ -181,6 +182,7 @@ test('安全生产配置、管理员和模型价格齐全时预检通过且不�
     assert.equal(serialized.includes(env.PLATFORM_JWT_SECRET), false);
     assert.equal(serialized.includes(env.PLATFORM_ADMIN_TOKEN), false);
     assert.equal(serialized.includes(env.REDRAW_PROVIDER_ASSET_HMAC_SECRET), false);
+    assert.equal(serialized.includes(env.AI_CONFIG_MASTER_KEY), false);
   } finally {
     db.close();
   }
@@ -359,6 +361,19 @@ test('转绘供应商素材必须使用独立 HMAC 密钥且不得复用 JWT 或
     assert.equal(
       readyReport.checks.find((check) => check.id === 'redraw_provider_asset_secret')?.status,
       'pass',
+    );
+
+    const missingMaster = productionEnv();
+    missingMaster.AI_CONFIG_ENCRYPT_AT_REST = '1';
+    delete missingMaster.AI_CONFIG_MASTER_KEY;
+    const missingMasterReport = runProductionPreflight({
+      config: productionConfig(),
+      env: missingMaster,
+      db,
+    });
+    assert.equal(
+      missingMasterReport.checks.find((check) => check.id === 'ai_config_master_key')?.status,
+      'fail',
     );
   } finally {
     db.close();

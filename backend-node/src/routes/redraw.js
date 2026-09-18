@@ -5099,15 +5099,6 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
     }
   }
 
-  function listStylePresets(_req, res) {
-    const rows = capabilityService.listPublicStylePresets(db, canReadArtifact);
-    return response.success(res, rows.map(mapStylePreset));
-  }
-
-  function listLocales(_req, res) {
-    return response.success(res, capabilityService.listLocaleCapabilities(db, canReadArtifact));
-  }
-
   async function analyzeWork(req, res) {
     const currentOwner = owner(req);
     const work = findOwnedWork(req.params.id, currentOwner);
@@ -5160,7 +5151,7 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
     }
   }
 
-  return {
+  const handlers = {
     uploadSource: upload.single('file'),
     uploadReferenceImage: referenceUpload.single('reference_image'),
     characterReferenceArtifactContext,
@@ -5217,10 +5208,15 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
     updateRedrawAsset,
     generateRedrawAsset,
     reviewRedrawAsset,
-    listStylePresets,
-    listLocales,
     analyzeWork,
   };
+  return require('./redraw/catalog').attachCatalogHandlers(handlers, {
+    db,
+    capabilityService,
+    canReadArtifact,
+    mapStylePreset,
+    response,
+  });
 };
 
 module.exports.workflowPhase = workflowPhase;
