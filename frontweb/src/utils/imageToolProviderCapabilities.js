@@ -20,7 +20,7 @@ export function isAuditedImageToolReferenceConfig(config = {}) {
   return config.serviceType === 'storyboard_image'
     && String(config.provider || '').trim().toLowerCase() === 'aihubcc'
     && String(config.protocol || '').trim().toLowerCase() === 'aihubcc'
-    && String(config.model || '').trim() === 'gpt-image-2-3.5k'
+    && String(config.model || '').trim() === 'gpt-image-2'
 }
 
 export function applyImageToolReferenceCapabilities(settings, config) {

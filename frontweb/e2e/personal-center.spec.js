@@ -5,7 +5,7 @@ const payloads = {
   '/api/v1/billing/account': { available: 860, held: 40, spent: 1100 },
   '/api/v1/tenants': [{ id: 'tenant-1', name: '个人创作空间', slug: 'creator', role: 'owner' }],
   '/api/v1/billing/credit-transactions': [
-    { id: 'tx-1', event_type: 'confirm', amount: -60, model: 'gpt-image-2-3.5k', reason: '图片生成', created_at: '2026-07-30T01:00:00Z' },
+    { id: 'tx-1', event_type: 'confirm', amount: -60, model: 'gpt-image-2', reason: '图片生成', created_at: '2026-07-30T01:00:00Z' },
     { id: 'tx-2', event_type: 'redeem', amount: 1000, reason: '兑换码', created_at: '2026-07-29T01:00:00Z' },
   ],
   '/api/v1/dramas': [{ id: 4, title: '服装角色多视图', metadata: { project_type: 'canvas' }, updated_at: '2026-07-30T02:00:00Z' }],
@@ -116,7 +116,7 @@ test('个人中心展示真实账户数据并可切换核心模块', async ({ pa
   await expect(page.getByText('860', { exact: true }).first()).toBeVisible()
 
   await page.getByRole('button', { name: /积分账单/ }).click()
-  await expect(page.getByText('gpt-image-2-3.5k')).toBeVisible()
+  await expect(page.getByText('gpt-image-2')).toBeVisible()
   await page.getByRole('button', { name: /用量统计/ }).click()
   await expect(page.getByText('1 次 · 60 积分')).toBeVisible()
   await page.getByRole('button', { name: /我的作品/ }).click()

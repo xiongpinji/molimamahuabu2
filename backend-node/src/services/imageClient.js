@@ -888,7 +888,7 @@ function isAuditedReferenceImageAdapter(config, model, provider, protocol) {
     config.service_type === 'storyboard_image'
     && provider === 'aihubcc'
     && protocol === 'aihubcc'
-    && model === 'gpt-image-2-3.5k'
+    && model === 'gpt-image-2'
   );
 }
 
