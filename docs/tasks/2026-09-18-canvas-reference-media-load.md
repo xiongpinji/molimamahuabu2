@@ -44,6 +44,24 @@
 - 正式激活成功：`activation_success` → `canvas-ref-media-load-20260918104014`（审计 `protected-release-20260918T030401Z-2231398.audit`）。
 - 切换后服务 `active`，模型目录接口可达（未登录返回 401）。
 
-## 未上线（需独立门禁升级）
+## 第二轮：独立门禁升级 + HomeCanvasNode 全量修复
 
-完整「等待图片」即时展示依赖修改 `HomeCanvasNode.vue`，必须先作为**独立安全变更**审查并更新共享 `verify-external-model-release.js` 的 reviewed SHA 组，再做二次候选发布。本轮故意不上，避免绕过门禁。
+### 门禁升级（R21，独立安全变更）
+
+- 共享校验器备份后安装 R21：在 `verify-external-model-release.js` 增加
+  `REVIEWED_CANVAS_REF_MEDIA_LOAD_R21_SOURCE_GROUP`，
+  将 `HomeCanvasNode.vue` 允许 SHA 更新为
+  `ac0637aa7caab4b1f39fad7b99005e372ed3a603ed61fdd2bd354d3f0329dec6`，
+  并前置到 imageVip / KM 等相关 reviewed 组。
+- **未绕过门禁**；未改共享激活脚本。
+
+### 二次候选发布
+
+- 从实时 `current`（`canvas-ref-media-load-20260918104014`）克隆。
+- **仅覆盖 1 个源文件**：`frontweb/src/components/dramaCanvas/HomeCanvasNode.vue`（R21 SHA）。
+- 候选内重建 `frontweb`，`audit:canvas-credit-contract --require-build` 通过。
+- `PROTECTED_RELEASE_VERIFY_ONLY=1` 通过：
+  积分合同、编号提及合同、`EXTERNAL_MODEL_RELEASE_OK`、目录过渡无变更（14→14）。
+- 正式激活：`canvas-ref-media-home-20260918111810`。
+- 冒烟：`current` 指向新候选；`HomeCanvasNode.vue` SHA = R21；
+  `https://molimama.vip/` → 200；`/health` → ok；服务 `active`。

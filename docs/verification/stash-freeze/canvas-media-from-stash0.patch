@@ -1,0 +1,386 @@
+﻿diff --git a/frontweb/src/components/dramaCanvas/HomeCanvasNode.vue b/frontweb/src/components/dramaCanvas/HomeCanvasNode.vue
+index 52bb38db..5f4e5878 100644
+--- a/frontweb/src/components/dramaCanvas/HomeCanvasNode.vue
++++ b/frontweb/src/components/dramaCanvas/HomeCanvasNode.vue
+@@ -566,7 +566,11 @@ import {
+   resolveFreeCanvasVideoReferenceInput,
+ } from '@/utils/freeCanvasGeneration'
+ import { videoDurationOptionsForCapability } from '@/utils/videoDuration'
+-import { isProtectedStaticMediaUrl, loadProtectedMediaPreview } from '@/utils/protectedMediaPreview'
++import {
++  isProtectedStaticMediaUrl,
++  loadProtectedMediaPreview,
++  peekProtectedMediaPreview,
++} from '@/utils/protectedMediaPreview'
+ import ImageNodeToolbar from './ImageNodeToolbar.vue'
+ import VideoNodeToolbar from './VideoNodeToolbar.vue'
+ 
+@@ -603,7 +607,6 @@ const mentionEnd = ref(-1)
+ const mentionQuery = ref('')
+ const referencePreviewUrls = ref(new Map())
+ let referencePreviewRun = 0
+-let referenceObjectUrls = new Set()
+ const draft = reactive({
+   title: '',
+   content: '',
+@@ -750,15 +753,18 @@ function referencePreviewUrl(reference) {
+   const url = String(reference?.url || '')
+   if (!url) return ''
+   const key = String(reference?.nodeId || '')
+-  return referencePreviewUrls.value.get(key) || (isProtectedStaticMediaUrl(url) ? '' : url)
++  // 浼樺厛宸茶В鏋愰瑙堬紱鍙椾繚鎶?/static/ 涓庤妭鐐规湰浣撲竴鑷达紝鍏堢洿鎺ュ睍绀猴紝閬垮厤杩炵嚎妲介暱鏃堕棿鍋滃湪銆岀瓑寰呭浘鐗囥€?+  return referencePreviewUrls.value.get(key)
++    || peekProtectedMediaPreview(url)
++    || url
+ }
+ 
+ async function refreshReferencePreviews() {
+   const run = ++referencePreviewRun
+   const next = new Map()
+-  const nextObjectUrls = new Set()
+   const references = [...inputReferences.value, ...referenceCandidates.value]
+   const seen = new Set()
++  const protectedJobs = []
+   for (const reference of references) {
+     const nodeId = String(reference?.nodeId || '')
+     const url = String(reference?.url || '')
+@@ -768,26 +774,34 @@ async function refreshReferencePreviews() {
+       next.set(nodeId, url)
+       continue
+     }
++    const cached = peekProtectedMediaPreview(url)
++    if (cached) {
++      next.set(nodeId, cached)
++      continue
++    }
++    // 鍏堢敤鍚屾簮 /static/ 绔嬪埢鍗犱綅灞曠ず锛堜笌 media-stage 涓€鑷达級锛屽悗鍙板啀骞跺彂鎹?blob
++    next.set(nodeId, url)
++    protectedJobs.push({ nodeId, url })
++  }
++  if (run !== referencePreviewRun) return
++  referencePreviewUrls.value = next
++
++  if (!protectedJobs.length) return
++
++  const settled = await Promise.all(protectedJobs.map(async ({ nodeId, url }) => {
+     try {
+       const preview = await loadProtectedMediaPreview(url)
+-      if (run !== referencePreviewRun) {
+-        if (preview.startsWith('blob:')) URL.revokeObjectURL(preview)
+-        return
+-      }
+-      if (preview) {
+-        next.set(nodeId, preview)
+-        if (preview.startsWith('blob:')) nextObjectUrls.add(preview)
+-      }
++      return { nodeId, preview }
+     } catch (_) {
+-      // 鍙椾繚鎶ょ礌鏉愬姞杞藉け璐ユ椂淇濈暀鍗犱綅绗︼紝涓嶆妸鏈巿鏉冨湴鍧€浜ょ粰濯掍綋鏍囩銆?+      return { nodeId, preview: '' }
+     }
+-  }
++  }))
+   if (run !== referencePreviewRun) return
+-  referenceObjectUrls.forEach((url) => {
+-    if (!nextObjectUrls.has(url)) URL.revokeObjectURL(url)
+-  })
+-  referenceObjectUrls = nextObjectUrls
+-  referencePreviewUrls.value = next
++  for (const { nodeId, preview } of settled) {
++    if (!preview) continue
++    next.set(nodeId, preview)
++  }
++  referencePreviewUrls.value = new Map(next)
+ }
+ 
+ const voiceListId = computed(() => `free-node-voices-${String(props.id || 'node').replace(/[^a-zA-Z0-9_-]/g, '-')}`)
+@@ -1441,8 +1455,6 @@ onBeforeUnmount(() => {
+   if (draftSaveTimer) window.clearTimeout(draftSaveTimer)
+   if (mediaOpenTimer) window.clearTimeout(mediaOpenTimer)
+   referencePreviewRun += 1
+-  referenceObjectUrls.forEach((url) => URL.revokeObjectURL(url))
+-  referenceObjectUrls = new Set()
+ })
+ 
+ watch(() => props.data, () => {
+diff --git a/frontweb/src/composables/useCanvasStoryboardMedia.js b/frontweb/src/composables/useCanvasStoryboardMedia.js
+index 82c23734..8f38d8d9 100644
+--- a/frontweb/src/composables/useCanvasStoryboardMedia.js
++++ b/frontweb/src/composables/useCanvasStoryboardMedia.js
+@@ -4,12 +4,84 @@ import { videosAPI } from '@/api/videos'
+ 
+ /**
+  * 鍔犺浇褰撳墠鍓ч泦鍒嗛暅鐨?images / videos 鍒楄〃锛堜笌 FilmCreate.loadStoryboardMedia 瀵归綈锛?
++ *
++ * 浼樺寲鐐癸細
++ * 1. 缂撳瓨鍘婚噸锛氱浉鍚?storyboard_ids 闆嗗悎鍦?30 绉掑唴澶嶇敤缁撴灉锛岄伩鍏嶉噸澶嶈姹?
++ * 2. 鎵归噺骞跺彂鎺у埗锛氭渶澶氬悓鏃?6 涓垎闀滆姹傦紝闃叉闆穿
++ * 3. 鍛戒腑缂撳瓨鏃剁珛鍗冲睍绀猴紝鍚庡彴闈欓粯鍒锋柊
+  */
+ export function useCanvasStoryboardMedia() {
+   const imagesBySbId = ref({})
+   const videosBySbId = ref({})
+   const mediaLoading = ref(false)
+ 
++  const cacheStore = new Map()
++  const CACHE_TTL = 30 * 1000
++  const MAX_CONCURRENT = 6
++
++  function buildCacheKey(sbIds) {
++    return [...sbIds].sort((a, b) => a - b).join(',')
++  }
++
++  function isCacheValid(entry) {
++    return entry && Date.now() - entry.timestamp < CACHE_TTL
++  }
++
++  async function fetchForStoryboard(sbId) {
++    try {
++      const [imgRes, vidRes] = await Promise.all([
++        imagesAPI.list({ storyboard_id: sbId, page: 1, page_size: 100 }),
++        videosAPI.list({ storyboard_id: sbId, page: 1, page_size: 50 }),
++      ])
++      return {
++        images: imgRes?.items || [],
++        videos: vidRes?.items || [],
++      }
++    } catch (_) {
++      return { images: [], videos: [] }
++    }
++  }
++
++  async function batchLoadWithLimit(items, limit, worker) {
++    const results = new Array(items.length)
++    let cursor = 0
++    async function runner() {
++      while (cursor < items.length) {
++        const idx = cursor++
++        results[idx] = await worker(items[idx])
++      }
++    }
++    const runners = Array.from({ length: Math.min(limit, items.length) }, runner)
++    await Promise.all(runners)
++    return results
++  }
++
++  async function refreshInBackground(sbIds, cacheKey) {
++    try {
++      const fetchedData = await batchLoadWithLimit(sbIds, MAX_CONCURRENT, fetchForStoryboard)
++      const imagesById = {}
++      const videosById = {}
++      sbIds.forEach((sbId, idx) => {
++        imagesById[sbId] = fetchedData[idx].images
++        videosById[sbId] = fetchedData[idx].videos
++      })
++      cacheStore.set(cacheKey, {
++        timestamp: Date.now(),
++        data: { imagesById, videosById },
++      })
++      const nextImages = { ...imagesBySbId.value }
++      const nextVideos = { ...videosBySbId.value }
++      sbIds.forEach((sbId) => {
++        nextImages[sbId] = imagesById[sbId]
++        nextVideos[sbId] = videosById[sbId]
++      })
++      imagesBySbId.value = nextImages
++      videosBySbId.value = nextVideos
++    } catch (_) {
++      // 闈欓粯澶辫触
++    }
++  }
++
+   async function loadForStoryboards(storyboards) {
+     const boards = storyboards || []
+     if (!boards.length) {
+@@ -17,32 +89,52 @@ export function useCanvasStoryboardMedia() {
+       videosBySbId.value = {}
+       return
+     }
++
++    const sbIds = boards.map((sb) => Number(sb.id)).filter(Number.isFinite)
++    const cacheKey = buildCacheKey(sbIds)
++    const cached = cacheStore.get(cacheKey)
++    if (isCacheValid(cached)) {
++      const cachedImages = {}
++      const cachedVideos = {}
++      for (const sbId of sbIds) {
++        cachedImages[sbId] = cached.data.imagesById?.[sbId] || []
++        cachedVideos[sbId] = cached.data.videosById?.[sbId] || []
++      }
++      imagesBySbId.value = cachedImages
++      videosBySbId.value = cachedVideos
++      refreshInBackground(sbIds, cacheKey).catch(() => {})
++      return
++    }
++
+     mediaLoading.value = true
+     try {
+       const nextImages = { ...imagesBySbId.value }
+       const nextVideos = { ...videosBySbId.value }
+-      await Promise.all(
+-        boards.map(async (sb) => {
+-          try {
+-            const [imgRes, vidRes] = await Promise.all([
+-              imagesAPI.list({ storyboard_id: sb.id, page: 1, page_size: 100 }),
+-              videosAPI.list({ storyboard_id: sb.id, page: 1, page_size: 50 }),
+-            ])
+-            nextImages[sb.id] = imgRes?.items || []
+-            nextVideos[sb.id] = vidRes?.items || []
+-          } catch (_) {
+-            nextImages[sb.id] = []
+-            nextVideos[sb.id] = []
+-          }
+-        })
+-      )
++      const fetchedData = await batchLoadWithLimit(sbIds, MAX_CONCURRENT, fetchForStoryboard)
++      const imagesById = {}
++      const videosById = {}
++      sbIds.forEach((sbId, idx) => {
++        const data = fetchedData[idx]
++        nextImages[sbId] = data.images
++        nextVideos[sbId] = data.videos
++        imagesById[sbId] = data.images
++        videosById[sbId] = data.videos
++      })
+       imagesBySbId.value = nextImages
+       videosBySbId.value = nextVideos
++      cacheStore.set(cacheKey, {
++        timestamp: Date.now(),
++        data: { imagesById, videosById },
++      })
+     } finally {
+       mediaLoading.value = false
+     }
+   }
+ 
++  function invalidateCache() {
++    cacheStore.clear()
++  }
++
+   async function loadForDrama(drama, episodeId = null) {
+     const episodes = episodeId
+       ? (drama?.episodes || []).filter((ep) => ep.id === episodeId)
+@@ -57,5 +149,6 @@ export function useCanvasStoryboardMedia() {
+     mediaLoading,
+     loadForStoryboards,
+     loadForDrama,
++    invalidateCache,
+   }
+ }
+diff --git a/frontweb/src/utils/protectedMediaPreview.js b/frontweb/src/utils/protectedMediaPreview.js
+index 92c7aa4d..5d2bd9ab 100644
+--- a/frontweb/src/utils/protectedMediaPreview.js
++++ b/frontweb/src/utils/protectedMediaPreview.js
+@@ -1,24 +1,58 @@
+ import { readSession, readCurrentTenantId } from './authSession.js'
+ 
++const previewCache = new Map()
++const inflight = new Map()
++
+ export function isProtectedStaticMediaUrl(value) {
+   return /^\/static\//i.test(String(value || '').trim())
+ }
+ 
++export function peekProtectedMediaPreview(value) {
++  const url = String(value || '').trim()
++  if (!url) return ''
++  return previewCache.get(url) || ''
++}
++
++export function clearProtectedMediaPreviewCache() {
++  for (const objectUrl of previewCache.values()) {
++    if (String(objectUrl).startsWith('blob:') && globalThis.URL?.revokeObjectURL) {
++      try { globalThis.URL.revokeObjectURL(objectUrl) } catch (_) { /* ignore */ }
++    }
++  }
++  previewCache.clear()
++  inflight.clear()
++}
++
+ export async function loadProtectedMediaPreview(value, options = {}) {
+   const url = String(value || '').trim()
+   if (!url || !isProtectedStaticMediaUrl(url)) return url
+ 
++  const cached = previewCache.get(url)
++  if (cached) return cached
++  if (inflight.has(url)) return inflight.get(url)
++
+   const session = options.session === undefined ? readSession() : options.session
+   const tenantId = options.tenantId === undefined ? readCurrentTenantId() : options.tenantId
+   const fetchImpl = options.fetchImpl || globalThis.fetch
+   const urlApi = options.urlApi || globalThis.URL
+   if (typeof fetchImpl !== 'function' || !urlApi?.createObjectURL) return ''
+ 
+-  const headers = {}
+-  if (session?.token) headers.Authorization = `Bearer ${session.token}`
+-  if (tenantId) headers['X-Tenant-Id'] = String(tenantId)
+-  const response = await fetchImpl(url, { headers, credentials: 'same-origin' })
+-  if (!response?.ok) throw new Error(`鍙傝€冪礌鏉愬姞杞藉け璐?(${response?.status || 0})`)
+-  const blob = await response.blob()
+-  return urlApi.createObjectURL(blob)
++  const task = (async () => {
++    const headers = {}
++    if (session?.token) headers.Authorization = `Bearer ${session.token}`
++    if (tenantId) headers['X-Tenant-Id'] = String(tenantId)
++    const response = await fetchImpl(url, { headers, credentials: 'same-origin' })
++    if (!response?.ok) throw new Error(`鍙傝€冪礌鏉愬姞杞藉け璐?(${response?.status || 0})`)
++    const blob = await response.blob()
++    const objectUrl = urlApi.createObjectURL(blob)
++    previewCache.set(url, objectUrl)
++    return objectUrl
++  })()
++
++  inflight.set(url, task)
++  try {
++    return await task
++  } finally {
++    inflight.delete(url)
++  }
+ }
+diff --git a/frontweb/test/protectedMediaPreview.test.js b/frontweb/test/protectedMediaPreview.test.js
+index 3dfe996c..2029aa5f 100644
+--- a/frontweb/test/protectedMediaPreview.test.js
++++ b/frontweb/test/protectedMediaPreview.test.js
+@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
+ import {
+   isProtectedStaticMediaUrl,
+   loadProtectedMediaPreview,
++  peekProtectedMediaPreview,
++  clearProtectedMediaPreviewCache,
+ } from '../src/utils/protectedMediaPreview.js'
+ 
+ test('protected static media is identified without treating public URLs as protected', () => {
+@@ -31,3 +33,35 @@ test('protected static media preview fetches with the session and tenant headers
+   assert.equal(request.options.headers.Authorization, 'Bearer session-token')
+   assert.equal(request.options.headers['X-Tenant-Id'], 'tenant-60')
+ })
++
++test('protected static media preview reuses cache and dedupes in-flight fetches', async () => {
++  clearProtectedMediaPreviewCache()
++  let fetches = 0
++  const fetchImpl = async () => {
++    fetches += 1
++    await new Promise((resolve) => setTimeout(resolve, 5))
++    return {
++      ok: true,
++      blob: async () => new Blob([`bytes-${fetches}`], { type: 'image/png' }),
++    }
++  }
++  const urlApi = {
++    createObjectURL: (blob) => `blob:cached-${blob.size}`,
++  }
++  const path = '/static/projects/60/images/cache-me.png'
++  const [a, b] = await Promise.all([
++    loadProtectedMediaPreview(path, { session: { token: 't' }, tenantId: '1', fetchImpl, urlApi }),
++    loadProtectedMediaPreview(path, { session: { token: 't' }, tenantId: '1', fetchImpl, urlApi }),
++  ])
++  assert.equal(a, b)
++  assert.equal(fetches, 1)
++  assert.equal(peekProtectedMediaPreview(path), a)
++  const c = await loadProtectedMediaPreview(path, {
++    session: { token: 't' },
++    tenantId: '1',
++    fetchImpl: async () => { throw new Error('should not fetch again') },
++    urlApi,
++  })
++  assert.equal(c, a)
++  clearProtectedMediaPreviewCache()
++})

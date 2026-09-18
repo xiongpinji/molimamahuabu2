@@ -1,0 +1,292 @@
+﻿diff --git a/frontweb/src/api/auth.js b/frontweb/src/api/auth.js
+index 4b85abd7..7d220000 100644
+--- a/frontweb/src/api/auth.js
++++ b/frontweb/src/api/auth.js
+@@ -1,7 +1,7 @@
+ import request from '@/utils/request'
+ 
+-export function login(data) {
+-  return request.post('/auth/login', data)
++export function login(data, config = {}) {
++  return request.post('/auth/login', data, config)
+ }
+ 
+ export function logout() {
+@@ -12,16 +12,16 @@ export function requestRegistrationCode(data) {
+   return request.post('/auth/register/code', data)
+ }
+ 
+-export function register(data) {
+-  return request.post('/auth/register', data)
++export function register(data, config = {}) {
++  return request.post('/auth/register', data, config)
+ }
+ 
+ export function requestPasswordResetCode(data) {
+   return request.post('/auth/password/code', data)
+ }
+ 
+-export function resetPassword(data) {
+-  return request.post('/auth/password/reset', data)
++export function resetPassword(data, config = {}) {
++  return request.post('/auth/password/reset', data, config)
+ }
+ 
+ export function changePassword(data) {
+diff --git a/frontweb/src/components/dramaCanvas/CanvasGenerationOptions.vue b/frontweb/src/components/dramaCanvas/CanvasGenerationOptions.vue
+index 9c61ef8b..f92fc790 100644
+--- a/frontweb/src/components/dramaCanvas/CanvasGenerationOptions.vue
++++ b/frontweb/src/components/dramaCanvas/CanvasGenerationOptions.vue
+@@ -1,13 +1,14 @@
+ <template>
+   <div class="generation-options" :class="{ compact }">
+     <span class="options-label">{{ label }}</span>
++    <span v-if="showCatalogEmptyHint" class="catalog-empty-hint">鏆傛棤鍙敤妯″瀷锛岃鍏堝湪 AI 閰嶇疆涓坊鍔犲苟瀹屾垚鐪熷疄鐢熸垚楠岃瘉</span>
+     <el-select
+       v-if="mode === 'image' || mode === 'both'"
+       :model-value="options.imageModel || ''"
+       size="small"
+       class="model-select"
+       :disabled="!imageModelOptions.length"
+-      :placeholder="imageModelOptions.length ? '鍥惧儚妯″瀷' : '骞冲彴榛樿'"
++      :placeholder="imageModelOptions.length ? '鍥惧儚妯″瀷' : '鏆傛棤鍙敤妯″瀷'"
+       @change="update('imageModel', $event)"
+     >
+       <el-option label="璺熼殢椤圭洰榛樿" value="" />
+@@ -19,7 +20,7 @@
+       size="small"
+       class="model-select"
+       :disabled="!videoModelOptions.length"
+-      :placeholder="videoModelOptions.length ? '瑙嗛妯″瀷' : '骞冲彴榛樿'"
++      :placeholder="videoModelOptions.length ? '瑙嗛妯″瀷' : '鏆傛棤鍙敤妯″瀷'"
+       @change="onVideoModelChange"
+     >
+       <el-option label="璺熼殢椤圭洰榛樿" value="" />
+@@ -31,7 +32,7 @@
+       size="small"
+       class="model-select"
+       :disabled="!audioModelOptions.length"
+-      :placeholder="audioModelOptions.length ? '闊抽妯″瀷' : '骞冲彴榛樿'"
++      :placeholder="audioModelOptions.length ? '闊抽妯″瀷' : '鏆傛棤鍙敤妯″瀷'"
+       @change="update('audioModel', $event)"
+     >
+       <el-option label="璺熼殢椤圭洰榛樿" value="" />
+@@ -130,6 +131,14 @@ const videoResolutionOptions = computed(() => {
+ const videoDurationOptions = computed(() => videoDurationOptionsForCapability(
+   selectedVideoModel.value?.capabilities,
+ ))
++const showCatalogEmptyHint = computed(() => {
++  if (props.mode === 'image') return imageModelOptions.value.length === 0
++  if (props.mode === 'video') return videoModelOptions.value.length === 0
++  if (props.mode === 'audio') return audioModelOptions.value.length === 0
++  return imageModelOptions.value.length === 0
++    && videoModelOptions.value.length === 0
++    && audioModelOptions.value.length === 0
++})
+ 
+ function updatePatch(patch) {
+   if (props.modelValue) {
+@@ -173,6 +182,13 @@ onMounted(async () => {
+   flex-wrap: wrap;
+   gap: 6px;
+ }
++.catalog-empty-hint {
++  color: var(--el-color-warning);
++  font-size: 12px;
++  line-height: 1.4;
++  white-space: normal;
++  max-width: 280px;
++}
+ .options-label {
+   color: #a1a1aa;
+   font-size: 11px;
+diff --git a/frontweb/src/utils/authGuard.js b/frontweb/src/utils/authGuard.js
+index 490272f9..619c80b3 100644
+--- a/frontweb/src/utils/authGuard.js
++++ b/frontweb/src/utils/authGuard.js
+@@ -1,6 +1,7 @@
+ export function authRedirect(publicMode, to, session) {
+   if (to.name === 'login' || to.meta?.public) return null
+-  if (!publicMode && !to.meta?.requiresAuth) return null
++  // 鏈湴鍗曠敤鎴锋ā寮忓悗绔笉閴存潈锛涘墠绔篃涓嶅啀鍥?requiresAuth 鎶婁汉鎷﹀埌鏃犳硶鐧诲綍鐨勯〉闈?
++  if (!publicMode) return null
+   if (!session?.token) {
+     return { name: 'login', query: { redirect: to.fullPath || to.path || '/' } }
+   }
+diff --git a/frontweb/src/utils/request.js b/frontweb/src/utils/request.js
+index 620a55a4..d36858b5 100644
+--- a/frontweb/src/utils/request.js
++++ b/frontweb/src/utils/request.js
+@@ -1,12 +1,12 @@
+ import axios from 'axios'
+ import { ElMessage } from 'element-plus'
+-import {
++import {
+   applyAdminHeader,
+   applyAuthHeader,
+   applyTenantHeader,
+   clearSessionOnUnauthorized,
+-} from './authSession'
+-import { apiErrorMessage, userHttpErrorMessage } from './httpError'
++} from './authSession'
++import { apiErrorMessage, userHttpErrorMessage } from './httpError'
+ 
+ const request = axios.create({
+   baseURL: '/api/v1',
+@@ -14,7 +14,7 @@ const request = axios.create({
+   headers: { 'Content-Type': 'application/json' }
+ })
+ 
+-request.interceptors.request.use((config) => applyAdminHeader(applyTenantHeader(applyAuthHeader(config))))
++request.interceptors.request.use((config) => applyAdminHeader(applyTenantHeader(applyAuthHeader(config))))
+ 
+ request.interceptors.response.use(
+   (response) => {
+@@ -45,10 +45,13 @@ request.interceptors.response.use(
+     }
+     // 鎻愬彇鍚庣瀹為檯閿欒淇℃伅锛堜紭鍏?API 杩斿洖鐨?message锛岃€岄潪 axios 閫氱敤 "status code 500"锛?
+     const backendMsg = apiErrorMessage(error.response?.data)
+-    const msg = userHttpErrorMessage(error)
+-    if (!unauthorized && !error.config?.silentError) ElMessage.error(msg)
+-    // 灏嗙湡瀹為敊璇俊鎭啓鍥?message锛屼娇缁勪欢 catch 鍧楀彲鐩存帴鐢?e.message 鑾峰彇鍙鍐呭
+-    if (backendMsg || msg !== error.message) error.message = msg
++    const msg = userHttpErrorMessage(error)
++    // 浠呴潤榛樷€滅櫥褰曟€佸け鏁堚€濈殑 401锛岄伩鍏嶄笌璺宠浆鐧诲綍椤甸噸澶嶅脊绐楋紱
++    // 鐧诲綍澶辫触锛圛NVALID_CREDENTIALS锛夌瓑涓氬姟 401 浠嶉渶鎻愮ず銆?
++    const suppressUnauthorizedToast = unauthorized && errorCode === 'UNAUTHORIZED'
++    if (!suppressUnauthorizedToast && !error.config?.silentError) ElMessage.error(msg)
++    // 灏嗙湡瀹為敊璇俊鎭啓鍥?message锛屼娇缁勪欢 catch 鍧楀彲鐩存帴鐢?e.message 鑾峰彇鍙鍐呭
++    if (backendMsg || msg !== error.message) error.message = msg
+     return Promise.reject(error)
+   }
+ )
+diff --git a/frontweb/src/views/Login.vue b/frontweb/src/views/Login.vue
+index fc68eafc..b8ac63f5 100644
+--- a/frontweb/src/views/Login.vue
++++ b/frontweb/src/views/Login.vue
+@@ -161,7 +161,7 @@ function validateNewPassword() {
+ }
+ 
+ async function submit() {
+-  if (loading.value) return
++  if (loading.value) return
+   if (!email.value || !password.value) return ElMessage.warning('璇疯緭鍏ラ偖绠卞拰瀵嗙爜')
+   if (mode.value !== 'login' && !validateNewPassword()) return
+   loading.value = true
+@@ -171,7 +171,7 @@ async function submit() {
+         email: email.value,
+         verification_code: verificationCode.value,
+         new_password: password.value,
+-      })
++      }, { silentError: true })
+       switchMode('login')
+       ElMessage.success('瀵嗙爜宸查噸缃紝璇蜂娇鐢ㄦ柊瀵嗙爜鐧诲綍')
+       return
+@@ -181,14 +181,16 @@ async function submit() {
+         email: email.value,
+         password: password.value,
+         verification_code: verificationCode.value,
+-      })
+-      : await login({ email: email.value, password: password.value })
++      }, { silentError: true })
++      : await login({ email: email.value, password: password.value }, { silentError: true })
+     saveSession(session)
+     const redirect = typeof route.query.redirect === 'string' && route.query.redirect.startsWith('/')
+       ? route.query.redirect
+       : '/'
+     await router.replace(redirect)
+     ElMessage.success(mode.value === 'register' ? '娉ㄥ唽鎴愬姛' : '鐧诲綍鎴愬姛')
++  } catch (error) {
++    ElMessage.error(error?.message || '鎿嶄綔澶辫触锛岃绋嶅悗閲嶈瘯')
+   } finally {
+     loading.value = false
+   }
+diff --git a/frontweb/test/authGuard.test.js b/frontweb/test/authGuard.test.js
+index f2d46daf..d61eba1f 100644
+--- a/frontweb/test/authGuard.test.js
++++ b/frontweb/test/authGuard.test.js
+@@ -3,8 +3,14 @@ import assert from 'node:assert/strict'
+ 
+ import { authRedirect } from '../src/utils/authGuard.js'
+ 
+-test('鏈湴妯″紡涓嶅己鍒剁櫥褰?, () => {
++test('鏈湴妯″紡涓嶅己鍒剁櫥褰曪紙鍚?requiresAuth 椤甸潰锛?, () => {
+   assert.equal(authRedirect(false, { path: '/film/1' }, null), null)
++  assert.equal(authRedirect(false, {
++    name: 'canvas-projects',
++    path: '/canvas',
++    fullPath: '/canvas',
++    meta: { requiresAuth: true },
++  }, null), null)
+ });
+ 
+ test('鍏紑妯″紡鍖垮悕璁块棶涓氬姟椤佃烦杞櫥褰曞苟淇濈暀鍘熷湴鍧€', () => {
+@@ -17,18 +23,6 @@ test('鍏紑棣栭〉鍏佽鍖垮悕璁块棶', () => {
+   assert.equal(authRedirect(true, { name: 'list', path: '/', meta: { public: true } }, null), null)
+ })
+ 
+-test('闇€鐧诲綍椤甸潰涓嶄緷璧栨瀯寤烘ā寮忎篃浼氳烦杞櫥褰?, () => {
+-  assert.deepEqual(
+-    authRedirect(false, {
+-      name: 'canvas-projects',
+-      path: '/canvas',
+-      fullPath: '/canvas',
+-      meta: { requiresAuth: true },
+-    }, null),
+-    { name: 'login', query: { redirect: '/canvas' } },
+-  )
+-})
+-
+ test('鐧诲綍椤靛拰宸茬櫥褰曡闂笉閲嶅璺宠浆', () => {
+   assert.equal(authRedirect(true, { name: 'login', path: '/login' }, null), null)
+   assert.equal(authRedirect(true, { path: '/film/1' }, { token: 'token-1' }), null)
+diff --git a/frontweb/test/requestSilentError.test.js b/frontweb/test/requestSilentError.test.js
+index 5a646f93..0ca43201 100644
+--- a/frontweb/test/requestSilentError.test.js
++++ b/frontweb/test/requestSilentError.test.js
+@@ -3,27 +3,30 @@ import assert from 'node:assert/strict'
+ import { readFileSync } from 'node:fs'
+ import { fileURLToPath } from 'node:url'
+ 
+-const requestSource = readFileSync(fileURLToPath(new URL('../src/utils/request.js', import.meta.url)), 'utf8')
+-const dramaApiSource = readFileSync(fileURLToPath(new URL('../src/api/drama.js', import.meta.url)), 'utf8')
+-const assetsApiSource = readFileSync(fileURLToPath(new URL('../src/api/assets.js', import.meta.url)), 'utf8')
++const requestSource = readFileSync(fileURLToPath(new URL('../src/utils/request.js', import.meta.url)), 'utf8')
++const dramaApiSource = readFileSync(fileURLToPath(new URL('../src/api/drama.js', import.meta.url)), 'utf8')
++const assetsApiSource = readFileSync(fileURLToPath(new URL('../src/api/assets.js', import.meta.url)), 'utf8')
+ const charactersApiSource = readFileSync(fileURLToPath(new URL('../src/api/characters.js', import.meta.url)), 'utf8')
+ const useCharactersSource = readFileSync(fileURLToPath(new URL('../src/composables/filmCreate/useCharacters.js', import.meta.url)), 'utf8')
+ 
+ test('璇锋眰灞傛敮鎸侀潤榛橀敊璇紝渚涚礌鏉愬簱澶氭潵婧愭帰娴嬮伩鍏嶅叏灞€閿欒寮圭獥', () => {
+-  assert.match(requestSource, /if \(!unauthorized && !error\.config\?\.silentError\) ElMessage\.error\(msg\)/)
++  assert.match(requestSource, /suppressUnauthorizedToast/)
++  assert.match(requestSource, /if \(!suppressUnauthorizedToast && !error\.config\?\.silentError\) ElMessage\.error\(msg\)/)
+ })
+ 
+-test('鏈櫥褰曞搷搴斾笉浣滀负鏅€氶敊璇噸澶嶅脊绐?, () => {
+-  assert.match(requestSource, /const unauthorized = Number\(error\.response\?\.status\) === 401/)
+-  assert.match(requestSource, /if \(!unauthorized && !error\.config\?\.silentError\) ElMessage\.error\(msg\)/)
+-})
+-
+-test('鐢诲竷淇濆瓨 API 鍙€忎紶闈欓粯閿欒閰嶇疆涓斾笉闈欓粯鏈櫥褰曞鐞?, () => {
+-  assert.match(dramaApiSource, /saveCanvasLayout\(id, canvasLayout, workflowGroups, baseCanvasRevision, config = \{\}\)/)
+-  assert.match(dramaApiSource, /request\.put\(`\/dramas\/\$\{id\}\/canvas-layout`, body, config\)/)
+-  assert.match(requestSource, /const unauthorized = Number\(error\.response\?\.status\) === 401/)
+-  assert.match(requestSource, /if \(!unauthorized && !error\.config\?\.silentError\) ElMessage\.error\(msg\)/)
+-})
++test('浠呴潤榛樼櫥褰曟€佸け鏁堢殑 401锛岀櫥褰曞け璐ヤ粛浼氬脊绐?, () => {
++  assert.match(requestSource, /const unauthorized = Number\(error\.response\?\.status\) === 401/)
++  assert.match(requestSource, /errorCode === 'UNAUTHORIZED'/)
++  assert.match(requestSource, /suppressUnauthorizedToast/)
++  assert.match(requestSource, /if \(!suppressUnauthorizedToast && !error\.config\?\.silentError\) ElMessage\.error\(msg\)/)
++})
++
++test('鐢诲竷淇濆瓨 API 鍙€忎紶闈欓粯閿欒閰嶇疆涓斾笉闈欓粯鏈櫥褰曞鐞?, () => {
++  assert.match(dramaApiSource, /saveCanvasLayout\(id, canvasLayout, workflowGroups, baseCanvasRevision, config = \{\}\)/)
++  assert.match(dramaApiSource, /request\.put\(`\/dramas\/\$\{id\}\/canvas-layout`, body, config\)/)
++  assert.match(requestSource, /const unauthorized = Number\(error\.response\?\.status\) === 401/)
++  assert.match(requestSource, /if \(!suppressUnauthorizedToast && !error\.config\?\.silentError\) ElMessage\.error\(msg\)/)
++})
+ 
+ test('绱犳潗鍜岄煶鑹?API 鍒楄〃鏂规硶鍙€忎紶璇锋眰閰嶇疆', () => {
+   assert.match(assetsApiSource, /list\(params, config = \{\}\)/)
