@@ -534,18 +534,14 @@ test('v2 物化仅保存源片事实白名单并以 source_character_key 幂等�
   assert.deepEqual(JSON.parse(row.style_snapshot_json), {});
 
   const assets = db.prepare('SELECT kind, source_ref_json, localized_name FROM redraw_assets WHERE version_id = ? ORDER BY id').all(draft.id);
-  assert.equal(assets.length, 4);
-  assert.deepEqual(assets.map((asset) => asset.kind), ['character', 'voice', 'character', 'voice']);
+  assert.equal(assets.length, 2);
+  assert.deepEqual(assets.map((asset) => asset.kind), ['character', 'character']);
   assert.deepEqual(JSON.parse(assets[0].source_ref_json).source_ref, {
     kind: 'character',
     source_character_key: 'c1',
   });
-  assert.deepEqual(JSON.parse(assets[1].source_ref_json).source_ref, {
-    kind: 'voice',
-    source_character_key: 'c1',
-  });
   assert.equal(assets[0].localized_name, 'Mateo');
-  assert.equal(assets[2].localized_name, 'Diego');
+  assert.equal(assets[1].localized_name, 'Diego');
 
   const replay = materializeLocalizationDraft(db, { tenantId: 'tenant-a', userId: 'user-a' }, draft.id, {
     workId: 1,
@@ -557,7 +553,7 @@ test('v2 物化仅保存源片事实白名单并以 source_character_key 幂等�
     ...normalized,
   });
   assert.equal(replay.id, draft.id);
-  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_assets WHERE version_id = ?').get(draft.id).count, 4);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_assets WHERE version_id = ?').get(draft.id).count, 2);
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_shots WHERE version_id = ?').get(draft.id).count, 2);
   db.close();
 });
@@ -622,8 +618,8 @@ test('创建本地化版本原子物化目标分镜与同版本资产引用且�
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM redraw_versions').get().count, 2);
 
   const assets = db.prepare('SELECT * FROM redraw_assets WHERE version_id = ? ORDER BY id').all(result.id);
-  assert.equal(assets.length, 6);
-  assert.deepEqual(assets.map((asset) => asset.kind), ['character', 'voice', 'character', 'voice', 'scene', 'prop']);
+  assert.equal(assets.length, 4);
+  assert.deepEqual(assets.map((asset) => asset.kind), ['character', 'character', 'scene', 'prop']);
   assert.equal(assets.every((asset) => asset.status === 'draft' && asset.approval_status === 'pending'), true);
   assert.deepEqual(JSON.parse(assets[0].source_ref_json).source_ref, {
     kind: 'character',
@@ -631,7 +627,7 @@ test('创建本地化版本原子物化目标分镜与同版本资产引用且�
     stable_id: 'c1',
   });
   assert.equal(assets[0].localized_name, 'Maya');
-  assert.equal(assets[5].localized_name, 'old phone');
+  assert.equal(assets[3].localized_name, 'old phone');
 
   const targetShots = db.prepare('SELECT * FROM redraw_shots WHERE version_id = ? ORDER BY shot_index').all(result.id);
   assert.equal(targetShots.length, 2);
@@ -657,11 +653,10 @@ test('创建本地化版本原子物化目标分镜与同版本资产引用且�
     return [`${sourceRef.kind}:${sourceRef.stable_id}`, asset];
   }));
   const firstReferences = JSON.parse(targetShots[0].references_json);
-  assert.deepEqual(firstReferences.map((reference) => reference.kind), ['character', 'voice', 'scene', 'prop']);
+  assert.deepEqual(firstReferences.map((reference) => reference.kind), ['character', 'scene', 'prop']);
   assert.equal(firstReferences.every((reference) => Number.isInteger(reference.asset_id)), true);
   assert.deepEqual(firstReferences.map((reference) => reference.asset_id), [
     assetByStableId.get('character:c1').id,
-    assetByStableId.get('voice:c1').id,
     assetByStableId.get('scene:s1').id,
     assetByStableId.get('prop:p1').id,
   ]);
@@ -811,12 +806,28 @@ test('物化草稿在全部分镜、四类资产和引用写入成功后推进�
       { kind: 'character', count: 2 },
       { kind: 'prop', count: 1 },
       { kind: 'scene', count: 1 },
-      { kind: 'voice', count: 2 },
     ],
   );
   const firstShot = db.prepare('SELECT references_json FROM redraw_shots WHERE version_id = ? AND shot_index = 1').get(draft.id);
-  assert.deepEqual(JSON.parse(firstShot.references_json).map((reference) => reference.kind), ['character', 'voice', 'scene', 'prop']);
+  assert.deepEqual(JSON.parse(firstShot.references_json).map((reference) => reference.kind), ['character', 'scene', 'prop']);
   db.close();
+});
+
+test('TTS_ENABLED=1 时物化仍创建 voice 资产与分镜引用以供应急恢复', () => {
+  const previous = process.env.TTS_ENABLED;
+  process.env.TTS_ENABLED = '1';
+  const db = createDb();
+  try {
+    const result = createLocalizationVersion(db, { tenantId: 'tenant-a', userId: 'user-a' }, 1, localizationPayload());
+    const assets = db.prepare('SELECT kind FROM redraw_assets WHERE version_id = ? ORDER BY id').all(result.id);
+    assert.deepEqual(assets.map((asset) => asset.kind), ['character', 'voice', 'character', 'voice', 'scene', 'prop']);
+    const firstShot = db.prepare('SELECT references_json FROM redraw_shots WHERE version_id = ? AND shot_index = 1').get(result.id);
+    assert.deepEqual(JSON.parse(firstShot.references_json).map((reference) => reference.kind), ['character', 'voice', 'scene', 'prop']);
+  } finally {
+    if (previous === undefined) delete process.env.TTS_ENABLED;
+    else process.env.TTS_ENABLED = previous;
+    db.close();
+  }
 });
 
 test('物化草稿失败时回滚且草稿保持隐藏', () => {

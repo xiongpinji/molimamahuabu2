@@ -269,6 +269,8 @@ function evaluateGenerationGate(db, versionId, owner = {}, options = {}) {
   const nameMap = referenceBundleRequired && isPlainObject(parseJson(version.name_map_json, null))
     ? parseJson(version.name_map_json, null)
     : {};
+  const { isTtsEnabled } = require('./ttsPolicy');
+  const ttsOn = isTtsEnabled();
   for (const shot of shots) {
     const shotId = shot.shot_id || Number(shot.id) || Number(shot.shot_index);
     const bundle = referenceBundleRequired ? currentV2Bundle(shot, version) : null;
@@ -287,6 +289,8 @@ function evaluateGenerationGate(db, versionId, owner = {}, options = {}) {
       });
     }
     for (const reference of readShotReferences(shot)) {
+      // 独立 TTS 停用后，历史分镜上的 voice 引用不再阻塞生成门禁。
+      if (reference.kind === 'voice' && !ttsOn) continue;
       const row = findAsset(db, version, reference);
       if (!isApprovedAsset(row)) {
         const assetId = row ? Number(row.id) : reference.asset_id;

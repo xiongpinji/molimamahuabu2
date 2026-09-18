@@ -15,6 +15,14 @@ const {
   buildCharacterPlan,
 } = require('../src/services/redrawCharacterPlanService');
 
+// 本文件既有用例覆盖 TTS_ENABLED=1 的音色合同；默认产品路径在单独用例中验证。
+const PREVIOUS_TTS_ENABLED = process.env.TTS_ENABLED;
+process.env.TTS_ENABLED = '1';
+test.after(() => {
+  if (PREVIOUS_TTS_ENABLED === undefined) delete process.env.TTS_ENABLED;
+  else process.env.TTS_ENABLED = PREVIOUS_TTS_ENABLED;
+});
+
 const NOW = '2026-08-22T00:00:00.000Z';
 const TTS_CONFIG_ID = 91;
 const TTS_CONFIG_UPDATED_AT = '2026-08-20T00:00:00.000Z';
@@ -310,6 +318,29 @@ function addLocalVoiceForReview(state, sourceKey, characterName) {
   return { audioAssetId, voiceAssetId, registrationId, evidence, character };
 }
 
+test('TTS 停用时角色计划按视频原生语音放行，不再要求独立音色资产', () => {
+  const previous = process.env.TTS_ENABLED;
+  delete process.env.TTS_ENABLED;
+  const state = setup({ characters: [{ source_character_key: 'char-a', source_name: 'A' }] });
+  try {
+    addCharacter(state, 'char-a', 'Alice Carter');
+    const identity = state.db.prepare(`
+      SELECT id, updated_at FROM redraw_assets
+      WHERE kind = 'character' AND version_id = ? AND localized_name = 'Alice Carter'
+    `).get(state.versionId);
+    const plan = buildCharacterPlan(context(state), state.versionId);
+    assert.equal(plan.characters[0].voice.mode, 'native_video_audio');
+    assert.equal(plan.characters[0].voice.ready, true);
+    assert.equal(plan.characters[0].voice.label, '视频原生语音');
+    assert.equal(plan.missing.some((item) => item.includes(':voice_')), false);
+    assert.ok(identity?.id);
+  } finally {
+    if (previous === undefined) delete process.env.TTS_ENABLED;
+    else process.env.TTS_ENABLED = previous;
+    close(state);
+  }
+});
+
 test('local offline voice review, binding, and character rereview naturally satisfy character-plan', () => {
   const state = setup({ characters: [{ source_character_key: 'char-a', source_name: 'A' }] });
   try {
@@ -420,7 +451,7 @@ test('buildCharacterPlan 返回严格白名单、稳定排序和 plan_hash', () 
         'voice',
         'wardrobe',
       ]);
-      assert.deepEqual(Object.keys(character.voice).sort(), ['asset_id', 'language', 'ready', 'sha256']);
+      assert.deepEqual(Object.keys(character.voice).sort(), ['asset_id', 'language', 'mode', 'ready', 'sha256']);
       assert.deepEqual(Object.keys(character.wardrobe).sort(), ['asset_id', 'label', 'ready', 'sha256']);
       assert.equal(character.adult_status, 'verified_18_plus');
       assert.equal(character.voice.language, 'en-US');

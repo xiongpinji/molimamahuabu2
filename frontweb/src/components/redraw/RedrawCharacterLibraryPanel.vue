@@ -3,7 +3,7 @@
     <header class="panel-heading">
       <div>
         <p class="eyebrow">整集角色库</p>
-        <h3>姓名、身份、声音与服装锁定</h3>
+        <h3>姓名、身份、声线与服装锁定</h3>
       </div>
       <el-tag :type="projected.ready ? 'success' : 'warning'">
         {{ projected.ready ? '角色计划已就绪' : '角色计划待补齐' }}

@@ -17,6 +17,14 @@ const {
   reconcileOrphanedBatches,
 } = require('../src/services/redrawAssetBatchService');
 
+// 本文件覆盖含 voice 的批量合同，默认启用 TTS 应急路径。
+const PREVIOUS_TTS_ENABLED = process.env.TTS_ENABLED;
+process.env.TTS_ENABLED = '1';
+test.after(() => {
+  if (PREVIOUS_TTS_ENABLED === undefined) delete process.env.TTS_ENABLED;
+  else process.env.TTS_ENABLED = PREVIOUS_TTS_ENABLED;
+});
+
 const MODEL_MANIFEST_SHA256 = 'a'.repeat(64);
 const CALIBRATION_MANIFEST_SHA256 = 'b'.repeat(64);
 const AUDIO_SHA256 = 'c'.repeat(64);

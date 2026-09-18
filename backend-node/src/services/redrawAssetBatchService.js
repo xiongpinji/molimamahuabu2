@@ -4,6 +4,7 @@ const taskService = require('./taskService');
 const modelPrice = require('./modelPriceService');
 const aiConfigService = require('./aiConfigService');
 const redrawCapability = require('./redrawCapabilityService');
+const { isTtsEnabled, createTtsDisabledError } = require('./ttsPolicy');
 const {
   createAssetAttempt,
   finalizeAssetAttempt,
@@ -226,6 +227,7 @@ function hasReadableSuccess(ctx, row) {
 
 function selectAssets(db, ctx, assetIds) {
   const { tenantId, userId, versionId } = assertContext({ ...ctx, db });
+  const ttsOn = isTtsEnabled(ctx.env || process.env);
   if (assetIds !== undefined) {
     const ids = [...new Set((Array.isArray(assetIds) ? assetIds : [assetIds]).map((id) => Number(id)))];
     if (!ids.length || ids.some((id) => !Number.isSafeInteger(id) || id <= 0)) {
@@ -238,6 +240,9 @@ function selectAssets(db, ctx, assetIds) {
       ORDER BY CASE kind WHEN 'character' THEN 1 WHEN 'scene' THEN 2 WHEN 'prop' THEN 3 WHEN 'voice' THEN 4 ELSE 9 END, id ASC
     `).all(...ids, versionId, tenantId, userId);
     if (rows.length !== ids.length) throw codedError('REDRAW_ASSET_NOT_FOUND', '转绘资产不存在或无权访问');
+    if (!ttsOn && rows.some((row) => String(row.kind) === 'voice')) {
+      throw createTtsDisabledError();
+    }
     return rows.filter((row) => ['draft', 'failed'].includes(String(row.status)) && !hasReadableSuccess({ ...ctx, db }, row));
   }
   return db.prepare(`
@@ -246,7 +251,10 @@ function selectAssets(db, ctx, assetIds) {
       AND status IN ('draft', 'failed')
     ORDER BY CASE kind WHEN 'character' THEN 1 WHEN 'scene' THEN 2 WHEN 'prop' THEN 3 WHEN 'voice' THEN 4 ELSE 9 END, id ASC
   `).all(versionId, tenantId, userId)
-    .filter((row) => !hasReadableSuccess({ ...ctx, db }, row));
+    .filter((row) => {
+      if (!ttsOn && String(row.kind) === 'voice') return false;
+      return !hasReadableSuccess({ ...ctx, db }, row);
+    });
 }
 
 function rowToItem(row, version, ctx) {
