@@ -6,8 +6,11 @@ const {
   SCRIPT_ANALYSIS_LIMITS,
   buildUserPrompt,
   getProjectInputError,
+  mergeProductionPackages,
   normalizeProductionPackage,
+  runAnalysis,
   runRevision,
+  splitSourceScript,
   validateProductionPackage,
 } = require('../src/services/scriptAnalysisService');
 const aiClient = require('../src/services/aiClient');
@@ -181,11 +184,12 @@ test('V2 automatic revision preserves the selected creative strategy', async (t)
   );
 });
 
-test('buildUserPrompt only adds visual direction contract for the optional enhanced Skill', () => {
+test('buildUserPrompt adds a required visual direction contract for the selected enhanced Skill', () => {
   const skill = resolveScriptAnalysisSkill('cinematic-visual-director');
   const prompt = buildUserPrompt(project, skill);
   assert.match(prompt, /"visual_direction"/);
   assert.match(prompt, /"recommendations"/);
+  assert.match(prompt, /必须额外输出以下增强字段/);
   assert.match(prompt, /所有 evidence 必须可回溯到原始剧本/);
 });
 
@@ -363,6 +367,74 @@ test('validateProductionPackage rejects enhanced output without traceable eviden
   );
 });
 
+test('normalizeProductionPackage restores missing visual evidence from the source chunk', () => {
+  const raw = validV2Package();
+  raw.visual_direction.emotional_tone.evidence = [];
+  raw.visual_direction.rhythm.evidence = [];
+  raw.visual_direction.scene_profile[0].evidence = [];
+  raw.visual_direction.visual_motifs[0].evidence = [];
+  raw.visual_direction.recommendations[0].match_reasons = [];
+
+  const normalized = normalizeProductionPackage(raw, project, { schemaVersion: '2.0' });
+  const fallback = [project.source_script.slice(0, 240)];
+
+  assert.deepEqual(normalized.visual_direction.emotional_tone.evidence, fallback);
+  assert.deepEqual(normalized.visual_direction.rhythm.evidence, fallback);
+  assert.deepEqual(normalized.visual_direction.scene_profile[0].evidence, fallback);
+  assert.deepEqual(normalized.visual_direction.visual_motifs[0].evidence, fallback);
+  assert.deepEqual(normalized.visual_direction.recommendations[0].match_reasons, fallback);
+  assert.equal(validateProductionPackage(normalized, {
+    expectedSchemaVersion: '2.0',
+    requireVisualDirection: true,
+    requireProductionDirection: true,
+    expectedStrategyPreset: 'fusion',
+  }), normalized);
+});
+
+test('runAnalysis keeps a reviewable package when the model omits required visual direction', async (t) => {
+  const originalGenerateText = aiClient.generateText;
+  t.after(() => { aiClient.generateText = originalGenerateText; });
+  aiClient.generateText = async () => JSON.stringify(validPackage());
+
+  const result = await runAnalysis({
+    db: {},
+    log: { warn() {}, info() {} },
+    project,
+    skill: resolveScriptAnalysisSkill('cinematic-visual-director'),
+  });
+
+  assert.equal(result.visual_direction.emotional_tone.primary, '待人工复核');
+  assert.deepEqual(result.visual_direction.emotional_tone.evidence, [project.source_script]);
+  assert.equal(result.visual_direction.recommendations.length, 1);
+  assert.match(result.review.issues.join('\n'), /模型未返回 visual_direction/);
+  assert.equal(validateProductionPackage(result, { requireVisualDirection: true }), result);
+});
+
+test('V2 runAnalysis restores omitted visual direction without weakening the production contract', async (t) => {
+  const originalGenerateText = aiClient.generateText;
+  t.after(() => { aiClient.generateText = originalGenerateText; });
+  const generatedPackage = validV2Package();
+  delete generatedPackage.visual_direction;
+  aiClient.generateText = async () => JSON.stringify(generatedPackage);
+
+  const result = await runAnalysis({
+    db: {},
+    log: { warn() {}, info() {} },
+    project,
+    skill: resolveScriptAnalysisSkill('short-drama-production-director'),
+    strategyPreset: 'fusion',
+  });
+
+  assert.equal(result.visual_direction.emotional_tone.primary, '待人工复核');
+  assert.equal(result.creative_strategy.preset, 'fusion');
+  assert.equal(validateProductionPackage(result, {
+    expectedSchemaVersion: '2.0',
+    requireVisualDirection: true,
+    requireProductionDirection: true,
+    expectedStrategyPreset: 'fusion',
+  }), result);
+});
+
 test('validateProductionPackage rejects malformed model output', () => {
   assert.throws(
     () => validateProductionPackage({ characters: [] }),
@@ -388,14 +460,14 @@ test('validateProductionPackage rejects blank video prompts', () => {
   );
 });
 
-test('getProjectInputError enforces script and locked fact limits', () => {
-  assert.match(
-    getProjectInputError({
-      sourceScript: '字'.repeat(SCRIPT_ANALYSIS_LIMITS.sourceScriptChars + 1),
-      lockedFacts: [],
-    }),
-    /原始剧本不能超过/,
+test('getProjectInputError accepts scripts above the former 60000 character limit', () => {
+  assert.equal(
+    getProjectInputError({ sourceScript: '字'.repeat(60001), lockedFacts: [] }),
+    '',
   );
+});
+
+test('getProjectInputError keeps locked fact limits', () => {
   assert.match(
     getProjectInputError({
       sourceScript: '短剧',
@@ -410,6 +482,184 @@ test('getProjectInputError enforces script and locked fact limits', () => {
     }),
     /字符串数组/,
   );
+});
+
+test('splitSourceScript preserves every character and prefers natural boundaries', () => {
+  const source = `${'甲'.repeat(18)}。${'乙'.repeat(18)}。${'丙'.repeat(18)}`;
+  const chunks = splitSourceScript(source, 25);
+
+  assert.equal(chunks.join(''), source);
+  assert.ok(chunks.every((chunk) => chunk.length <= 25));
+  assert.ok(chunks[0].endsWith('。'));
+});
+
+test('default long-script chunks stay below the verified 10000 character budget', () => {
+  const source = '字'.repeat(10001);
+  const chunks = splitSourceScript(source);
+
+  assert.equal(chunks.join(''), source);
+  assert.equal(chunks.length, 2);
+  assert.ok(chunks.every((chunk) => chunk.length <= 10000));
+});
+
+test('runAnalysis processes long-script chunks with bounded concurrency and stable order', async (t) => {
+  const originalGenerateText = aiClient.generateText;
+  t.after(() => { aiClient.generateText = originalGenerateText; });
+  const calls = [];
+  let active = 0;
+  let peakActive = 0;
+
+  aiClient.generateText = async (_db, _log, _type, userPrompt, _systemPrompt, options) => {
+    const callIndex = calls.length + 1;
+    calls.push({ callIndex, userPrompt, options });
+    active += 1;
+    peakActive = Math.max(peakActive, active);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    active -= 1;
+    const value = validPackage();
+    value.episodes[0].title = `分段 ${callIndex}`;
+    return JSON.stringify(value);
+  };
+
+  const result = await runAnalysis({
+    db: {},
+    log: { info() {}, warn() {} },
+    project: { ...project, source_script: '字'.repeat(20001) },
+    skill: resolveScriptAnalysisSkill('short-drama-director'),
+    generationOptions: { idempotency_key: 'reservation-bounded' },
+  });
+
+  assert.equal(calls.length, 3);
+  assert.equal(peakActive, 2);
+  assert.deepEqual(
+    calls.map((call) => call.options.idempotency_key),
+    [
+      'reservation-bounded:chunk:1',
+      'reservation-bounded:chunk:2',
+      'reservation-bounded:chunk:3',
+    ],
+  );
+  assert.deepEqual(result.episodes.map((episode) => episode.title), ['分段 1', '分段 2', '分段 3']);
+});
+
+test('runAnalysis waits for every in-flight chunk before surfacing a batch failure', async (t) => {
+  const originalGenerateText = aiClient.generateText;
+  t.after(() => { aiClient.generateText = originalGenerateText; });
+  let callCount = 0;
+  let siblingFinished = false;
+
+  aiClient.generateText = async () => {
+    callCount += 1;
+    if (callCount === 1) throw new Error('首片失败');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    siblingFinished = true;
+    return JSON.stringify(validPackage());
+  };
+
+  await assert.rejects(
+    runAnalysis({
+      db: {},
+      log: { info() {}, warn() {} },
+      project: { ...project, source_script: '字'.repeat(10001) },
+      skill: resolveScriptAnalysisSkill('short-drama-director'),
+    }),
+    /首片失败/,
+  );
+  assert.equal(callCount, 2);
+  assert.equal(siblingFinished, true);
+});
+
+test('runAnalysis splits long scripts, uses unique route keys and merges validated packages', async (t) => {
+  const originalGenerateText = aiClient.generateText;
+  t.after(() => { aiClient.generateText = originalGenerateText; });
+  const sourceScript = `${'第一场：小满走进雨夜街道。\n'.repeat(5000)}`.slice(0, 60001);
+  assert.equal(sourceScript.length, 60001);
+  const longProject = { ...project, source_script: sourceScript };
+  const calls = [];
+
+  aiClient.generateText = async (_db, _log, _type, userPrompt, _systemPrompt, options) => {
+    calls.push({ userPrompt, options });
+    const value = validPackage();
+    value.normalized_script.target_duration_seconds = 4;
+    value.character_bible = [{ name: '小满', description: `第 ${calls.length} 段中的小满` }];
+    value.episodes[0].title = `分段 ${calls.length}`;
+    value.episodes[0].scenes[0].shots[0].description = `分段 ${calls.length} 的镜头`;
+    return JSON.stringify(value);
+  };
+
+  const result = await runAnalysis({
+    db: {},
+    log: { info() {}, warn() {} },
+    project: longProject,
+    skill: resolveScriptAnalysisSkill('short-drama-director'),
+    generationOptions: { idempotency_key: 'reservation-1' },
+  });
+
+  assert.ok(calls.length > 1);
+  assert.ok(calls.every((call) => !call.userPrompt.includes(sourceScript)));
+  assert.equal(new Set(calls.map((call) => call.options.idempotency_key)).size, calls.length);
+  assert.equal(result.source.source_script, sourceScript);
+  assert.equal(result.character_bible.length, 1);
+  assert.deepEqual(
+    result.episodes.map((episode) => episode.episode_number),
+    Array.from({ length: calls.length }, (_, index) => index + 1),
+  );
+  assert.equal(result.normalized_script.target_duration_seconds, calls.length * 4);
+  assert.equal(validateProductionPackage(result), result);
+});
+
+test('mergeProductionPackages preserves required V2 strategy and visual direction', () => {
+  const first = validV2Package();
+  const second = validV2Package();
+  second.episodes[0].title = '第二段';
+  second.creative_strategy.season_arc = ['查明失踪真相', '兄妹共同面对幕后者'];
+  second.visual_direction.recommendations[0].name = '克制手持纪实';
+
+  const result = mergeProductionPackages([first, second], {
+    project,
+    skill: resolveScriptAnalysisSkill('short-drama-production-director'),
+    strategyPreset: 'fusion',
+  });
+
+  assert.equal(result.schema_version, '2.0');
+  assert.equal(result.creative_strategy.preset, 'fusion');
+  assert.deepEqual(result.creative_strategy.season_arc, [
+    '重逢',
+    '查明失踪真相',
+    '兄妹共同面对幕后者',
+  ]);
+  assert.deepEqual(result.episodes.map((episode) => episode.episode_number), [1, 2]);
+  assert.deepEqual(
+    result.visual_direction.recommendations.map((item) => item.rank),
+    [1, 2],
+  );
+  assert.equal(validateProductionPackage(result, {
+    expectedSchemaVersion: '2.0',
+    requireVisualDirection: true,
+    requireProductionDirection: true,
+    expectedStrategyPreset: 'fusion',
+  }), result);
+});
+
+test('mergeProductionPackages preserves the V1 cinematic visual direction sidecar', () => {
+  const first = { ...validPackage(), visual_direction: validVisualDirection() };
+  const second = { ...validPackage(), visual_direction: validVisualDirection() };
+  second.visual_direction.recommendations[0].name = '克制手持纪实';
+
+  const result = mergeProductionPackages([first, second], {
+    project,
+    skill: resolveScriptAnalysisSkill('cinematic-visual-director'),
+  });
+
+  assert.equal(result.schema_version, '1.0');
+  assert.deepEqual(
+    result.visual_direction.recommendations.map((item) => item.rank),
+    [1, 2],
+  );
+  assert.equal(validateProductionPackage(result, {
+    expectedSchemaVersion: '1.0',
+    requireVisualDirection: true,
+  }), result);
 });
 
 test('validateProductionPackage accepts explicit V2 production director package', () => {

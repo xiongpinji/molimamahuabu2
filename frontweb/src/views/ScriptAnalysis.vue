@@ -116,11 +116,10 @@
             </label>
 
             <label class="field field--script">
-              <span>原剧本（{{ project.source_script.length }}/{{ SCRIPT_CHAR_LIMIT }}）</span>
+              <span>原剧本（{{ project.source_script.length.toLocaleString() }} 字符）</span>
               <textarea
                 v-model="project.source_script"
                 rows="15"
-                :maxlength="SCRIPT_CHAR_LIMIT"
                 placeholder="粘贴完整剧本、小说章节或故事大纲。建议保留人物名、场次和对白。"
               />
             </label>
@@ -718,7 +717,6 @@ const loadingPresets = ref(false)
 const saving = ref(false)
 const running = ref(false)
 const reviewing = ref(false)
-const SCRIPT_CHAR_LIMIT = 60000
 const scriptFileInput = ref(null)
 const versions = ref([])
 const selectedVersion = ref('')
@@ -1257,11 +1255,13 @@ async function runAnalysis() {
     }))
     task.value.id = body?.task_id || body?.task?.id
     if (!task.value.id) throw new Error('服务端未返回任务编号')
+    notifyCreditAccountRefresh()
     startPolling()
   } catch (error) {
     running.value = false
     task.value.status = 'failed'
     task.value.error = error?.message || '提交分析任务失败'
+    notifyCreditAccountRefresh()
     ElMessage.error(task.value.error)
   }
 }
@@ -1278,6 +1278,11 @@ function stopPolling() {
     window.clearInterval(pollingTimer.value)
     pollingTimer.value = null
   }
+}
+
+function notifyCreditAccountRefresh() {
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(new Event('moli:credit-account-refresh'))
 }
 
 async function pollTask() {
@@ -1304,6 +1309,7 @@ async function pollTask() {
       task.value.message = isRevisionTask
         ? '已按审核意见生成新版本，请继续审核。'
         : '制作包已生成，请核对后再用于生产。'
+      notifyCreditAccountRefresh()
       ElMessage.success(isRevisionTask ? '模型已完成自动修订' : '导演分析已完成')
     } else if (['failed', 'error', 'cancelled'].includes(task.value.status)) {
       const isRevisionTask = task.value.type === 'script_analysis_revision'
@@ -1315,6 +1321,7 @@ async function pollTask() {
       task.value.type = isRevisionTask ? 'script_analysis_revision' : task.value.type
       task.value.status = 'failed'
       task.value.error = taskError
+      notifyCreditAccountRefresh()
       ElMessage.error(taskError)
     } else {
       task.value.progress = Math.min(92, Math.max(task.value.progress, 12))
@@ -1349,10 +1356,6 @@ async function importScriptFile(event) {
 
     const text = await file.text()
     if (!text.trim()) throw new Error('文件内容为空')
-    if (text.length > SCRIPT_CHAR_LIMIT) {
-      throw new Error(`剧本内容超过 ${SCRIPT_CHAR_LIMIT.toLocaleString()} 字符限制`)
-    }
-
     project.value.source_script = text
     if (!project.value.title.trim()) {
       project.value.title = file.name.replace(/\.(txt|md|markdown)$/i, '')
