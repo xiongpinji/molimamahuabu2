@@ -121,14 +121,6 @@ const options = computed(() => props.modelValue || ctx?.generationOptions?.value
 const imageModelOptions = computed(() => canvasModelOptions(modelCatalog.value, 'image'))
 const videoModelOptions = computed(() => canvasModelOptions(modelCatalog.value, 'video'))
 const audioModelOptions = computed(() => canvasModelOptions(modelCatalog.value, 'audio'))
-const showCatalogEmptyHint = computed(() => {
-  if (props.mode === 'image') return imageModelOptions.value.length === 0
-  if (props.mode === 'video') return videoModelOptions.value.length === 0
-  if (props.mode === 'audio') return audioModelOptions.value.length === 0
-  return imageModelOptions.value.length === 0
-    && videoModelOptions.value.length === 0
-    && audioModelOptions.value.length === 0
-})
 const selectedVideoModel = computed(() => (
   canvasModelEntry(modelCatalog.value, 'video', options.value.videoModel) || null
 ))
@@ -139,6 +131,14 @@ const videoResolutionOptions = computed(() => {
 const videoDurationOptions = computed(() => videoDurationOptionsForCapability(
   selectedVideoModel.value?.capabilities,
 ))
+const showCatalogEmptyHint = computed(() => {
+  if (props.mode === 'image') return imageModelOptions.value.length === 0
+  if (props.mode === 'video') return videoModelOptions.value.length === 0
+  if (props.mode === 'audio') return audioModelOptions.value.length === 0
+  return imageModelOptions.value.length === 0
+    && videoModelOptions.value.length === 0
+    && audioModelOptions.value.length === 0
+})
 
 function updatePatch(patch) {
   if (props.modelValue) {
