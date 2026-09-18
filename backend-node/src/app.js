@@ -194,7 +194,8 @@ function createApp() {
   // 静态资源目录：统一转为绝对路径（打包 exe 下相对路径可能解析异常）
   try {
     if (!fs.existsSync(storageRoot)) fs.mkdirSync(storageRoot, { recursive: true });
-    const publicPlatformEnabled = /^(1|true|yes)$/i.test(String(process.env.PUBLIC_PLATFORM_MODE || ''));
+    const { createPlatformCapabilities } = require('./services/platformCapabilityService');
+    const { publicPlatformEnabled } = createPlatformCapabilities();
     app.use('/static', createStaticOwnershipMiddleware({
       db,
       enabled: publicPlatformEnabled,

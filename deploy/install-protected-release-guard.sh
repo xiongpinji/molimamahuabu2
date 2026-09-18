@@ -13,7 +13,7 @@ fi
 SOURCE_RELEASE="$(realpath -- "$1")"
 TARGET_DIRECTORY="${2:-/opt/moli-drama/shared/release-guard}"
 VERIFIER_SOURCE="$SOURCE_RELEASE/backend-node/src/services/canvasCreditReleaseContract.js"
-ACTIVATOR_SOURCE="$SOURCE_RELEASE/deploy/activate-protected-release.sh"
+ACTIVATOR_SOURCE="$SOURCE_RELEASE/deploy/release-guard/activate-protected-release.sh"
 SHARED_VERIFIER="$TARGET_DIRECTORY/verify-protected-release.js"
 SHARED_ACTIVATOR="$TARGET_DIRECTORY/activate-protected-release.sh"
 

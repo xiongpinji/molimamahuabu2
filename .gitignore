@@ -10,6 +10,8 @@ backend-node/scripts/*
 !backend-node/scripts/verify-redraw-native-dialogue-audio.js
 !backend-node/scripts/promote-redraw-native-dialogue-evidence.js
 !backend-node/scripts/run-native-dialogue-canary.js
+!backend-node/scripts/verify-risk-remediation-gate.js
+!backend-node/scripts/verify-user-safe-predeploy-gate.js
 backend-node/configs/ai-configs-stary.json
 backend-node/configs/ai-configs-qudao.json
 backend-node/configs/ai-configs-2026-03-12 (5).json

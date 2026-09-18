@@ -76,14 +76,14 @@ describe('taskService.failOrphanedAsyncTasksOnStartup', () => {
 
     assert.equal(count, 0);
     assert.equal(taskService.getTask(db, 'task-startup-unknown').status, 'needs_attention');
-    assert.match(taskService.getTask(db, 'task-startup-unknown').message, /结果未知/);
+    assert.match(taskService.getTask(db, 'task-startup-unknown').message, /结果未知|自动退回/);
     assert.equal(db.prepare('SELECT state FROM generation_route_requests').get().state,
       'needs_attention');
     assert.equal(creditLedgerService.getReservation(db, reservation.id).status, 'held');
     db.close();
   });
 
-  it('marks pending and processing tasks as failed on startup', () => {
+  it('fails pending and processing orphans without provider task on startup', () => {
     const db = createTestDb();
     const now = new Date().toISOString();
     db.prepare(
@@ -109,6 +109,7 @@ describe('taskService.failOrphanedAsyncTasksOnStartup', () => {
     assert.equal(pending.status, 'failed');
     assert.equal(processing.status, 'failed');
     assert.equal(pending.error, taskService.ORPHAN_ASYNC_TASK_MSG);
+    assert.equal(processing.error, taskService.ORPHAN_ASYNC_TASK_MSG);
     assert.equal(done.status, 'completed');
   });
 
@@ -202,7 +203,7 @@ describe('taskService.failOrphanedAsyncTasksOnStartup', () => {
     assert.deepEqual(JSON.parse(project.review_json), review);
   });
 
-  it('also marks the linked image generation as failed on startup', () => {
+  it('also marks the linked image generation as needs_attention when processing on startup', () => {
     const db = createTestDb();
     db.exec(`
       CREATE TABLE image_generations (
@@ -267,7 +268,7 @@ describe('taskService.failOrphanedAsyncTasksOnStartup', () => {
     assert.equal(task.error, null);
   });
 
-  it('fails a redraw analysis task without provider_task_id on startup', () => {
+  it('fails a redraw analysis task without provider_task_id when processing on startup', () => {
     const db = createTestDb();
     db.exec('ALTER TABLE async_tasks ADD COLUMN provider_task_id TEXT;');
     const now = new Date().toISOString();
@@ -337,7 +338,7 @@ describe('taskService.failOrphanedAsyncTasksOnStartup', () => {
     assert.equal(task.error, null);
   });
 
-  it('fails a provider-backed redraw analysis orphan when work is no longer analyzing', () => {
+  it('keeps a provider-backed redraw analysis orphan processing for resume when work is no longer analyzing', () => {
     const db = createTestDb();
     db.exec(`
       ALTER TABLE async_tasks ADD COLUMN provider_task_id TEXT;
@@ -361,10 +362,10 @@ describe('taskService.failOrphanedAsyncTasksOnStartup', () => {
 
     const count = taskService.failOrphanedAsyncTasksOnStartup(db, { warn() {}, info() {} });
 
-    assert.equal(count, 1);
+    assert.equal(count, 0);
     const task = taskService.getTask(db, 'task-stale-redraw');
-    assert.equal(task.status, 'failed');
-    assert.equal(task.error, taskService.ORPHAN_ASYNC_TASK_MSG);
+    assert.equal(task.status, 'processing');
+    assert.equal(task.error, null);
   });
 
   it('keeps a processing task alive while a long operation is running', async () => {

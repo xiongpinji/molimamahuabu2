@@ -12,12 +12,26 @@ const lingjingVideoClient = require('./lingjingVideoClient');
 const fuminVideoClient = require('./fuminVideoClient');
 const fuminImageClient = require('./fuminImageClient');
 const newapiVideoClient = require('./newapiVideoClient');
+const { encryptSecret, decryptSecret } = require('./secretBox');
 
 function normalizeApiKeyForService(serviceType, apiKey) {
   if (serviceType === 'jimeng2_character_auth' && apiKey != null) {
     return normalizeMaterialHubToken(apiKey);
   }
   return apiKey;
+}
+
+function persistApiKey(serviceType, apiKey) {
+  return encryptSecret(normalizeApiKeyForService(serviceType, apiKey || ''));
+}
+
+function revealApiKey(stored) {
+  try {
+    return decryptSecret(stored);
+  } catch (error) {
+    // 无主密钥时无法解密；返回空以免把密文误当密钥外发。
+    return '';
+  }
 }
 
 function hasConnectionCredential(opts = {}) {
@@ -402,7 +416,7 @@ function createConfig(db, log, req) {
     req.api_protocol || '',
     req.name || '',
     req.base_url || '',
-    normalizeApiKeyForService(req.service_type, req.api_key || ''),
+    persistApiKey(req.service_type, req.api_key || ''),
     model,
     defaultModel,
     endpoint,
@@ -478,10 +492,10 @@ function updateConfig(db, log, id, req) {
   if (req.api_key != null) {
     updates.push('api_key = ?');
     const st = req.service_type != null ? req.service_type : existing.service_type;
-    const nextApiKey = normalizeApiKeyForService(st, req.api_key);
+    const nextApiKey = persistApiKey(st, req.api_key);
     params.push(nextApiKey);
-    connectivityChanged ||= String(nextApiKey || '') !== String(existing.api_key || '');
-    routeEvidenceChanged ||= String(nextApiKey || '') !== String(existing.api_key || '');
+    connectivityChanged ||= revealApiKey(nextApiKey) !== revealApiKey(existing.api_key || '');
+    routeEvidenceChanged ||= revealApiKey(nextApiKey) !== revealApiKey(existing.api_key || '');
   }
   if (req.model != null) {
     updates.push('model = ?');
@@ -648,7 +662,7 @@ function rowToConfig(r) {
     api_protocol: r.api_protocol || '',
     name: r.name,
     base_url: r.base_url,
-    api_key: r.api_key,
+    api_key: revealApiKey(r.api_key),
     model: modelFromDb(r.model),
     default_model: r.default_model ? String(r.default_model).trim() : null,
     endpoint: r.endpoint,
@@ -1459,9 +1473,10 @@ function applyVendorLock(db, log, cfg) {
  */
 function bulkUpdateApiKey(db, log, newKey) {
   const now = new Date().toISOString();
+  const storedKey = persistApiKey(null, newKey);
   const applyUpdate = () => {
     const ids = db.prepare(`SELECT id FROM ai_service_configs
-      WHERE deleted_at IS NULL AND api_key IS NOT ? ORDER BY id`).all(newKey).map((row) => row.id);
+      WHERE deleted_at IS NULL AND api_key IS NOT ? ORDER BY id`).all(storedKey).map((row) => row.id);
     if (!ids.length) return 0;
     const columns = tableColumns(db, 'ai_service_configs');
     const assignments = ['api_key = ?'];
@@ -1475,9 +1490,9 @@ function bulkUpdateApiKey(db, log, newKey) {
       WHERE id = ? AND deleted_at IS NULL AND api_key IS NOT ?`);
     let updated = 0;
     for (const id of ids) {
-      const params = [newKey];
+      const params = [storedKey];
       if (columns.has('updated_at')) params.push(now);
-      params.push(id, newKey);
+      params.push(id, storedKey);
       const info = update.run(...params);
       if (info.changes === 0) continue;
       invalidateConfigEvidence(db, id, 'admin_invalidated', now);

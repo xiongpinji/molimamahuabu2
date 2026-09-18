@@ -46,6 +46,7 @@ cd frontweb && npm run build
 ### Protected production release contract
 
 - 画布积分卡片受保护合同 `canvas-credit-callout-v1` 不得删除、弱化或改回旧的 `billing-note` 灰字样式。
+- **用户安全预部署门禁**：含用户路径变更的线上候选，部署前必须 `npm --prefix backend-node run verify:user-safe-predeploy-gate` 通过（见 `docs/gates/USER_SAFE_PREDEPLOY_GATE.md`）；未通过不得部署。
 - 制作 `/opt/moli-drama` 候选版本时必须从实时 `current` 克隆，只覆盖本任务审计过的文件，并执行 `npm --prefix backend-node run audit:canvas-credit-contract -- --require-build`。
 - 共享门禁不存在时，只允许在明确审查候选后执行一次 `sudo env PROTECTED_RELEASE_GUARD_BOOTSTRAP=1 bash deploy/install-protected-release-guard.sh CANDIDATE`。安装完成后，任何候选 release 都不得替换共享验证器或激活脚本；门禁升级必须作为独立安全变更人工审查。
 - 切换生产版本必须调用共享的 `/opt/moli-drama/shared/release-guard/activate-protected-release.sh CANDIDATE EXPECTED_CURRENT`；禁止直接替换 `/opt/moli-drama/current`。

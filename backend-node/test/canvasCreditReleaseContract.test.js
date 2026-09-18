@@ -175,12 +175,12 @@ test('共享安装器安装同一审计器，并动态接受好候选、拒绝�
   });
   const shared = fs.mkdtempSync(path.join(os.tmpdir(), 'canvas-credit-shared-'));
   const sourceService = path.join(repositoryRoot, 'backend-node', 'src', 'services', 'canvasCreditReleaseContract.js');
-  const sourceActivator = path.join(repositoryRoot, 'deploy', 'activate-protected-release.sh');
+  const sourceActivator = path.join(repositoryRoot, 'deploy', 'release-guard', 'activate-protected-release.sh');
   const installer = path.join(repositoryRoot, 'deploy', 'install-protected-release-guard.sh');
 
   for (const root of [good, bad]) {
     const serviceDirectory = path.join(root, 'backend-node', 'src', 'services');
-    const deployDirectory = path.join(root, 'deploy');
+    const deployDirectory = path.join(root, 'deploy', 'release-guard');
     fs.mkdirSync(serviceDirectory, { recursive: true });
     fs.mkdirSync(deployDirectory, { recursive: true });
     fs.copyFileSync(sourceService, path.join(serviceDirectory, 'canvasCreditReleaseContract.js'));
@@ -241,6 +241,7 @@ test('生产预检、CI 和共享发布脚本都强制执行同一合同', () =>
   assert.match(deployScript, /node "\$SHARED_VERIFIER" "\$CANDIDATE" --require-build/);
   assert.ok(deployScript.indexOf('verify-protected-release.js') < deployScript.indexOf('ln -sfn'));
   assert.match(installScript, /canvasCreditReleaseContract\.js/);
+  assert.match(installScript, /release-guard\/activate-protected-release\.sh/);
   assert.match(installScript, /--require-build/);
   assert.match(installScript, /PROTECTED_RELEASE_GUARD_BOOTSTRAP/);
   assert.match(installScript, /candidate releases cannot replace the installed shared guard/);
