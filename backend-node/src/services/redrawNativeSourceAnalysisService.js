@@ -95,7 +95,12 @@ async function ffprobeVideo(sourcePath, timeoutMs) {
 
 const SHEET_COLUMNS = 4;
 const SHEET_FRAMES = 12;
-const DEFAULT_FONT_CANDIDATES = process.platform === 'win32' ? ['/Windows/Fonts/arial.ttf'] : [];
+const DEFAULT_FONT_CANDIDATES = process.platform === 'win32'
+  ? [
+      path.join(__dirname, '..', '..', 'data', 'fonts', 'arial.ttf'),
+      path.join(process.env.SystemRoot || 'C:\\Windows', 'Fonts', 'arial.ttf'),
+    ]
+  : [];
 
 function sheetPlan(durationMs, mode) {
   const sampleRate = mode === 'lower_third' ? 2 : 1;
@@ -115,7 +120,13 @@ function sheetPlan(durationMs, mode) {
 }
 
 function filterPath(filePath) {
-  return String(filePath).replace(/\\/g, '/');
+  // ffmpeg filter options use ':' as a separator, so absolute Windows paths
+  // (D:/foo/bar.ttf) must have ':' escaped and be quoted for the graph parser.
+  const escaped = String(filePath)
+    .replace(/\\/g, '/')
+    .replace(/'/g, "'\\''")
+    .replace(/:/g, '\\:');
+  return `'${escaped}'`;
 }
 
 function selectFontFile(candidates = DEFAULT_FONT_CANDIDATES) {

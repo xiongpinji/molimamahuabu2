@@ -1,3 +1,4 @@
+require('./config/dotenv.js').loadDotenv();
 const { loadConfig } = require('./config/index.js');
 
 const preConfig = loadConfig();

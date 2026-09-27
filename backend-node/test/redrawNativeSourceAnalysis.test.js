@@ -208,6 +208,20 @@ test('sheetFilter adds fontfile only when an injected candidate exists', () => {
   assert.doesNotMatch(withoutFont, /fontfile=/);
 });
 
+test('sheetFilter escapes drive-letter colons in absolute font paths', () => {
+  const page = { frameCount: 1, startSeconds: 0, sampleRate: 1 };
+  const fontPath = path.join(os.tmpdir(), `redraw-font-${process.pid}.ttf`);
+  fs.writeFileSync(fontPath, '');
+  try {
+    const filter = nativeAnalysis.sheetFilter('full', page, { fontCandidates: [fontPath] });
+    const fontOption = filter.match(/fontfile=('(?:[^'\\]|\\.)*')/)[1];
+    assert.doesNotMatch(fontOption, /[^\\]:/);
+    assert.doesNotMatch(fontOption, /\\(?!:)/);
+  } finally {
+    fs.rmSync(fontPath, { force: true });
+  }
+});
+
 test('analyzeNativeSource samples the full duration and includes a distinct late frame', async () => {
   const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'native-redraw-late-'));
   const db = createDb();
