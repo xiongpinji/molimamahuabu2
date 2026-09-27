@@ -15,6 +15,7 @@ const path = require('node:path');
 const dramaService = require('./dramaService');
 const storageLayout = require('./storageLayout');
 const { buildRedrawFactoryPackage } = require('./redrawFactoryPackageAdapter');
+const { createStoryboardReferenceClips } = require('./redrawStoryboardReferenceClipService');
 
 const IMPORT_SCHEMA_VERSION = 'redraw-factory-import@1';
 
@@ -202,11 +203,12 @@ function insertFactoryRows(db, logger, dramaId, productionPackage) {
     INSERT INTO storyboards (
       episode_id, scene_id, storyboard_number, title, description, location, time, duration,
       dialogue, action, image_prompt, video_prompt, characters, movement, continuity_snapshot,
-      status, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)
+      creation_mode, status, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'universal', 'draft', ?, ?)
   `);
   const linkProp = db.prepare('INSERT OR IGNORE INTO storyboard_props (storyboard_id, prop_id) VALUES (?, ?)');
   let storyboardNumber = 0;
+  const storyboardSources = [];
   for (const group of episode.scenes) {
     const sceneId = sceneIdByKey.get(group.scene_id) || null;
     for (const shot of group.shots) {
@@ -234,6 +236,13 @@ function insertFactoryRows(db, logger, dramaId, productionPackage) {
         const propId = propIdByKey.get(key);
         if (propId) linkProp.run(storyboardId, propId);
       }
+      storyboardSources.push({
+        storyboardId,
+        storyboardNumber,
+        sourceShotId: shot.continuity.source_shot_id,
+        startMs: shot.continuity.start_ms,
+        endMs: shot.continuity.end_ms,
+      });
     }
   }
   db.prepare(`
@@ -244,11 +253,14 @@ function insertFactoryRows(db, logger, dramaId, productionPackage) {
   db.prepare('UPDATE dramas SET total_episodes = 1, total_duration = ?, updated_at = ? WHERE id = ?')
     .run(totalDuration(productionPackage), now, dramaId);
   return {
-    characters: characterIdByKey.size,
-    scenes: sceneIdByKey.size,
-    props: propIdByKey.size,
-    episodes: 1,
-    storyboards: storyboardNumber,
+    counts: {
+      characters: characterIdByKey.size,
+      scenes: sceneIdByKey.size,
+      props: propIdByKey.size,
+      episodes: 1,
+      storyboards: storyboardNumber,
+    },
+    storyboardSources,
   };
 }
 
@@ -300,6 +312,11 @@ function importRedrawWorkToFactory(db, log, { workId, tenantId, userId, propIds 
       metadata: {
         project_type: 'factory',
         aspect_ratio: text(source.analysisSettings.aspect_ratio) || undefined,
+        // 分镜以全能参考模式导入，并默认提交对应样片片段作参考视频、使用模型原生音频（不烧字幕）。
+        storyboard_universal_omni: true,
+        video_use_storyboard_reference_video: true,
+        video_native_audio: true,
+        merge_trim_to_storyboard_duration: true,
         redraw_import: {
           schema_version: IMPORT_SCHEMA_VERSION,
           import_key: importKey,
@@ -320,9 +337,35 @@ function importRedrawWorkToFactory(db, log, { workId, tenantId, userId, propIds 
       tenant_id: owner.tenantId,
     });
       copiedFiles.push(...copyCharacterImagesIntoProject(db, storageRoot, Number(drama.id), productionPackage));
-      const counts = insertFactoryRows(db, logger, Number(drama.id), productionPackage);
+      const { counts, storyboardSources } = insertFactoryRows(db, logger, Number(drama.id), productionPackage);
+      let referenceClips = 0;
+      if (storageRoot && source.work.source_asset_id) {
+        const sourceAsset = db.prepare('SELECT local_path FROM assets WHERE id = ? AND deleted_at IS NULL')
+          .get(Number(source.work.source_asset_id));
+        try {
+          const clips = createStoryboardReferenceClips({
+            db,
+            storageRoot,
+            dramaId: Number(drama.id),
+            sourceAsset,
+            sourceDurationMs: Number(source.work.duration_ms || source.sourceFacts.duration_ms || 0),
+          }, storyboardSources);
+          copiedFiles.push(...clips.files);
+          referenceClips = clips.created.length;
+        } catch (error) {
+          // 样片文件不在本机（例如跨环境迁移）时仍导入剧本与资产，只是不带分镜参考片段。
+          if (error?.code !== 'REDRAW_REFERENCE_SOURCE_UNREADABLE') throw error;
+          logger.warn('Redraw sample unavailable; importing without reference clips', { work_id: source.work.id });
+        }
+      }
       logger.info('Redraw work imported to factory', { drama_id: drama.id, work_id: source.work.id });
-      return { created: true, drama_id: Number(drama.id), title: drama.title, import_key: importKey, counts };
+      return {
+        created: true,
+        drama_id: Number(drama.id),
+        title: drama.title,
+        import_key: importKey,
+        counts: { ...counts, reference_clips: referenceClips },
+      };
     })();
   } catch (error) {
     for (const file of copiedFiles) {

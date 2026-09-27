@@ -146,6 +146,31 @@ async function resolveVideoToLocalPath(videoUrl, baseUrl, storageRoot, tempDir, 
   }
 }
 
+/**
+ * 片段比分镜时长长时，按分镜时长重新编码裁剪（保留音轨），用于样片转绘对齐原片节奏。
+ * 探测失败或片段本就不长于目标时长时原样返回，不影响合成。
+ */
+function trimClipToDuration(localPath, targetSeconds, tempDir, index, log) {
+  if (!Number.isFinite(targetSeconds) || targetSeconds <= 0) return localPath;
+  const { spawnSync } = require('child_process');
+  const probe = spawnSync(getFfprobePath(), [
+    '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', localPath,
+  ], { encoding: 'utf8' });
+  const actual = Number(String(probe.stdout || '').trim());
+  if (!Number.isFinite(actual) || actual <= targetSeconds + 0.05) return localPath;
+  const output = path.join(tempDir, `trim_${Date.now()}_${index}.mp4`);
+  const result = spawnSync(getFfmpegPath(), [
+    '-hide_banner', '-loglevel', 'error', '-y', '-i', localPath, '-t', targetSeconds.toFixed(3),
+    '-map', '0:v:0', '-map', '0:a?', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
+    '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '128k', output,
+  ], { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 });
+  if (result.error || result.status !== 0 || !fs.existsSync(output)) {
+    log.warn('Video merge: trim clip failed, using full clip', { index, stderr: result.stderr?.slice(-300) });
+    return localPath;
+  }
+  return output;
+}
+
 /** 使用 ffmpeg concat 合并多个视频文件 */
 function runFfmpegConcat(localPaths, outputPath, log) {
   const ffmpegBin = getFfmpegPath();
@@ -267,6 +292,17 @@ async function processVideoMerge(db, log, mergeId, baseUrl) {
   }
 
   let mergedRelativePath = null;
+  let earlyMergeOpts = {};
+  try { earlyMergeOpts = JSON.parse(r.merge_options || '{}') || {}; } catch (_) { earlyMergeOpts = {}; }
+  if (earlyMergeOpts.trim_to_storyboard_duration === true) {
+    for (let i = 0; i < localPaths.length; i++) {
+      const trimmed = trimClipToDuration(localPaths[i], Number(scenes[i]?.duration), tempDir, i, log);
+      if (trimmed && trimmed !== localPaths[i]) {
+        localPaths[i] = trimmed;
+        toCleanup.push(trimmed);
+      }
+    }
+  }
   if (localPaths.length > 0) {
     const projectSubdir = storageLayout.getProjectStorageSubdir(db, r.drama_id);
     const sub = projectSubdir && String(projectSubdir).trim();
@@ -338,4 +374,5 @@ module.exports = {
   create,
   deleteById,
   processVideoMerge,
+  trimClipToDuration,
 };

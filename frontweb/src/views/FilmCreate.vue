@@ -1039,6 +1039,14 @@
               <el-button v-if="batchImageRunning" size="large" type="danger" plain @click="batchImageStopping = true">停止图片</el-button>
               <el-button v-if="batchVideoRunning" size="large" type="danger" plain @click="batchVideoStopping = true">停止视频</el-button>
             </div>
+            <div class="batch-video-options" style="margin-top:8px;display:flex;align-items:center;gap:8px;font-size:13px;">
+              <el-checkbox v-model="videoNativeAudio" size="small" @change="saveProjectSettings()">
+                模型原生音频（模型支持时生成带声音的视频）
+              </el-checkbox>
+              <el-checkbox v-model="videoUseStoryboardReferenceVideo" size="small" @change="saveProjectSettings()">
+                分镜参考原片（全能参考模式下提交分镜对应的样片片段）
+              </el-checkbox>
+            </div>
             <!-- 连贯帧模式 UI 暂时隐藏（保留变量与批量生成逻辑，后续可快速恢复） -->
             <div class="batch-video-options" style="margin-top:8px;display:flex;align-items:center;gap:8px;font-size:13px;">
               <el-checkbox v-model="videoFrameContiguity" size="small">
@@ -2985,7 +2993,7 @@ import {
 } from '@/utils/pipelineRetryPolicy'
 import { GRID_LAYOUTS, isGridFrameType } from '@/utils/gridLayout'
 import { buildStoryboardContinuityPrompt, canChainStoryboardFrames } from '@/utils/videoContinuity'
-import { assertVideoDurationAllowed, videoDurationOptionsForCapability } from '@/utils/videoDuration'
+import { assertVideoDurationAllowed, submittableVideoDuration, videoDurationOptionsForCapability } from '@/utils/videoDuration'
 import { buildVoicePromptPreview, videoVoicePolicyForConfig } from '@/utils/videoVoicePolicy'
 import {
   buildVideoGenerationAudit,
@@ -3876,6 +3884,10 @@ const batchVideoProgress = ref({ current: 0, total: 0, failed: 0 })
 const batchVideoErrors = ref([])
 // P0-1: 连贯帧模式默认开启；用户可关闭以恢复各镜独立生成
 const videoFrameContiguity = ref(true)
+// 模型原生音频：默认开启；仅当前视频模型声明 supportsAudio 时才会随请求提交 generate_audio=true，项目可单独关闭。
+const videoNativeAudio = ref(true)
+// 分镜参考视频：使用分镜已登记的参考视频（如样片转绘切出的原片片段），仅在全能参考模式且模型支持参考视频时提交。
+const videoUseStoryboardReferenceVideo = ref(false)
 // P0-3: 分镜超分辨率 loading set
 const upscalingSbIds = reactive(new Set())
 // P2-4: TTS 状态
@@ -5360,6 +5372,8 @@ async function loadDrama() {
     if (savedVideoResolution) videoResolution.value = savedVideoResolution
     const savedVideoModel = (d.metadata && d.metadata.video_model) ? String(d.metadata.video_model) : ''
     if (savedVideoModel) selectedVideoModel.value = savedVideoModel
+    videoNativeAudio.value = d.metadata?.video_native_audio !== false
+    videoUseStoryboardReferenceVideo.value = d.metadata?.video_use_storyboard_reference_video === true
     const savedImageModel = String(d.metadata?.image_model || '').trim()
     if (savedImageModel && imageModelOptions.value.some((item) => item.model === savedImageModel)) {
       selectedImageModel.value = savedImageModel
@@ -5775,6 +5789,8 @@ async function saveProjectSettings(includeGenerationStyle = false) {
     storyboard_universal_omni: !!storyboardUniversalOmni.value,
     storyboard_use_first_last_frame: !!storyboardUseFirstLastFrame.value,
     last_frame_use_first_layout_lock: !!lastFrameUseFirstLayoutLock.value,
+    video_native_audio: !!videoNativeAudio.value,
+    video_use_storyboard_reference_video: !!videoUseStoryboardReferenceVideo.value,
   }
   if (includeGenerationStyle) {
     Object.assign(metadata, projectStylePromptMetadata())
@@ -7055,7 +7071,7 @@ function requireStoryboardVideoGenerationOptions(sb) {
   if (entry.capabilities?.declared && !resolutions.includes(resolution)) {
     throw new Error(`当前视频模型不支持 ${resolution || '未选择'} 清晰度；可用档位：${resolutions.join('、') || '无'}`)
   }
-  const duration = getSbVideoDurationForApi(sb)
+  const duration = submittableVideoDuration(getSbVideoDurationForApi(sb), entry.capabilities)
   try {
     assertVideoDurationAllowed(duration, entry.capabilities)
   } catch (error) {
@@ -7212,8 +7228,13 @@ async function buildSbVideoRequestContext(sb, { universalOmniApi, persistGridSel
   }
   const preferClassicPrompt = universal && !useOmni
   const referenceImageUrls = useOmni ? referenceUrls : undefined
-  // 短剧工厂当前没有参考视频选择器；不能把分镜产物臆造成供应商参考视频。
-  const referenceVideoUrls = undefined
+  // 分镜参考视频只来自分镜已登记的项目素材（如样片转绘切出的原片片段），不臆造供应商参考视频；
+  // 需要项目开启开关、全能参考模式、且模型声明支持参考视频。
+  const storyboardReferenceVideos = videoUseStoryboardReferenceVideo.value && useOmni
+    && capability.supportsVideoReference === true
+    ? collectStoryboardReferenceUrls(sb?.reference_video_urls)
+    : []
+  const referenceVideoUrls = storyboardReferenceVideos.length ? storyboardReferenceVideos : undefined
   const referenceAudioUrls = useOmni && capability.supportsAudioReference === true
     ? getStoryboardReferenceAudioUrls(sb)
     : undefined
@@ -7242,7 +7263,7 @@ async function buildSbVideoRequestContext(sb, { universalOmniApi, persistGridSel
     referenceVideoUrls,
     referenceAudioUrls,
     referenceMode,
-    generateAudio: capability.supportsAudio === true ? false : undefined,
+    generateAudio: capability.supportsAudio === true ? videoNativeAudio.value === true : undefined,
     style: getSelectedStyle(),
     aspectRatio: projectAspectRatio.value || '16:9',
     resolution: selection.resolution || undefined,

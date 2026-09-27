@@ -99,7 +99,10 @@ test('全能模式透传真实存在的完整参考数组，首尾帧模式不�
   assert.match(body, /capability[, :]/)
   assert.match(body, /supportsAudioReference/)
   assert.match(body, /const referenceImageUrls = useOmni \? referenceUrls : undefined/)
-  assert.doesNotMatch(source, /sb\?\.reference_video_urls/)
+  // 分镜参考视频只能来自后端显式登记的 storyboard_reference_video 项目素材（dramaService 注入），
+  // 且必须同时满足项目开关、全能参考模式和模型声明 supportsVideoReference，不得把分镜产物臆造成参考视频。
+  assert.match(body, /videoUseStoryboardReferenceVideo\.value && useOmni\s+&& capability\.supportsVideoReference === true\s+\? collectStoryboardReferenceUrls\(sb\?\.reference_video_urls\)/)
+  assert.doesNotMatch(source, /reference_video_urls:\s*\[?\s*sb\.(video_url|local_path)/)
   assert.match(requestBuilderSource, /reference_video_urls: referenceVideoUrlList/)
 })
 

@@ -153,7 +153,7 @@ test('import creates a new factory drama with episode, characters, scenes, key p
 
     const result = importRedrawWorkToFactory(db, null, { workId, tenantId: TENANT, userId: USER });
     assert.equal(result.created, true);
-    assert.deepEqual(result.counts, { characters: 2, scenes: 2, props: 1, episodes: 1, storyboards: 2 });
+    assert.deepEqual(result.counts, { characters: 2, scenes: 2, props: 1, episodes: 1, storyboards: 2, reference_clips: 0 });
     assert.notEqual(result.drama_id, existingFactory);
 
     const drama = db.prepare('SELECT * FROM dramas WHERE id = ?').get(result.drama_id);
@@ -246,5 +246,103 @@ test('import copies generated redraw character images into the factory project f
   } finally {
     db.close();
     fs.rmSync(storageRoot, { recursive: true, force: true });
+  }
+});
+
+test('reference clip window pads short shots to the minimum and stays inside the sample', () => {
+  const { clipWindow, MIN_REFERENCE_MS } = require('../src/services/redrawStoryboardReferenceClipService');
+  assert.deepEqual(clipWindow(10_000, 11_000, 60_000), { start_ms: 9_500, end_ms: 9_500 + MIN_REFERENCE_MS });
+  assert.deepEqual(clipWindow(0, 500, 60_000), { start_ms: 0, end_ms: MIN_REFERENCE_MS });
+  assert.deepEqual(clipWindow(59_500, 60_000, 60_000), { start_ms: 60_000 - MIN_REFERENCE_MS, end_ms: 60_000 });
+  assert.deepEqual(clipWindow(1_000, 5_000, 60_000), { start_ms: 1_000, end_ms: 5_000 });
+  assert.equal(clipWindow(5_000, 5_000, 60_000), null);
+});
+
+test('import cuts one sample reference clip per storyboard, owned by the new project, exposed on storyboards', { skip: !require('../src/utils/ffmpegPath').hasLocalFfmpeg() }, () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { spawnSync } = require('node:child_process');
+  const { getFfmpegPath } = require('../src/utils/ffmpegPath');
+  const dramaService = require('../src/services/dramaService');
+  const db = createDb();
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-factory-clip-'));
+  try {
+    const workId = seedRedrawWork(db);
+    const work = db.prepare('SELECT source_asset_id FROM redraw_works WHERE id = ?').get(workId);
+    const sourceRel = db.prepare('SELECT local_path FROM assets WHERE id = ?').get(work.source_asset_id).local_path;
+    fs.mkdirSync(path.dirname(path.join(storageRoot, sourceRel)), { recursive: true });
+    const made = spawnSync(getFfmpegPath(), ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc=size=160x284:rate=10',
+      '-f', 'lavfi', '-i', 'sine=frequency=440', '-t', '20', '-shortest', path.join(storageRoot, sourceRel)]);
+    assert.equal(made.status, 0);
+
+    const result = importRedrawWorkToFactory(db, null, { workId, tenantId: TENANT, userId: USER, storageRoot });
+    assert.equal(result.counts.reference_clips, 2);
+    const clips = db.prepare("SELECT storyboard_id, local_path, drama_id, type, metadata FROM assets WHERE category = 'storyboard_reference_video' ORDER BY id").all();
+    assert.equal(clips.length, 2);
+    for (const clip of clips) {
+      assert.equal(clip.drama_id, result.drama_id);
+      assert.equal(clip.type, 'video');
+      assert.match(clip.local_path, new RegExp(`^projects/0*${result.drama_id}_.+/videos/references/`));
+      assert.ok(fs.statSync(path.join(storageRoot, clip.local_path)).size > 0);
+    }
+    assert.equal(JSON.parse(clips[0].metadata).source_shot_id, 'shot-1');
+
+    const drama = dramaService.getDrama(db, result.drama_id, '', USER, TENANT);
+    const storyboards = drama.episodes[0].storyboards;
+    assert.equal(storyboards[0].creation_mode, 'universal');
+    assert.equal(storyboards[0].reference_video_urls.length, 1);
+    assert.match(storyboards[0].reference_video_urls[0], /^\/static\/projects\/.+\/videos\/references\/sb\d+_/);
+    const metadata = JSON.parse(db.prepare('SELECT metadata FROM dramas WHERE id = ?').get(result.drama_id).metadata);
+    assert.equal(metadata.video_native_audio, true);
+    assert.equal(metadata.video_use_storyboard_reference_video, true);
+    assert.equal(metadata.merge_trim_to_storyboard_duration, true);
+  } finally {
+    db.close();
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  }
+});
+
+test('ordinary factory storyboards expose an empty reference video list', () => {
+  const dramaService = require('../src/services/dramaService');
+  const db = createDb();
+  try {
+    const now = new Date().toISOString();
+    const dramaId = Number(db.prepare(`INSERT INTO dramas (tenant_id, user_id, title, style, status, created_at, updated_at)
+      VALUES (?, ?, 'Plain', 'realistic', 'draft', ?, ?)`).run(TENANT, USER, now, now).lastInsertRowid);
+    const episodeId = Number(db.prepare(`INSERT INTO episodes (drama_id, episode_number, title, status, created_at, updated_at)
+      VALUES (?, 1, 'E1', 'draft', ?, ?)`).run(dramaId, now, now).lastInsertRowid);
+    db.prepare(`INSERT INTO storyboards (episode_id, storyboard_number, title, duration, status, created_at, updated_at)
+      VALUES (?, 1, 'S1', 5, 'draft', ?, ?)`).run(episodeId, now, now);
+    const drama = dramaService.getDrama(db, dramaId, '', USER, TENANT);
+    assert.deepEqual(drama.episodes[0].storyboards[0].reference_video_urls, []);
+    assert.equal(drama.episodes[0].storyboards[0].creation_mode, 'classic');
+  } finally {
+    db.close();
+  }
+});
+
+test('merge trim shortens clips longer than the storyboard duration and keeps audio', { skip: !require('../src/utils/ffmpegPath').hasLocalFfmpeg() }, () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { spawnSync } = require('node:child_process');
+  const { getFfmpegPath, getFfprobePath } = require('../src/utils/ffmpegPath');
+  const { trimClipToDuration } = require('../src/services/videoMergeService');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'merge-trim-'));
+  try {
+    const input = path.join(dir, 'in.mp4');
+    assert.equal(spawnSync(getFfmpegPath(), ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc=size=160x284:rate=10',
+      '-f', 'lavfi', '-i', 'sine=frequency=440', '-t', '4', '-shortest', input]).status, 0);
+    const log = { warn() {} };
+    const trimmed = trimClipToDuration(input, 3, dir, 0, log);
+    assert.notEqual(trimmed, input);
+    const probe = spawnSync(getFfprobePath(), ['-v', 'error', '-show_entries', 'format=duration:stream=codec_type', '-of', 'json', trimmed], { encoding: 'utf8' });
+    const info = JSON.parse(probe.stdout);
+    assert.ok(Math.abs(Number(info.format.duration) - 3) < 0.25);
+    assert.ok(info.streams.some((stream) => stream.codec_type === 'audio'));
+    assert.equal(trimClipToDuration(input, 5, dir, 1, log), input, 'shorter clip is kept as is');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });

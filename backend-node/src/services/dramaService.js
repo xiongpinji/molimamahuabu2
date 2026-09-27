@@ -219,6 +219,7 @@ function getDrama(db, dramaId, baseUrl, userId, tenantId) {
         for (const sb of ep.storyboards) {
           sb.prop_ids = spMap[sb.id] || [];
         }
+        attachStoryboardReferenceVideos(db, ep.storyboards, sbIds);
       }
     } catch (_) {}
     ep.duration = ep.storyboards.reduce((sum, s) => sum + (s.duration || 0), 0);
@@ -371,6 +372,7 @@ function listDramas(db, query) {
             spMap[row.storyboard_id].push(row.prop_id);
           }
           for (const sb of ep.storyboards) sb.prop_ids = spMap[sb.id] || [];
+          attachStoryboardReferenceVideos(db, ep.storyboards, sbIds);
         }
       } catch (_) {}
       ep.duration = ep.storyboards.reduce((sum, s) => sum + (s.duration || 0), 0);
@@ -531,6 +533,28 @@ function parseStoryboardCharacters(charactersStr) {
   } catch (_) {
     return [];
   }
+}
+
+/**
+ * 分镜参考视频：只读取显式登记为 storyboard_reference_video 的项目素材（如样片转绘切出的原片片段）。
+ * 未登记时为空数组，普通工厂项目的分镜数据与请求不受影响。
+ */
+function attachStoryboardReferenceVideos(db, storyboards, sbIds) {
+  for (const sb of storyboards) sb.reference_video_urls = [];
+  if (!sbIds.length) return;
+  const placeholders = sbIds.map(() => '?').join(',');
+  const rows = db.prepare(`
+    SELECT storyboard_id, url FROM assets
+    WHERE storyboard_id IN (${placeholders}) AND type = 'video'
+      AND category = 'storyboard_reference_video' AND deleted_at IS NULL
+    ORDER BY id ASC
+  `).all(...sbIds);
+  const byStoryboard = new Map();
+  for (const row of rows) {
+    if (!byStoryboard.has(row.storyboard_id)) byStoryboard.set(row.storyboard_id, []);
+    byStoryboard.get(row.storyboard_id).push(row.url);
+  }
+  for (const sb of storyboards) sb.reference_video_urls = byStoryboard.get(sb.id) || [];
 }
 
 function rowToStoryboard(r) {
@@ -1041,6 +1065,13 @@ function finalizeEpisode(db, log, episodeId, baseUrl, body = {}) {
   const ep = db.prepare('SELECT id, drama_id, episode_number FROM episodes WHERE id = ? AND deleted_at IS NULL').get(episodeId);
   if (!ep) return null;
   const drama = db.prepare('SELECT title FROM dramas WHERE id = ? AND deleted_at IS NULL').get(ep.drama_id);
+  let dramaMetadata = {};
+  try {
+    const row = db.prepare('SELECT metadata FROM dramas WHERE id = ? AND deleted_at IS NULL').get(ep.drama_id);
+    dramaMetadata = JSON.parse(row?.metadata || '{}') || {};
+  } catch (_) {
+    dramaMetadata = {};
+  }
   const storyboards = db.prepare(
     'SELECT id, storyboard_number, duration FROM storyboards WHERE episode_id = ? AND deleted_at IS NULL ORDER BY storyboard_number ASC'
   ).all(episodeId);
@@ -1089,6 +1120,8 @@ function finalizeEpisode(db, log, episodeId, baseUrl, body = {}) {
       watermark_text: (body && body.watermark_text != null)
         ? String(body.watermark_text).trim().slice(0, 200)
         : '',
+      // 仅样片转绘导入的项目启用：模型最短时长大于分镜时长时，合成按分镜时长裁剪以对齐原片节奏。
+      trim_to_storyboard_duration: dramaMetadata.merge_trim_to_storyboard_duration === true,
     },
   };
   const created = videoMergeService.create(db, log, mergeReq);
