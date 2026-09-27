@@ -367,12 +367,14 @@ function localizationDecision(db, input, normalized) {
   } else if (Number(state?.policy_version || 0) !== Number(input.policyVersion || 0)) {
     action = 'blocked';
     reasonCodes.push('localization_policy_drift');
+  } else if (String(state?.execution_mode || 'auto') !== 'auto') {
+    // A 模式（safe）不依赖预算上限自动放行，付费前已由用户确认报价；结果交人工审核。
+    // 预算上限只约束 B 模式（spec §5.3），与生成策略 redrawGenerationPolicyService 一致。
+    action = 'needs_review';
+    reasonCodes.push('safe_mode_requires_review');
   } else if (state?.budget_limit_credits == null || Number(state.budget_limit_credits) < Number(input.credits || 0)) {
     action = 'blocked';
     reasonCodes.push('localization_budget_drift');
-  } else if (String(state?.execution_mode || 'auto') !== 'auto') {
-    action = 'needs_review';
-    reasonCodes.push('safe_mode_requires_review');
   } else if (!thresholds || typeof thresholds !== 'object' || Array.isArray(thresholds)) {
     action = 'blocked';
     reasonCodes.push('localization_thresholds_missing');
@@ -394,6 +396,124 @@ function localizationDecision(db, input, normalized) {
     policy_version: Number(state?.policy_version || 0),
     evidence_hash: normalized.facts_hash,
   };
+}
+
+// A 模式下本地化完成后停在 needs_review；作品所有者核对译文后人工放行到资产阶段。
+// 旧版本在 A 模式把「未配置预算」误判为 localization_budget_drift，同样只允许在 A 模式下放行。
+// 源版本、策略版本、事实哈希必须仍与本地化结果一致，否则拒绝。
+const REVIEWABLE_LOCALIZATION_REASONS = new Set(['safe_mode_requires_review', 'localization_budget_drift']);
+
+function approveLocalizationReview(db, input = {}) {
+  const normalized = {
+    ...input,
+    ...ownerFromInput(input),
+    workId: Number(input.workId ?? input.work_id),
+    versionId: Number(input.versionId ?? input.version_id),
+  };
+  const expectedFactsHash = trim(input.expectedFactsHash ?? input.expected_facts_hash);
+  if (!/^[a-f0-9]{64}$/.test(expectedFactsHash)) {
+    throw codedError('REDRAW_LOCALIZATION_REVIEW_FACTS_HASH_REQUIRED', '请确认当前本地化结果后再提交');
+  }
+  return db.transaction(() => {
+    getOwnedWork(db, normalized);
+    const version = db.prepare(`
+      SELECT *
+      FROM redraw_versions
+      WHERE id = ? AND work_id = ? AND tenant_id = ? AND user_id = ?
+        AND COALESCE(locale, '') != 'source' AND deleted_at IS NULL
+      LIMIT 1
+    `).get(normalized.versionId, normalized.workId, normalized.tenantId, normalized.userId);
+    if (!version || !version.localization_task_id) {
+      throw codedError('REDRAW_LOCALIZATION_REVIEW_UNAVAILABLE', '当前作品没有可确认的本地化结果');
+    }
+    const task = db.prepare(`
+      SELECT id, result
+      FROM async_tasks
+      WHERE id = ? AND type = 'redraw_localization' AND status = 'completed'
+        AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+      LIMIT 1
+    `).get(String(version.localization_task_id), normalized.tenantId, normalized.userId);
+    const result = parseJson(task?.result, null);
+    const decision = result?.localization_decision;
+    if (!result || !decision || Number(result.version_id) !== Number(version.id)
+      || Number(result.work_id) !== normalized.workId) {
+      throw codedError('REDRAW_LOCALIZATION_REVIEW_UNAVAILABLE', '当前作品没有可确认的本地化结果');
+    }
+    if (String(decision.evidence_hash || '') !== expectedFactsHash
+      || String(result.facts_hash || '') !== expectedFactsHash
+      || String(version.facts_hash || '') !== expectedFactsHash) {
+      throw codedError('REDRAW_LOCALIZATION_REVIEW_STALE', '本地化事实已变化，请刷新后重新确认');
+    }
+    if (decision.action === 'advance') return { approved: false, localization_decision: decision, version_id: version.id };
+    const state = projectState(db, normalized);
+    const snapshot = parseJson(version.localization_model_snapshot_json, {});
+    const currentSource = db.prepare(`
+      SELECT id, facts_hash
+      FROM redraw_versions
+      WHERE work_id = ? AND tenant_id = ? AND user_id = ?
+        AND locale = 'source' AND source_facts_json IS NOT NULL AND TRIM(source_facts_json) != ''
+        AND deleted_at IS NULL
+      ORDER BY id ASC
+      LIMIT 1
+    `).get(normalized.workId, normalized.tenantId, normalized.userId);
+    const reasons = Array.isArray(decision.reason_codes) ? decision.reason_codes : [];
+    if (String(state?.execution_mode || '') !== 'safe'
+      || !['needs_review', 'blocked'].includes(decision.action)
+      || !reasons.length
+      || !reasons.every((code) => REVIEWABLE_LOCALIZATION_REASONS.has(code))
+      || Number(decision.policy_version) !== Number(state?.policy_version || 0)
+      || Number(snapshot?.source_version_id) !== Number(currentSource?.id)
+      || String(currentSource?.facts_hash || '') !== expectedFactsHash) {
+      throw codedError('REDRAW_LOCALIZATION_REVIEW_NOT_ALLOWED', '当前本地化结论不能人工放行');
+    }
+    const now = new Date().toISOString();
+    const approved = {
+      action: 'advance',
+      effective_mode: 'safe',
+      reason_codes: ['localization_review_approved'],
+      policy_version: Number(decision.policy_version),
+      version_id: Number(version.id),
+      evidence_hash: expectedFactsHash,
+    };
+    db.prepare('UPDATE async_tasks SET result = ?, updated_at = ? WHERE id = ?').run(JSON.stringify({
+      ...result,
+      localization_decision: approved,
+      localization_review: {
+        previous_action: decision.action,
+        previous_reason_codes: reasons,
+        approved_by: normalized.userId,
+        approved_at: now,
+      },
+    }), now, task.id);
+    db.prepare("UPDATE redraw_versions SET status = 'asset_review', updated_at = ? WHERE id = ?").run(now, version.id);
+    db.prepare(`
+      UPDATE redraw_works
+      SET current_version = ?, current_step = 2, status = 'asset_review', updated_at = ?
+      WHERE id = ? AND tenant_id = ? AND user_id = ?
+    `).run(Number(version.version), now, normalized.workId, normalized.tenantId, normalized.userId);
+    if (tableExists(db, 'redraw_workflow_events') && state?.project_id) {
+      appendWorkflowEvent(db, {
+        tenantId: normalized.tenantId,
+        userId: normalized.userId,
+        projectId: Number(state.project_id),
+        resourceType: 'version',
+        resourceId: String(version.id),
+        fromState: String(version.status || ''),
+        toState: 'asset_review',
+        reasonCode: 'localization_review_approved',
+        evidenceHash: expectedFactsHash,
+        metadata: {
+          action: 'advance',
+          effective_mode: 'safe',
+          previous_action: decision.action,
+          previous_reason_codes: reasons,
+          policy_version: Number(decision.policy_version),
+        },
+        createdAt: now,
+      });
+    }
+    return { approved: true, localization_decision: approved, version_id: version.id };
+  }).immediate();
 }
 
 function confirmReservationInTransaction(db, reservationId) {
@@ -834,6 +954,7 @@ module.exports = {
   buildLocalizationSnapshot,
   getAnalysisAutomationDecision,
   approveAnalysisReview,
+  approveLocalizationReview,
   quoteLocalization,
   startLocalization,
   reconcileOrphanedTasks,

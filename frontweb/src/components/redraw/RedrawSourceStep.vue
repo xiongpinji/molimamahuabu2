@@ -120,6 +120,16 @@
           确认分析结果
         </el-button>
       </div>
+      <div v-else-if="needsLocalizationReview" class="billing-row">
+        <strong>本地化已完成（安全模式）：请核对译文后确认进入资产阶段</strong>
+        <el-button
+          type="primary"
+          :loading="localizationReviewSubmitting"
+          @click="confirmLocalizationReview"
+        >
+          确认本地化结果
+        </el-button>
+      </div>
       <div v-else class="billing-row">
         <strong v-if="hasLocalizationQuote" class="canvas-credit-callout-v1">本地化报价 {{ localizationCredits }} 积分</strong>
         <strong v-else class="canvas-credit-callout-v1">本地化报价待管理员配置</strong>
@@ -174,6 +184,7 @@ import StylePresetPicker from '@/components/redraw/StylePresetPicker.vue'
 import {
   analysisQuoteCredits,
   analysisReviewPending,
+  localizationReviewPending,
   buildAnalyzePayload,
   buildLocalizationPayload,
   canConfirmLocalization,
@@ -220,6 +231,7 @@ const uploading = ref(false)
 const submitting = ref(false)
 const localizationSubmitting = ref(false)
 const analysisReviewSubmitting = ref(false)
+const localizationReviewSubmitting = ref(false)
 const taskState = ref({ task_id: '', status: '', progress: 0 })
 const localizationState = ref(localizationTaskState(props.initialWork))
 const workflowPhase = ref(redrawWorkflowPhase(props.initialWork))
@@ -242,6 +254,7 @@ const canStartAnalysis = computed(() => canStartRedrawAnalysis({
 }))
 const canSubmitLocalization = computed(() => canConfirmLocalization(workState.value))
 const needsAnalysisReview = computed(() => analysisReviewPending(workState.value))
+const needsLocalizationReview = computed(() => localizationReviewPending(workState.value))
 const eightStageState = computed(() => resolveEightStageState({
   ...(workState.value || {}),
   events: props.events,
@@ -367,11 +380,29 @@ async function confirmAnalysisReview() {
   }
 }
 
+async function confirmLocalizationReview() {
+  const work = workState.value
+  if (!localizationReviewPending(work) || localizationReviewSubmitting.value) return
+  localizationReviewSubmitting.value = true
+  try {
+    await redrawAPI.approveLocalizationReview(work.id, {
+      versionId: work.localization_decision.version_id,
+      expectedFactsHash: work.localization_decision.evidence_hash,
+    })
+    await refreshWork()
+  } catch (error) {
+    ElMessage.error(error.message || '确认本地化结果失败')
+  } finally {
+    localizationReviewSubmitting.value = false
+  }
+}
+
 async function ensureLocalizationQuote(work = workState.value) {
   if (
     !work?.id
       || work?.localization_quote
       || analysisReviewPending(work)
+      || localizationReviewPending(work)
       || !['analysis_review', 'localization_needs_attention', 'failed'].includes(redrawWorkflowPhase(work))
   ) {
     return

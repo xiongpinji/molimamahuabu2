@@ -10,6 +10,7 @@ const {
 } = require('../src/services/localizationService');
 const {
   approveAnalysisReview,
+  approveLocalizationReview,
   quoteLocalization,
   startLocalization,
   reconcileOrphanedTasks,
@@ -1323,5 +1324,86 @@ test('analysis review approval fails closed for stale hash, blocked decisions, o
     (error) => error.code === 'REDRAW_ANALYSIS_REVIEW_UNAVAILABLE',
   );
   assert.equal(db.prepare("SELECT COUNT(*) AS count FROM async_tasks WHERE type = 'redraw_localization'").get().count, 0);
+  db.close();
+});
+
+async function safeV2Localized(options = {}) {
+  const db = createDb({ sourceFacts: v2SourceFacts(), executionMode: 'safe' });
+  if (options.clearBudget) db.prepare('UPDATE redraw_projects SET budget_limit_credits = NULL WHERE id = 1').run();
+  const started = await startWithQuote(db, { idempotencyKey: `idem-safe-review-${options.key || 'x'}` }, {
+    provider: providerReturning(v2LocalizedResult()),
+  });
+  await started.completion;
+  const version = db.prepare('SELECT id, facts_hash FROM redraw_versions WHERE id = ?').get(started.draft_version_id);
+  return { db, started, version };
+}
+
+test('safe-mode v2 localization without a budget limit goes to needs_review instead of budget_drift', async () => {
+  const { db, started } = await safeV2Localized({ clearBudget: true, key: 'no-budget' });
+  const result = JSON.parse(taskService.getTask(db, started.task_id).result);
+  assert.equal(result.localization_decision.action, 'needs_review');
+  assert.deepEqual(result.localization_decision.reason_codes, ['safe_mode_requires_review']);
+  db.close();
+});
+
+test('safe-mode localization review approval advances the version to asset_review with audit trail', async () => {
+  const { db, started, version } = await safeV2Localized({ clearBudget: true, key: 'approve' });
+  const input = { ...quoteInput(), versionId: version.id, expectedFactsHash: version.facts_hash };
+  const approved = approveLocalizationReview(db, input);
+  assert.equal(approved.approved, true);
+  assert.deepEqual(approved.localization_decision.reason_codes, ['localization_review_approved']);
+
+  const result = JSON.parse(taskService.getTask(db, started.task_id).result);
+  assert.equal(result.localization_decision.action, 'advance');
+  assert.equal(result.localization_decision.version_id, version.id);
+  assert.equal(result.localization_review.previous_action, 'needs_review');
+  assert.equal(result.localization_review.approved_by, 'user-a');
+  assert.equal(db.prepare('SELECT status FROM redraw_versions WHERE id = ?').get(version.id).status, 'asset_review');
+  assert.deepEqual(db.prepare('SELECT current_step, status FROM redraw_works WHERE id = 1').get(), {
+    current_step: 2,
+    status: 'asset_review',
+  });
+  assert.deepEqual(db.prepare('SELECT reason_code, to_state FROM redraw_workflow_events ORDER BY id DESC LIMIT 1').get(), {
+    reason_code: 'localization_review_approved',
+    to_state: 'asset_review',
+  });
+  assert.equal(approveLocalizationReview(db, input).approved, false);
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM async_tasks WHERE type = 'redraw_asset_batch'").get().count, 0);
+  db.close();
+});
+
+test('localization review approval releases legacy safe-mode budget_drift but rejects other blocks', async () => {
+  const { db, started, version } = await safeV2Localized({ key: 'legacy' });
+  const task = taskService.getTask(db, started.task_id);
+  const result = JSON.parse(task.result);
+  const withDecision = (decision) => db.prepare('UPDATE async_tasks SET result = ? WHERE id = ?')
+    .run(JSON.stringify({ ...result, localization_decision: { ...result.localization_decision, ...decision } }), task.id);
+  const input = { ...quoteInput(), versionId: version.id, expectedFactsHash: version.facts_hash };
+  const notAllowed = (error) => error.code === 'REDRAW_LOCALIZATION_REVIEW_NOT_ALLOWED';
+
+  withDecision({ action: 'blocked', reason_codes: ['localization_source_drift'] });
+  assert.throws(() => approveLocalizationReview(db, input), notAllowed);
+  withDecision({ action: 'blocked', reason_codes: ['localization_policy_drift'] });
+  assert.throws(() => approveLocalizationReview(db, input), notAllowed);
+
+  withDecision({ action: 'blocked', reason_codes: ['localization_budget_drift'] });
+  db.prepare("UPDATE redraw_projects SET execution_mode = 'auto' WHERE id = 1").run();
+  assert.throws(() => approveLocalizationReview(db, input), notAllowed);
+  db.prepare("UPDATE redraw_projects SET execution_mode = 'safe' WHERE id = 1").run();
+
+  assert.throws(
+    () => approveLocalizationReview(db, { ...input, expectedFactsHash: 'b'.repeat(64) }),
+    (error) => error.code === 'REDRAW_LOCALIZATION_REVIEW_STALE',
+  );
+  assert.throws(
+    () => approveLocalizationReview(db, { ...input, userId: 'user-b' }),
+    (error) => error.code === 'REDRAW_LOCALIZATION_WORK_NOT_FOUND',
+  );
+  db.prepare('UPDATE redraw_projects SET policy_version = 2 WHERE id = 1').run();
+  assert.throws(() => approveLocalizationReview(db, input), notAllowed);
+  db.prepare('UPDATE redraw_projects SET policy_version = 1 WHERE id = 1').run();
+
+  assert.equal(approveLocalizationReview(db, input).approved, true);
+  assert.equal(db.prepare('SELECT status FROM redraw_versions WHERE id = ?').get(version.id).status, 'asset_review');
   db.close();
 });

@@ -194,6 +194,12 @@ export const redrawAPI = {
   approveAnalysisReview(workId, expectedFactsHash) {
     return request.post(`/redraw/works/${workId}/analysis-review`, { expected_facts_hash: expectedFactsHash })
   },
+  approveLocalizationReview(workId, { versionId, expectedFactsHash }) {
+    return request.post(`/redraw/works/${workId}/localization-review`, {
+      version_id: versionId,
+      expected_facts_hash: expectedFactsHash,
+    })
+  },
   quoteLocalization(workId, body) {
     return request.post(`/redraw/works/${workId}/localization-quote`, body)
   },

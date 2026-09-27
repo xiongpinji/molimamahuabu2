@@ -283,6 +283,21 @@ export function analysisReviewPending(work) {
     && /^[a-f0-9]{64}$/.test(String(decision?.evidence_hash || ''))
 }
 
+const REVIEWABLE_LOCALIZATION_REASONS = new Set(['safe_mode_requires_review', 'localization_budget_drift'])
+
+export function localizationReviewPending(work) {
+  const decision = work?.localization_decision
+  const reasons = Array.isArray(decision?.reason_codes) ? decision.reason_codes : []
+  return normalizedStatus(work?.localization_task?.status) === 'completed'
+    && ['needs_review', 'blocked'].includes(decision?.action)
+    && decision?.effective_mode === 'safe'
+    && reasons.length > 0
+    && reasons.every((code) => REVIEWABLE_LOCALIZATION_REASONS.has(code))
+    && Number(decision?.version_id) > 0
+    && Number(decision?.version_id) === Number(work?.version_id)
+    && /^[a-f0-9]{64}$/.test(String(decision?.evidence_hash || ''))
+}
+
 export function canConfirmLocalization(work, expectedQuoteHash) {
   const quote = work?.localization_quote
   if (localizationQuoteCredits(work) == null || !String(quote?.quote_hash || '').trim()) return false

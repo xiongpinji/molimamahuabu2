@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   analysisQuoteCredits,
   analysisReviewPending,
+  localizationReviewPending,
   buildAnalyzePayload,
   buildLocalizationPayload,
   canConfirmLocalization,
@@ -122,6 +123,29 @@ test('普通 preset 与自由风格双向互斥并保留参考图字段', () => 
   selection.selectPreset({ id: 3, name: '真人写实' })
   assert.equal(selection.selectedPreset.id, 3)
   assert.deepEqual(selection.freeStyle, { positivePrompt: '', negativePrompt: '', referenceImage: null })
+})
+
+test('安全模式本地化完成后只对可人工放行的结论显示确认本地化结果', () => {
+  const hash = 'c'.repeat(64)
+  const base = {
+    version_id: 5,
+    localization_task: { status: 'completed' },
+    localization_decision: {
+      action: 'needs_review',
+      effective_mode: 'safe',
+      reason_codes: ['safe_mode_requires_review'],
+      version_id: 5,
+      evidence_hash: hash,
+    },
+  }
+  const withDecision = (patch) => ({ ...base, localization_decision: { ...base.localization_decision, ...patch } })
+  assert.equal(localizationReviewPending(base), true)
+  assert.equal(localizationReviewPending(withDecision({ action: 'blocked', reason_codes: ['localization_budget_drift'] })), true)
+  assert.equal(localizationReviewPending(withDecision({ action: 'blocked', reason_codes: ['localization_source_drift'] })), false)
+  assert.equal(localizationReviewPending(withDecision({ action: 'advance' })), false)
+  assert.equal(localizationReviewPending(withDecision({ effective_mode: 'auto' })), false)
+  assert.equal(localizationReviewPending(withDecision({ version_id: 4 })), false)
+  assert.equal(localizationReviewPending({ ...base, localization_task: { status: 'processing' } }), false)
 })
 
 test('安全模式分析待人工确认时先确认分析，确认后才进入本地化报价', () => {

@@ -3756,6 +3756,38 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
     }
   }
 
+  function approveLocalizationReview(req, res) {
+    const currentOwner = owner(req);
+    const work = findOwnedWork(req.params.id, currentOwner);
+    if (!work) return response.error(res, 404, 'REDRAW_WORK_NOT_FOUND', '转绘作品不存在');
+    const body = req.body || {};
+    const unexpected = Object.keys(body).filter((key) => !['version_id', 'expected_facts_hash'].includes(key));
+    const versionId = Number(body.version_id);
+    if (unexpected.length || !Number.isSafeInteger(versionId) || versionId <= 0) {
+      return response.error(res, 400, 'REDRAW_LOCALIZATION_REVIEW_INVALID', '本地化确认只接受 version_id 与 expected_facts_hash');
+    }
+    try {
+      const result = localizationOrchestrator.approveLocalizationReview(db, {
+        workId: work.id,
+        versionId,
+        tenantId: currentOwner.tenantId,
+        userId: currentOwner.userId,
+        expectedFactsHash: body.expected_facts_hash,
+      });
+      return response.success(res, {
+        approved: result.approved,
+        version_id: result.version_id,
+        localization_decision: result.localization_decision,
+      });
+    } catch (error) {
+      if (['REDRAW_LOCALIZATION_REVIEW_STALE', 'REDRAW_LOCALIZATION_REVIEW_NOT_ALLOWED',
+        'REDRAW_LOCALIZATION_REVIEW_UNAVAILABLE'].includes(String(error?.code || ''))) {
+        return response.error(res, 409, error.code, error.message);
+      }
+      return sendLocalizationError(res, error, '确认本地化结果失败', log, { workId: work.id });
+    }
+  }
+
   function localizationQuote(req, res) {
     const currentOwner = owner(req);
     const work = findOwnedWork(req.params.id, currentOwner);
@@ -5212,6 +5244,7 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
     nativeAudioReview,
     generateBatch,
     approveAnalysisReview,
+    approveLocalizationReview,
     localizationQuote,
     createVersion,
     registerFullFrameCoverage,

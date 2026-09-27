@@ -1918,6 +1918,52 @@ test('分析人工确认只接受 expected_facts_hash，按服务端 owner 调�
   }
 });
 
+test('本地化人工确认只接受 version_id 与 expected_facts_hash 并映射冲突为 409', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId);
+    const calls = [];
+    const hash = 'f'.repeat(64);
+    let failWith = null;
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      localizationOrchestrator: {
+        approveLocalizationReview: (_db, input) => {
+          calls.push(input);
+          if (failWith) throw Object.assign(new Error('blocked'), { code: failWith });
+          return { approved: true, version_id: 9, localization_decision: { action: 'advance', evidence_hash: hash } };
+        },
+        quoteLocalization: () => { throw new Error('should not quote'); },
+        startLocalization: () => { throw new Error('should not start'); },
+      },
+    }));
+
+    const ok = captureResponse();
+    handlers.approveLocalizationReview(request({ id: workId, body: { version_id: 9, expected_facts_hash: hash } }), ok);
+    assert.equal(ok.statusCode, 200);
+    assert.equal(ok.body.data.version_id, 9);
+    assert.equal(ok.body.data.localization_decision.action, 'advance');
+    assert.deepEqual(calls[0], { workId, versionId: 9, tenantId: 'tenant-a', userId: 'user-a', expectedFactsHash: hash });
+
+    const missingVersion = captureResponse();
+    handlers.approveLocalizationReview(request({ id: workId, body: { expected_facts_hash: hash } }), missingVersion);
+    assert.equal(missingVersion.statusCode, 400);
+    const extra = captureResponse();
+    handlers.approveLocalizationReview(request({ id: workId, body: { version_id: 9, expected_facts_hash: hash, action: 'advance' } }), extra);
+    assert.equal(extra.statusCode, 400);
+    assert.equal(extra.body.error.code, 'REDRAW_LOCALIZATION_REVIEW_INVALID');
+
+    failWith = 'REDRAW_LOCALIZATION_REVIEW_NOT_ALLOWED';
+    const blocked = captureResponse();
+    handlers.approveLocalizationReview(request({ id: workId, body: { version_id: 9, expected_facts_hash: hash } }), blocked);
+    assert.equal(blocked.statusCode, 409);
+    assert.equal(blocked.body.error.code, 'REDRAW_LOCALIZATION_REVIEW_NOT_ALLOWED');
+    assert.equal(calls.length, 2);
+  } finally {
+    db.close();
+  }
+});
+
 test('本地化报价未配置能力或价格返回 409 且无副作用', () => {
   const db = createDb();
   try {
