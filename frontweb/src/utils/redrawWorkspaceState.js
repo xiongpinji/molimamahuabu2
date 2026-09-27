@@ -275,6 +275,14 @@ export function localizationTaskState(work) {
   }
 }
 
+export function analysisReviewPending(work) {
+  const decision = work?.analysis_decision
+  return redrawWorkflowPhase(work) === 'analysis_review'
+    && decision?.action === 'needs_review'
+    && decision?.effective_mode === 'safe'
+    && /^[a-f0-9]{64}$/.test(String(decision?.evidence_hash || ''))
+}
+
 export function canConfirmLocalization(work, expectedQuoteHash) {
   const quote = work?.localization_quote
   if (localizationQuoteCredits(work) == null || !String(quote?.quote_hash || '').trim()) return false

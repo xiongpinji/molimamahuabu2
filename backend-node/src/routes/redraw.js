@@ -3727,6 +3727,35 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
     }
   }
 
+  function approveAnalysisReview(req, res) {
+    const currentOwner = owner(req);
+    const work = findOwnedWork(req.params.id, currentOwner);
+    if (!work) return response.error(res, 404, 'REDRAW_WORK_NOT_FOUND', '转绘作品不存在');
+    const body = req.body || {};
+    const unexpected = Object.keys(body).filter((key) => key !== 'expected_facts_hash');
+    if (unexpected.length) {
+      return response.error(res, 400, 'REDRAW_ANALYSIS_REVIEW_INVALID', '分析确认只接受 expected_facts_hash');
+    }
+    try {
+      const result = localizationOrchestrator.approveAnalysisReview(db, {
+        workId: work.id,
+        tenantId: currentOwner.tenantId,
+        userId: currentOwner.userId,
+        expectedFactsHash: body.expected_facts_hash,
+      });
+      return response.success(res, {
+        approved: result.approved,
+        analysis_decision: result.automation_decision,
+      });
+    } catch (error) {
+      if (['REDRAW_ANALYSIS_REVIEW_STALE', 'REDRAW_ANALYSIS_REVIEW_NOT_ALLOWED',
+        'REDRAW_ANALYSIS_REVIEW_UNAVAILABLE'].includes(String(error?.code || ''))) {
+        return response.error(res, 409, error.code, error.message);
+      }
+      return sendLocalizationError(res, error, '确认分析结果失败', log, { workId: work.id });
+    }
+  }
+
   function localizationQuote(req, res) {
     const currentOwner = owner(req);
     const work = findOwnedWork(req.params.id, currentOwner);
@@ -5182,6 +5211,7 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
     generateShot,
     nativeAudioReview,
     generateBatch,
+    approveAnalysisReview,
     localizationQuote,
     createVersion,
     registerFullFrameCoverage,

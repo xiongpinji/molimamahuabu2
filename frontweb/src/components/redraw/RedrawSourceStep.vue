@@ -110,7 +110,17 @@
         <span>{{ workState?.analysis_task?.status || taskState.status || 'completed' }}</span>
       </div>
       <p>{{ workState?.analysis_summary || workState?.analysis_task?.message || '分析已完成，请确认后创建英文 1:1 本地化版本。' }}</p>
-      <div class="billing-row">
+      <div v-if="needsAnalysisReview" class="billing-row">
+        <strong>安全模式：请人工确认分析结果后再进入本地化</strong>
+        <el-button
+          type="primary"
+          :loading="analysisReviewSubmitting"
+          @click="confirmAnalysisReview"
+        >
+          确认分析结果
+        </el-button>
+      </div>
+      <div v-else class="billing-row">
         <strong v-if="hasLocalizationQuote" class="canvas-credit-callout-v1">本地化报价 {{ localizationCredits }} 积分</strong>
         <strong v-else class="canvas-credit-callout-v1">本地化报价待管理员配置</strong>
         <el-button
@@ -163,6 +173,7 @@ import { redrawAPI } from '@/api/redraw'
 import StylePresetPicker from '@/components/redraw/StylePresetPicker.vue'
 import {
   analysisQuoteCredits,
+  analysisReviewPending,
   buildAnalyzePayload,
   buildLocalizationPayload,
   canConfirmLocalization,
@@ -208,6 +219,7 @@ const workState = ref(props.initialWork)
 const uploading = ref(false)
 const submitting = ref(false)
 const localizationSubmitting = ref(false)
+const analysisReviewSubmitting = ref(false)
 const taskState = ref({ task_id: '', status: '', progress: 0 })
 const localizationState = ref(localizationTaskState(props.initialWork))
 const workflowPhase = ref(redrawWorkflowPhase(props.initialWork))
@@ -229,6 +241,7 @@ const canStartAnalysis = computed(() => canStartRedrawAnalysis({
   freeStyle: freeStyle.value,
 }))
 const canSubmitLocalization = computed(() => canConfirmLocalization(workState.value))
+const needsAnalysisReview = computed(() => analysisReviewPending(workState.value))
 const eightStageState = computed(() => resolveEightStageState({
   ...(workState.value || {}),
   events: props.events,
@@ -340,10 +353,25 @@ async function refreshWork() {
   return fresh
 }
 
+async function confirmAnalysisReview() {
+  const work = workState.value
+  if (!analysisReviewPending(work) || analysisReviewSubmitting.value) return
+  analysisReviewSubmitting.value = true
+  try {
+    await redrawAPI.approveAnalysisReview(work.id, work.analysis_decision.evidence_hash)
+    await refreshWork()
+  } catch (error) {
+    ElMessage.error(error.message || '确认分析结果失败')
+  } finally {
+    analysisReviewSubmitting.value = false
+  }
+}
+
 async function ensureLocalizationQuote(work = workState.value) {
   if (
     !work?.id
       || work?.localization_quote
+      || analysisReviewPending(work)
       || !['analysis_review', 'localization_needs_attention', 'failed'].includes(redrawWorkflowPhase(work))
   ) {
     return

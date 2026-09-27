@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   analysisQuoteCredits,
+  analysisReviewPending,
   buildAnalyzePayload,
   buildLocalizationPayload,
   canConfirmLocalization,
@@ -121,6 +122,28 @@ test('普通 preset 与自由风格双向互斥并保留参考图字段', () => 
   selection.selectPreset({ id: 3, name: '真人写实' })
   assert.equal(selection.selectedPreset.id, 3)
   assert.deepEqual(selection.freeStyle, { positivePrompt: '', negativePrompt: '', referenceImage: null })
+})
+
+test('安全模式分析待人工确认时先确认分析，确认后才进入本地化报价', () => {
+  const hash = 'd'.repeat(64)
+  const pending = {
+    workflow_phase: 'analysis_review',
+    analysis_decision: { action: 'needs_review', effective_mode: 'safe', evidence_hash: hash },
+  }
+  assert.equal(analysisReviewPending(pending), true)
+  assert.equal(analysisReviewPending({
+    ...pending,
+    analysis_decision: { ...pending.analysis_decision, action: 'advance' },
+  }), false)
+  assert.equal(analysisReviewPending({
+    ...pending,
+    analysis_decision: { ...pending.analysis_decision, action: 'blocked' },
+  }), false)
+  assert.equal(analysisReviewPending({ ...pending, workflow_phase: 'asset_review' }), false)
+  assert.equal(analysisReviewPending({
+    ...pending,
+    analysis_decision: { ...pending.analysis_decision, evidence_hash: '' },
+  }), false)
 })
 
 test('分析完成后停留确认态且本地化任务独立恢复', () => {

@@ -9,6 +9,7 @@ const {
   buildLocalizationInput,
 } = require('../src/services/localizationService');
 const {
+  approveAnalysisReview,
   quoteLocalization,
   startLocalization,
   reconcileOrphanedTasks,
@@ -1237,5 +1238,90 @@ test('reconcile orphaned free localization task fails without reservation or led
   assert.equal(task.credit_reservation_id, null);
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM tenant_usage_reservations').get().count, 0);
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM tenant_credit_ledger').get().count, 0);
+  db.close();
+});
+
+function safeReviewDecision() {
+  return {
+    action: 'needs_review',
+    effective_mode: 'safe',
+    reason_codes: ['safe_mode_requires_review'],
+    policy_version: 1,
+    evidence_hash: buildLocalizationInput(sourceFacts(), { locale: 'source' }).source_facts_hash,
+    effective_analysis_state: 'analysis_review',
+  };
+}
+
+test('safe-mode analysis review approval unlocks localization quote for the same facts only', () => {
+  const db = createDb({ executionMode: 'safe' });
+  const decision = safeReviewDecision();
+  setAnalysisDecision(db, decision);
+  assert.equal(quoteLocalization(db, quoteInput()).code, 'REDRAW_LOCALIZATION_ANALYSIS_NOT_ADVANCED');
+
+  const result = approveAnalysisReview(db, { ...quoteInput(), expectedFactsHash: decision.evidence_hash });
+  assert.equal(result.approved, true);
+  assert.equal(result.automation_decision.action, 'advance');
+  assert.equal(result.automation_decision.effective_mode, 'safe');
+  assert.deepEqual(result.automation_decision.reason_codes, ['analysis_review_approved']);
+
+  const stored = JSON.parse(db.prepare("SELECT result FROM async_tasks WHERE id = 'task-analysis'").get().result);
+  assert.equal(stored.version_id, 1);
+  assert.equal(stored.analysis_review.approved_by, 'user-a');
+  assert.equal(stored.analysis_review.previous_action, 'needs_review');
+  assert.deepEqual(db.prepare('SELECT reason_code, evidence_hash FROM redraw_workflow_events ORDER BY id DESC LIMIT 1').get(), {
+    reason_code: 'analysis_review_approved',
+    evidence_hash: decision.evidence_hash,
+  });
+
+  assert.equal(quoteLocalization(db, quoteInput()).priced, true);
+
+  const again = approveAnalysisReview(db, { ...quoteInput(), expectedFactsHash: decision.evidence_hash });
+  assert.equal(again.approved, false);
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM redraw_workflow_events WHERE reason_code = 'analysis_review_approved'").get().count, 1);
+  db.close();
+});
+
+test('analysis review approval fails closed for stale hash, blocked decisions, other owners and policy drift', () => {
+  const decision = safeReviewDecision();
+
+  let db = createDb({ executionMode: 'safe' });
+  setAnalysisDecision(db, decision);
+  assert.throws(
+    () => approveAnalysisReview(db, { ...quoteInput(), expectedFactsHash: 'a'.repeat(64) }),
+    (error) => error.code === 'REDRAW_ANALYSIS_REVIEW_STALE',
+  );
+  assert.throws(
+    () => approveAnalysisReview(db, { ...quoteInput(), expectedFactsHash: 'not-a-hash' }),
+    (error) => error.code === 'REDRAW_ANALYSIS_REVIEW_FACTS_HASH_REQUIRED',
+  );
+  assert.throws(
+    () => approveAnalysisReview(db, { ...quoteInput({ userId: 'user-b' }), expectedFactsHash: decision.evidence_hash }),
+    (error) => error.code === 'REDRAW_LOCALIZATION_WORK_NOT_FOUND',
+  );
+  db.close();
+
+  db = createDb({ executionMode: 'safe' });
+  setAnalysisDecision(db, {
+    ...decision,
+    action: 'blocked',
+    reason_codes: ['facts_gate_failed'],
+    effective_analysis_state: 'blocked',
+  });
+  assert.throws(
+    () => approveAnalysisReview(db, { ...quoteInput(), expectedFactsHash: decision.evidence_hash }),
+    (error) => error.code === 'REDRAW_ANALYSIS_REVIEW_NOT_ALLOWED',
+  );
+  db.close();
+
+  db = createDb({ executionMode: 'safe' });
+  setAnalysisDecision(db, decision);
+  approveAnalysisReview(db, { ...quoteInput(), expectedFactsHash: decision.evidence_hash });
+  db.prepare('UPDATE redraw_projects SET policy_version = 2 WHERE id = 1').run();
+  assert.equal(quoteLocalization(db, quoteInput()).code, 'REDRAW_LOCALIZATION_ANALYSIS_NOT_ADVANCED');
+  assert.throws(
+    () => approveAnalysisReview(db, { ...quoteInput(), expectedFactsHash: decision.evidence_hash }),
+    (error) => error.code === 'REDRAW_ANALYSIS_REVIEW_UNAVAILABLE',
+  );
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM async_tasks WHERE type = 'redraw_localization'").get().count, 0);
   db.close();
 });

@@ -1871,6 +1871,53 @@ test('本地化报价只使用服务端 owner 与能力上下文并按租户隔�
   }
 });
 
+test('分析人工确认只接受 expected_facts_hash，按服务端 owner 调用并映射冲突为 409', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId);
+    const calls = [];
+    const hash = 'e'.repeat(64);
+    let failWith = null;
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      localizationOrchestrator: {
+        approveAnalysisReview: (_db, input) => {
+          calls.push(input);
+          if (failWith) throw Object.assign(new Error('stale'), { code: failWith });
+          return { approved: true, automation_decision: { action: 'advance', evidence_hash: hash } };
+        },
+        quoteLocalization: () => { throw new Error('should not quote'); },
+        startLocalization: () => { throw new Error('should not start'); },
+      },
+    }));
+
+    const ok = captureResponse();
+    handlers.approveAnalysisReview(request({ id: workId, body: { expected_facts_hash: hash } }), ok);
+    assert.equal(ok.statusCode, 200);
+    assert.equal(ok.body.data.approved, true);
+    assert.equal(ok.body.data.analysis_decision.action, 'advance');
+    assert.deepEqual(calls[0], { workId, tenantId: 'tenant-a', userId: 'user-a', expectedFactsHash: hash });
+
+    const extra = captureResponse();
+    handlers.approveAnalysisReview(request({ id: workId, body: { expected_facts_hash: hash, action: 'advance' } }), extra);
+    assert.equal(extra.statusCode, 400);
+    assert.equal(extra.body.error.code, 'REDRAW_ANALYSIS_REVIEW_INVALID');
+
+    failWith = 'REDRAW_ANALYSIS_REVIEW_STALE';
+    const stale = captureResponse();
+    handlers.approveAnalysisReview(request({ id: workId, body: { expected_facts_hash: hash } }), stale);
+    assert.equal(stale.statusCode, 409);
+    assert.equal(stale.body.error.code, 'REDRAW_ANALYSIS_REVIEW_STALE');
+
+    const otherTenant = captureResponse();
+    handlers.approveAnalysisReview(request({ id: workId, tenantId: 'tenant-b', body: { expected_facts_hash: hash } }), otherTenant);
+    assert.equal(otherTenant.statusCode, 404);
+    assert.equal(calls.length, 2);
+  } finally {
+    db.close();
+  }
+});
+
 test('本地化报价未配置能力或价格返回 409 且无副作用', () => {
   const db = createDb();
   try {

@@ -5,6 +5,7 @@ const localizationService = require('./localizationService');
 const modelPrice = require('./modelPriceService');
 const redrawCapability = require('./redrawCapabilityService');
 const taskService = require('./taskService');
+const { appendWorkflowEvent } = require('./redrawWorkflowEventService');
 
 function codedError(code, message, details = {}) {
   return Object.assign(new Error(message), { code, ...details });
@@ -144,6 +145,84 @@ function getAnalysisAutomationDecision(db, input = {}) {
   `).get(String(work.task_id), String(normalized.workId), normalized.tenantId, normalized.userId);
   const parsed = parseJson(task?.result, null);
   return safeAutomationDecision(parsed, sourceVersion.facts_hash, sourceVersion.id, project.policy_version);
+}
+
+// A 模式（safe）下分析完成后停在 needs_review，由作品所有者人工确认后才放行本地化。
+// 确认只把同一份事实（evidence_hash + version_id + policy_version 全部匹配）的
+// needs_review 改写为 advance，并留下 analysis_review_approved 审计事件。
+function approveAnalysisReview(db, input = {}) {
+  const normalized = {
+    ...input,
+    ...ownerFromInput(input),
+    workId: Number(input.workId ?? input.work_id),
+  };
+  const expectedFactsHash = trim(input.expectedFactsHash ?? input.expected_facts_hash);
+  if (!/^[a-f0-9]{64}$/.test(expectedFactsHash)) {
+    throw codedError('REDRAW_ANALYSIS_REVIEW_FACTS_HASH_REQUIRED', '请确认当前分析事实后再提交');
+  }
+  return db.transaction(() => {
+    const work = getOwnedWork(db, normalized);
+    const decision = getAnalysisAutomationDecision(db, normalized);
+    if (!decision) {
+      throw codedError('REDRAW_ANALYSIS_REVIEW_UNAVAILABLE', '当前作品没有可确认的分析结果');
+    }
+    if (decision.evidence_hash !== expectedFactsHash) {
+      throw codedError('REDRAW_ANALYSIS_REVIEW_STALE', '分析事实已变化，请刷新后重新确认');
+    }
+    if (decision.action === 'advance') return { approved: false, automation_decision: decision };
+    if (decision.action !== 'needs_review' || decision.effective_mode !== 'safe') {
+      throw codedError('REDRAW_ANALYSIS_REVIEW_NOT_ALLOWED', '当前分析结论不能人工放行');
+    }
+    const task = db.prepare(`
+      SELECT id, result
+      FROM async_tasks
+      WHERE id = ? AND type = 'redraw_analysis'
+        AND resource_id = ? AND tenant_id = ? AND user_id = ?
+        AND deleted_at IS NULL
+      LIMIT 1
+    `).get(String(work.task_id), String(normalized.workId), normalized.tenantId, normalized.userId);
+    const result = parseJson(task?.result, null);
+    const now = new Date().toISOString();
+    const approved = {
+      action: 'advance',
+      effective_mode: 'safe',
+      reason_codes: ['analysis_review_approved'],
+      policy_version: decision.policy_version,
+      evidence_hash: decision.evidence_hash,
+      effective_analysis_state: 'analysis_review',
+    };
+    db.prepare('UPDATE async_tasks SET result = ?, updated_at = ? WHERE id = ?').run(JSON.stringify({
+      ...result,
+      automation_decision: approved,
+      analysis_review: {
+        previous_action: decision.action,
+        previous_reason_codes: decision.reason_codes,
+        approved_by: normalized.userId,
+        approved_at: now,
+      },
+    }), now, task.id);
+    if (tableExists(db, 'redraw_workflow_events') && work.project_id) {
+      appendWorkflowEvent(db, {
+        tenantId: normalized.tenantId,
+        userId: normalized.userId,
+        projectId: Number(work.project_id),
+        resourceType: 'version',
+        resourceId: String(result.version_id),
+        fromState: 'analysis_review',
+        toState: 'analysis_review',
+        reasonCode: 'analysis_review_approved',
+        evidenceHash: decision.evidence_hash,
+        metadata: {
+          action: 'advance',
+          effective_mode: 'safe',
+          previous_action: decision.action,
+          policy_version: decision.policy_version,
+        },
+        createdAt: now,
+      });
+    }
+    return { approved: true, automation_decision: approved };
+  })();
 }
 
 function analysisGateQuote(db, input) {
@@ -754,6 +833,7 @@ module.exports = {
   stableHash,
   buildLocalizationSnapshot,
   getAnalysisAutomationDecision,
+  approveAnalysisReview,
   quoteLocalization,
   startLocalization,
   reconcileOrphanedTasks,

@@ -191,6 +191,9 @@ export const redrawAPI = {
   generateBatch(workId, body = {}) {
     return request.post(`/redraw/works/${workId}/generate-batch`, body)
   },
+  approveAnalysisReview(workId, expectedFactsHash) {
+    return request.post(`/redraw/works/${workId}/analysis-review`, { expected_facts_hash: expectedFactsHash })
+  },
   quoteLocalization(workId, body) {
     return request.post(`/redraw/works/${workId}/localization-quote`, body)
   },

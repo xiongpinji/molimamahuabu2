@@ -127,6 +127,8 @@ test('分析确认与英文 1:1 本地化使用服务端报价、独立轮询和
   assert.match(sourceStepSource, /服务端分析摘要/)
   assert.match(sourceStepSource, /本地化报价/)
   assert.match(sourceStepSource, /确认英文 1:1 本地化/)
+  assert.match(sourceStepSource, /确认分析结果/)
+  assert.match(sourceStepSource, /approveAnalysisReview/)
   assert.match(sourceStepSource, /请勿重复提交/)
   assert.match(sourceStepSource, /等待退款确认/)
   assert.match(sourceStepSource, /crypto\.randomUUID\(\)/)
