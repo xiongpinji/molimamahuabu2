@@ -26,6 +26,7 @@ const redrawExportService = require('../services/redrawExportService');
 const redrawNativeSourceAnalysisService = require('../services/redrawNativeSourceAnalysisService');
 const redrawProjectPolicyService = require('../services/redrawProjectPolicyService');
 const redrawWorkflowEventService = require('../services/redrawWorkflowEventService');
+const redrawFactoryImportService = require('../services/redrawFactoryImportService');
 const redrawCharacterPlanService = require('../services/redrawCharacterPlanService');
 const redrawPreparationGateService = require('../services/redrawPreparationGateService');
 const redrawReferencePreparationOrchestrator = require('../services/redrawReferencePreparationOrchestrator');
@@ -3727,6 +3728,29 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
     }
   }
 
+  function importToFactory(req, res) {
+    const currentOwner = owner(req);
+    const work = findOwnedWork(req.params.id, currentOwner);
+    if (!work) return response.error(res, 404, 'REDRAW_WORK_NOT_FOUND', '转绘作品不存在');
+    if (Object.keys(req.body || {}).length) {
+      return response.error(res, 400, 'REDRAW_FACTORY_IMPORT_INVALID', '导入短剧工厂不接受请求参数');
+    }
+    try {
+      const result = redrawFactoryImportService.importRedrawWorkToFactory(db, log, {
+        workId: work.id,
+        tenantId: currentOwner.tenantId,
+        userId: currentOwner.userId,
+        storageRoot: storageRootFromConfig(cfg),
+      });
+      return response.success(res, result);
+    } catch (error) {
+      if (error?.code === 'REDRAW_FACTORY_ANALYSIS_REQUIRED' || error?.code === 'REDRAW_FACTORY_FACTS_INVALID') {
+        return response.error(res, 409, error.code, error.message);
+      }
+      return sendRedrawError(res, error, '导入短剧工厂失败', log, { workId: work.id });
+    }
+  }
+
   function approveAnalysisReview(req, res) {
     const currentOwner = owner(req);
     const work = findOwnedWork(req.params.id, currentOwner);
@@ -5244,6 +5268,7 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
     nativeAudioReview,
     generateBatch,
     approveAnalysisReview,
+    importToFactory,
     approveLocalizationReview,
     localizationQuote,
     createVersion,

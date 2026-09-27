@@ -110,6 +110,16 @@
         <span>{{ workState?.analysis_task?.status || taskState.status || 'completed' }}</span>
       </div>
       <p>{{ workState?.analysis_summary || workState?.analysis_task?.message || '分析已完成，请确认后创建英文 1:1 本地化版本。' }}</p>
+      <div class="billing-row">
+        <strong>用反推出的剧本、角色、场景、道具与分镜新建短剧工厂项目，后续资产与视频在短剧工厂里生成</strong>
+        <el-button
+          type="success"
+          :loading="factoryImporting"
+          @click="importToFactory"
+        >
+          导入短剧工厂
+        </el-button>
+      </div>
       <div v-if="needsAnalysisReview" class="billing-row">
         <strong>安全模式：请人工确认分析结果后再进入本地化</strong>
         <el-button
@@ -178,6 +188,7 @@
 
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { redrawAPI } from '@/api/redraw'
 import StylePresetPicker from '@/components/redraw/StylePresetPicker.vue'
@@ -231,6 +242,8 @@ const uploading = ref(false)
 const submitting = ref(false)
 const localizationSubmitting = ref(false)
 const analysisReviewSubmitting = ref(false)
+const factoryImporting = ref(false)
+const router = useRouter()
 const localizationReviewSubmitting = ref(false)
 const taskState = ref({ task_id: '', status: '', progress: 0 })
 const localizationState = ref(localizationTaskState(props.initialWork))
@@ -364,6 +377,21 @@ async function refreshWork() {
   syncWork(fresh)
   emit('work-updated', fresh)
   return fresh
+}
+
+async function importToFactory() {
+  const work = workState.value
+  if (!work?.id || factoryImporting.value) return
+  factoryImporting.value = true
+  try {
+    const result = await redrawAPI.importToFactory(work.id)
+    ElMessage.success(result?.created === false ? '已导入过，打开现有短剧工厂项目' : '已导入短剧工厂')
+    if (result?.drama_id) await router.push(`/film/${result.drama_id}`)
+  } catch (error) {
+    ElMessage.error(error.message || '导入短剧工厂失败')
+  } finally {
+    factoryImporting.value = false
+  }
 }
 
 async function confirmAnalysisReview() {
