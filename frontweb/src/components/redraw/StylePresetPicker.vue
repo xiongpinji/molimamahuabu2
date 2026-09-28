@@ -133,7 +133,8 @@ watch(activeCategory, async (next, previous) => {
 })
 
 // 一个已上线的预设都没有时直接打开「自由风格」，否则停在空分类上「开始分析」一直不可点。
-// 预设是异步加载的：自动切过去之后如果预设到了、用户也还没填提示词，就回到第一个有预设的分类。
+// 预设是异步加载的：自动切过去之后如果预设到了、用户也还没填提示词，就回到原来的默认分类。
+const DEFAULT_CATEGORY = activeCategory.value
 let autoSwitchedToFree = false
 watch(() => props.presets.length, (count) => {
   if (count === 0 && !selectedPresetId.value && activeCategory.value !== 'free') {
@@ -143,9 +144,7 @@ watch(() => props.presets.length, (count) => {
   }
   if (count > 0 && autoSwitchedToFree && !freeStyle.positivePrompt.trim()) {
     autoSwitchedToFree = false
-    const withPresets = categoryOptions.find((option) => option.value !== 'free'
-      && props.presets.some((preset) => (categoryAliases[option.value] || new Set()).has(String(preset.category || ''))))
-    if (withPresets) activeCategory.value = withPresets.value
+    activeCategory.value = DEFAULT_CATEGORY
   }
 }, { immediate: true })
 
