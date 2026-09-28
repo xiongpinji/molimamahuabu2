@@ -158,6 +158,33 @@ test('adapter treats a display name containing group as a crowd', () => {
   assert.deepEqual(pkg.characters.map((c) => c.character_id), ['c1', 'c2']);
 });
 
+test('adapter keeps story-relevant Chinese props, drops furniture and merges renamed duplicates', () => {
+  const facts = {
+    schema_version: '2.0',
+    duration_ms: 8_000,
+    characters: [{ id: 'c1', source_name: '林江', display_name: '林江', relationship: '主角', relationships: [] }],
+    scenes: [{ id: 's1', location: '街道', time: '白天', source_ranges: [{ start_ms: 0, end_ms: 8_000 }] }],
+    props: [
+      { id: 'p1', name: '小型圆形物体', evidence_ranges: [{ start_ms: 0, end_ms: 4_000 }] },
+      { id: 'p2', name: '多台显像管电视机', evidence_ranges: [{ start_ms: 4_000, end_ms: 8_000 }] },
+      { id: 'p3', name: '圆形餐桌', evidence_ranges: [{ start_ms: 0, end_ms: 8_000 }] },
+      { id: 'p4', name: '电脑桌', evidence_ranges: [{ start_ms: 0, end_ms: 8_000 }] },
+      { id: 'p5', name: '报纸', evidence_ranges: [{ start_ms: 0, end_ms: 4_000 }] },
+      { id: 'p6', name: '林江的小型圆形物体', evidence_ranges: [{ start_ms: 4_000, end_ms: 8_000 }] },
+    ],
+    shots: [
+      { id: 'shot-1', index: 1, start_ms: 0, end_ms: 4_000, composition: '', visible_character_ids: ['c1'], text_regions: [], dialogue: [] },
+      { id: 'shot-2', index: 2, start_ms: 4_000, end_ms: 8_000, composition: '', visible_character_ids: ['c1'], text_regions: [], dialogue: [] },
+    ],
+    causal_chain: ['林江手持小型圆形物体，看到街边电视墙播放世界杯后想到第一桶金。'],
+    reversals: ['在电脑前决定用世界杯做起步资金。'],
+    episode_hook: '',
+    locked_facts: [],
+  };
+  const pkg = buildRedrawFactoryPackage({ sourceFacts: facts });
+  assert.deepEqual(pkg.props.map((prop) => prop.prop_id), ['p1', 'p2']);
+});
+
 function createDb() {
   const db = new Database(':memory:');
   runMigrationsAndEnsure(db);

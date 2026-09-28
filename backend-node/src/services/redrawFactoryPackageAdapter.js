@@ -293,7 +293,36 @@ const NON_PROP_NOUNS = new Set([
   'broadcast', 'broadcasts', 'caption', 'captions', 'footage', 'headline', 'headlines', 'page', 'webpage',
 ]);
 
+// 中文道具名：取「的」之后的核心词；以家具、陈设、服装、屏幕内容结尾的不单独出道具图。
+const CJK_TEXT = /[\u4e00-\u9fff]/;
+const CJK_NON_PROP_SUFFIX = /(桌|椅|凳|床|柜|架|画|海报|照片|饰物|装饰|墙|门|窗|衣|服|外套|裤|裙|鞋|帽|网页|画面|字幕)$/;
+
+function cjkPropCore(name) {
+  const parts = text(name).split('的');
+  return parts[parts.length - 1].trim();
+}
+
+// 核心词里每个候选名词取末尾两字和倒数第二、三字，用来在剧情描述里找提及（如「电视机」→「电视」）。
+function cjkPropHeads(name) {
+  return cjkPropCore(name)
+    .split(/[或和与、及]/)
+    .map((part) => part.trim())
+    .filter((part) => part.length >= 2)
+    .flatMap((part) => [part.slice(-2), part.length >= 3 ? part.slice(-3, -1) : ''])
+    .filter(Boolean);
+}
+
 function isKeyProp(prop, facts) {
+  if (CJK_TEXT.test(text(prop?.name))) {
+    if (CJK_NON_PROP_SUFFIX.test(cjkPropCore(prop.name))) return false;
+    const cjkShotCount = list(facts.shots).filter((shot) => overlaps(prop?.evidence_ranges, shot)).length;
+    if (cjkShotCount === 0) return false;
+    if (cjkShotCount >= KEY_PROP_MIN_RECURRING_SHOTS) return true;
+    const cjkStory = [...list(facts.causal_chain), ...list(facts.reversals), text(facts.episode_hook)]
+      .map((item) => (typeof item === 'string' ? item : text(item?.text)))
+      .join(' ');
+    return cjkPropHeads(prop.name).some((head) => cjkStory.includes(head));
+  }
   const nouns = propHeadNouns(prop);
   if (nouns.length && nouns.every((noun) => NON_PROP_NOUNS.has(noun))) return false;
   const shotCount = list(facts.shots).filter((shot) => overlaps(prop?.evidence_ranges, shot)).length;
@@ -326,9 +355,16 @@ function buildRedrawFactoryPackage({
     ...(localization?.glossary || {}),
     ...nameGlossary(facts, names),
   };
+  // 同一道具在不同段里名字略有差别（「林江的黑色双肩包」「黑色双肩包」），按核心词只保留一个。
+  const seenPropCores = new Set();
   const selectedPropIds = new Set(propIds
     ? [...propIds].map(text)
-    : list(facts.props).filter((prop) => isKeyProp(prop, facts)).map((prop) => text(prop.id)));
+    : list(facts.props).filter((prop) => isKeyProp(prop, facts)).filter((prop) => {
+      const core = CJK_TEXT.test(text(prop.name)) ? cjkPropCore(prop.name) : text(prop.id);
+      if (seenPropCores.has(core)) return false;
+      seenPropCores.add(core);
+      return true;
+    }).map((prop) => text(prop.id)));
   let previousLastSubtitle = '';
   const mappedShots = [...facts.shots]
     .sort((left, right) => Number(left.start_ms) - Number(right.start_ms))
