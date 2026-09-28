@@ -560,3 +560,32 @@ test('coerceShotAudioContracts drops off-screen dialogue turns and settles inven
   assert.equal(coerced.shots[1].audio_contract.dialogue_mode, 'silent');
   assert.equal(coerced.shots[2].audio_contract.dialogue_mode, 'silent');
 });
+
+test('coerceShotAudioContracts clamps dialogue that runs past its shot into the shot range', () => {
+  const shot = (id, startMs, endMs, dialogue) => ({
+    id, start_ms: startMs, end_ms: endMs, visible_character_ids: ['c1', 'c2'], dialogue,
+    audio_contract: { dialogue_mode: 'spoken', ambient_audio: 'preserve_or_rebuild' },
+  });
+  const coerced = nativeAnalysis.coerceShotAudioContracts({
+    shots: [
+      shot('a', 0, 3000, [
+        { speaker_id: 'c1', source_text: '跨过剪辑点', start_ms: 2200, end_ms: 3600 },
+      ]),
+      shot('b', 3000, 6000, [
+        { speaker_id: 'c1', source_text: '提前开口', start_ms: 2600, end_ms: 4000 },
+        { speaker_id: 'c2', source_text: '和上一句重叠', start_ms: 3800, end_ms: 5000 },
+        { speaker_id: 'c2', source_text: '同组抢话', start_ms: 4500, end_ms: 5200, overlap_group: 'g' },
+        { speaker_id: 'c1', source_text: '同组抢话', start_ms: 4800, end_ms: 5400, overlap_group: 'g' },
+      ]),
+      shot('c', 6000, 9000, [
+        { speaker_id: 'c1', source_text: '整句在别的分镜', start_ms: 1000, end_ms: 2000 },
+      ]),
+    ],
+  });
+  assert.deepEqual(coerced.shots[0].dialogue.map((turn) => [turn.start_ms, turn.end_ms]), [[2200, 3000]]);
+  assert.deepEqual(coerced.shots[1].dialogue.map((turn) => [turn.start_ms, turn.end_ms]), [
+    [3000, 4000], [4000, 5000], [5000, 5200], [4800, 5400],
+  ]);
+  assert.deepEqual(coerced.shots[2].dialogue, []);
+  assert.equal(coerced.shots[2].audio_contract.dialogue_mode, 'silent');
+});

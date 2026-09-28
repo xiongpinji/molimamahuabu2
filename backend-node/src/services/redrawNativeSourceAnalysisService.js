@@ -338,16 +338,44 @@ function coerceCharacterFields(rawFacts) {
   return facts;
 }
 
+// 台词常跨剪辑点，模型会把时间码写到相邻分镜里：夹到所属分镜范围内，与分镜不相交的条目丢弃（字幕仍在 text_regions 里）；
+// 夹紧后与前一句重叠且不属于同一 overlap_group 的，起点顺延到前一句结束，顺延后为空的丢弃。与分段拼接时的处理一致。
+function clampShotDialogueTimecodes(shot) {
+  const shotStart = Number(shot.start_ms);
+  const shotEnd = Number(shot.end_ms);
+  if (!Array.isArray(shot.dialogue) || !Number.isSafeInteger(shotStart) || !Number.isSafeInteger(shotEnd) || shotEnd <= shotStart) return;
+  let previousEnd = shotStart;
+  let previousGroup = null;
+  shot.dialogue = shot.dialogue.filter((turn) => {
+    if (turn.start_ms == null || turn.end_ms == null) return true;
+    const rawStart = Number(turn.start_ms);
+    const rawEnd = Number(turn.end_ms);
+    if (!Number.isFinite(rawStart) || !Number.isFinite(rawEnd)) return true;
+    let start = Math.min(shotEnd, Math.max(shotStart, Math.round(rawStart)));
+    const end = Math.min(shotEnd, Math.max(shotStart, Math.round(rawEnd)));
+    const group = turn.overlap_group || null;
+    if (start < previousEnd && (!group || group !== previousGroup)) start = previousEnd;
+    if (end <= start) return false;
+    turn.start_ms = start;
+    turn.end_ms = end;
+    previousEnd = Math.max(previousEnd, end);
+    previousGroup = group;
+    return true;
+  });
+}
+
 // 模型偶尔自创 dialogue_mode（如 subtitle_only），或把画外音写成台词条目。
 // 说话人不在画面里的台词条目丢弃（对应字幕仍在 text_regions 里）；dialogue_mode 按剩余台词归为 spoken / silent。
 function coerceShotAudioContracts(rawFacts) {
   const facts = cloneJson(rawFacts);
   for (const shot of Array.isArray(facts.shots) ? facts.shots : []) {
     if (!shot || typeof shot !== 'object') continue;
+    if (Array.isArray(shot.dialogue)) shot.dialogue = shot.dialogue.filter((turn) => turn && typeof turn === 'object');
     if (Array.isArray(shot.dialogue) && Array.isArray(shot.visible_character_ids)) {
       const visible = new Set(shot.visible_character_ids.map(String));
-      shot.dialogue = shot.dialogue.filter((turn) => turn && visible.has(String(turn.speaker_id)));
+      shot.dialogue = shot.dialogue.filter((turn) => visible.has(String(turn.speaker_id)));
     }
+    clampShotDialogueTimecodes(shot);
     const contract = shot.audio_contract;
     if (!contract || typeof contract !== 'object') continue;
     const hasDialogue = Array.isArray(shot.dialogue) && shot.dialogue.length > 0;
