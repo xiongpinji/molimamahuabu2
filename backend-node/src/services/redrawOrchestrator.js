@@ -61,6 +61,20 @@ function loadVerifiedCapability(db) {
   throw codedError('VIDEO_UNDERSTANDING_NOT_VERIFIED', '视频理解模型缺少真实生成且结果可读的验证证据');
 }
 
+// 分析预扣的幂等键：仍在预扣中（held）的键原样复用，重复提交不重复扣；已退款或已结算的键换下一个尝试序号，
+// 否则失败退款后再次分析会拿回旧的已退款预扣而不扣费。第一次沿用原格式，已有数据不受影响。
+function analysisOperationKey(db, tenantId, workId, sourceAssetId) {
+  const base = `redraw_analysis:${workId}:${sourceAssetId}`;
+  for (let attempt = 1; attempt <= 1000; attempt += 1) {
+    const key = attempt === 1 ? base : `${base}:attempt:${attempt}`;
+    const existing = tenantId == null
+      ? db.prepare('SELECT status FROM usage_reservations WHERE operation_key = ?').get(key)
+      : db.prepare('SELECT status FROM tenant_usage_reservations WHERE tenant_id = ? AND operation_key = ?').get(String(tenantId), key);
+    if (!existing || existing.status === 'held') return key;
+  }
+  throw codedError('REDRAW_ANALYSIS_ATTEMPTS_EXHAUSTED', '源片分析重试次数过多');
+}
+
 // 长样片按约 20 秒分段分析，每段收一次分析价；段数只由作品时长决定，与预扣和实际切段一致。
 function quoteAnalysis(db, log, work = null) {
   try {
@@ -298,13 +312,18 @@ async function startAnalysis(db, log, input, options = {}) {
   });
 
   const now = new Date().toISOString();
+  let operationKey = `redraw_analysis:${work.id}:${sourceAssetId}`;
   const created = db.transaction(() => {
+    if (price > 0) {
+      creditLedger.ensureSchema(db);
+      operationKey = analysisOperationKey(db, tenantId, work.id, sourceAssetId);
+    }
     const reservation = price > 0
       ? creditLedger.reserve(db, {
         userId,
         tenantId: tenantId == null ? null : String(tenantId),
         actorUserId: userId,
-        operationKey: `redraw_analysis:${work.id}:${sourceAssetId}`,
+        operationKey,
         amount: price,
         model,
         resourceType: 'redraw_analysis',
@@ -354,7 +373,7 @@ async function startAnalysis(db, log, input, options = {}) {
         config,
         analysisSettings,
         segmentCount,
-        operationKey: `redraw_analysis:${work.id}:${sourceAssetId}`,
+        operationKey,
       })
       : {};
   } catch (error) {

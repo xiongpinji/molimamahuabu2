@@ -33,16 +33,29 @@ function overlapMs(ranges, shot) {
   }, 0);
 }
 
+// 中文句子补中文句号，英文句子补英文句号。
 function joinSentences(...parts) {
   return parts.map(text).filter(Boolean)
-    .map((part) => (/[.!?。！？]$/.test(part) ? part : `${part}.`))
+    .map((part) => (/[.!?。！？]$/.test(part) ? part : `${part}${/[一-鿿]/.test(part) ? '。' : '.'}`))
     .join(' ');
 }
 
 function replaceCharacterIds(value, names) {
-  // 关系描述里的 "c3" 这类源角色 id 替换为目标名字。
+  // 模型写进描述里的 "c3" 这类源角色 id 替换为目标名字。
   return text(value).replace(/\bc\d+\b/g, (id) => names.get(id) || id);
 }
+
+// 工厂里展示的景别用中文，和工厂自己生成的分镜一致。
+const SHOT_SIZE_ZH = {
+  'extreme close-up': '大特写',
+  'close-up': '特写',
+  'medium close-up': '近景',
+  medium: '中景',
+  'medium wide': '中远景',
+  wide: '远景',
+  'extreme wide': '大远景',
+  insert: '插入镜头',
+};
 
 function localizeTerms(value, glossary) {
   // 源事实正文是英文、专有名词保留中文拼音名；用 glossary 把出现的源名替换成本地化名。
@@ -52,6 +65,10 @@ function localizeTerms(value, glossary) {
     .sort((left, right) => right[0].length - left[0].length);
   for (const [source, target] of entries) output = output.split(source).join(target);
   return output;
+}
+
+function localizeText(value, names, glossary) {
+  return localizeTerms(replaceCharacterIds(value, names), glossary);
 }
 
 function characterNameMap(facts, localization) {
@@ -117,45 +134,46 @@ function mapCharacters(facts, names, glossary, characterImages = {}) {
     return {
       character_id: id,
       name: names.get(id),
-      role: localizeTerms(character.relationship, glossary) || null,
-      description: localizeTerms(
-        replaceCharacterIds([character.relationship, ...list(character.relationships)].filter(Boolean).join('; '), names),
+      role: localizeText(character.relationship, names, glossary) || null,
+      description: localizeText(
+        [character.relationship, ...list(character.relationships)].filter(Boolean).join('; '),
+        names,
         glossary,
       ) || null,
-      appearance: localizeTerms(appearanceSeed, glossary) || null,
+      appearance: localizeText(appearanceSeed, names, glossary) || null,
       ...(text(image.image_url) ? { image_url: text(image.image_url) } : {}),
       ...(text(image.local_path) ? { local_path: text(image.local_path) } : {}),
     };
   });
 }
 
-function mapScenes(facts, style, glossary) {
+function mapScenes(facts, style, glossary, names) {
   return list(facts.scenes).map((scene) => {
-    const location = localizeTerms(scene.location, glossary);
-    const time = localizeTerms(scene.time, glossary);
+    const location = localizeText(scene.location, names, glossary);
+    const time = localizeText(scene.time, names, glossary);
     return {
       scene_id: text(scene.id),
       location: location || text(scene.id),
       time,
       prompt: joinSentences(
         style.positive,
-        `${location}${time ? `, ${time}` : ''}`,
-        localizeTerms(scene.visual, glossary),
-        'Empty establishing shot, no people.',
+        `${location}${time ? `，${time}` : ''}`,
+        localizeText(scene.visual, names, glossary),
+        '空镜，画面中没有人物。',
       ),
     };
   });
 }
 
-function mapProps(facts, style, glossary) {
+function mapProps(facts, style, glossary, names) {
   return list(facts.props).map((prop) => {
-    const name = localizeTerms(prop.name, glossary);
+    const name = localizeText(prop.name, names, glossary);
     return {
       prop_id: text(prop.id),
       name: name || text(prop.id),
       type: null,
       description: name,
-      prompt: joinSentences(style.positive, `${name}, isolated product shot on a plain background.`),
+      prompt: joinSentences(style.positive, `${name}，纯色背景上的单独物品。`),
     };
   });
 }
@@ -203,38 +221,39 @@ function mapShot(facts, shot, { names, glossary, localization, style, propIds, p
   const { subtitles, screenText } = shotTextRegions(shot, localization, names);
   const spoken = dropCarriedSubtitles(subtitles, previousLastSubtitle);
   const description = joinSentences(
-    localizeTerms(shot.composition, glossary),
-    screenText.length ? `On-screen text: "${screenText.join('" / "')}"` : '',
+    localizeText(shot.composition, names, glossary),
+    screenText.length ? `画面文字：「${screenText.join('」/「')}」` : '',
   );
-  const action = localizeTerms(
+  const action = localizeText(
     joinSentences(shot.opening_state, shot.continuous_action, shot.ending_state),
+    names,
     glossary,
   );
-  const movement = localizeTerms(shot.camera_movement, glossary);
+  const movement = localizeText(shot.camera_movement, names, glossary);
   const durationSeconds = Math.max(1, Math.round((Number(shot.end_ms) - Number(shot.start_ms)) / 1000));
   const props = list(facts.props)
     .filter((prop) => propIds.has(text(prop.id)) && overlaps(prop.evidence_ranges, shot))
     .map((prop) => text(prop.id));
   return {
     shot_number: Number(shot.index) || undefined,
-    title: `Shot ${Number(shot.index) || text(shot.id)}`,
+    title: `镜头 ${Number(shot.index) || text(shot.id)}`,
     description,
     duration: durationSeconds,
     dialogue: spoken.map((line) => line.text).join('\n'),
     last_subtitle_source: subtitles.length ? subtitles[subtitles.length - 1].source : '',
     action,
     movement,
-    shot_type: text(shot.shot_size) || null,
+    shot_type: SHOT_SIZE_ZH[text(shot.shot_size)] || text(shot.shot_size) || null,
     characters: list(shot.visible_character_ids).map(text).filter(Boolean),
     props,
-    image_prompt: joinSentences(style.positive, description, characterNames.length ? `Characters: ${characterNames.join(', ')}.` : ''),
-    video_prompt: joinSentences(style.positive, description, action, movement ? `Camera: ${movement}` : ''),
+    image_prompt: joinSentences(style.positive, description, characterNames.length ? `角色：${characterNames.join('、')}` : ''),
+    video_prompt: joinSentences(style.positive, description, action, movement ? `运镜：${movement}` : ''),
     continuity: {
       source_shot_id: text(shot.id),
       start_ms: Number(shot.start_ms),
       end_ms: Number(shot.end_ms),
-      opening_state: localizeTerms(shot.opening_state, glossary),
-      ending_state: localizeTerms(shot.ending_state, glossary),
+      opening_state: localizeText(shot.opening_state, names, glossary),
+      ending_state: localizeText(shot.ending_state, names, glossary),
     },
   };
 }
@@ -377,24 +396,24 @@ function buildRedrawFactoryPackage({
     });
   const characters = mapCharacters(facts, names, glossary, characterImages)
     .map((character) => (style.negative ? { ...character, negative_prompt: style.negative } : character));
-  const story = list(facts.story).map((line) => localizeTerms(line, glossary)).filter(Boolean);
+  const story = list(facts.story).map((line) => localizeText(line, names, glossary)).filter(Boolean);
   return {
-    source: { title, locked_facts: list(facts.locked_facts).map((line) => localizeTerms(line, glossary)) },
+    source: { title, locked_facts: list(facts.locked_facts).map((line) => localizeText(line, names, glossary)) },
     normalized_script: {
       logline: story[0] || '',
       summary: story.join(' '),
       target_duration_seconds: Math.round(Number(facts.duration_ms || 0) / 1000),
     },
     characters,
-    scenes: mapScenes(facts, style, glossary),
-    props: mapProps(facts, style, glossary).filter((prop) => selectedPropIds.has(prop.prop_id)),
+    scenes: mapScenes(facts, style, glossary, names),
+    props: mapProps(facts, style, glossary, names).filter((prop) => selectedPropIds.has(prop.prop_id)),
     episodes: [{
       episode_number: 1,
-      title: title || 'Episode 1',
-      description: localizeTerms(facts.episode_hook, glossary) || null,
+      title: title || '第 1 集',
+      description: localizeText(facts.episode_hook, names, glossary) || null,
       scenes: groupShotsByScene(facts, mappedShots),
     }],
-    continuity_rules: [...list(facts.causal_chain), ...list(facts.reversals)].map((line) => localizeTerms(line, glossary)),
+    continuity_rules: [...list(facts.causal_chain), ...list(facts.reversals)].map((line) => localizeText(line, names, glossary)),
   };
 }
 

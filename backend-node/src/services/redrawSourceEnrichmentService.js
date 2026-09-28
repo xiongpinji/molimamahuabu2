@@ -54,6 +54,7 @@ function buildEnrichmentPrompt(facts) {
     'Use only the ids listed in the existing analysis. Do not add, remove, rename or re-time anything.',
     'appearance: apparent age range, build, hair, and the outfit worn in this clip (colors, garments, accessories). Visual traits only; no names, personality, camera wording, or background.',
     'visual: set dressing, architecture, key furniture, lighting, and color palette of the empty location, without people.',
+    'Write appearance and visual in Simplified Chinese, and never mention character ids such as c1 inside them.',
     `shot_size: one of ${[...SHOT_SIZES].join(', ')}.`,
     'subtitle_speakers: only for subtitle lines whose speaker is clear from who is on screen and reacting; omit narration and lines you are unsure about.',
     'Existing analysis:',

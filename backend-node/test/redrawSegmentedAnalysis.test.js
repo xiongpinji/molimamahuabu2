@@ -277,3 +277,28 @@ test('a multi-segment analysis runs in the background, reserves per segment and 
   assert.equal(creditLedger.getTenantAccount(db, 'tenant-1').spent, 40);
   assert.equal(creditLedger.getTenantAccount(db, 'tenant-1').held, 0);
 });
+
+test('re-analysis after a refunded failure reserves again while a held reservation stays idempotent', async () => {
+  const db = createDb();
+  addVerifiedConfig(db);
+  prices.set(db, 'GPT-5.5', 10);
+  creditLedger.setTenantAccountBalance(db, 'tenant-1', 1000);
+  addWork(db, 68_733);
+  const pending = { startAnalysis: async () => ({ provider_task_id: 'pending-1', status: 'processing' }) };
+  const failing = { startAnalysis: async () => ({ provider_task_id: 'failed-1', status: 'failed', error: '供应商超时' }) };
+
+  await assert.rejects(redraw.startAnalysis(db, log, { workId: 1, userId: 'user-1' }, { provider: failing }));
+  assert.deepEqual(creditLedger.getTenantAccount(db, 'tenant-1'), { ...creditLedger.getTenantAccount(db, 'tenant-1'), available: 1000, held: 0 });
+
+  const retried = await redraw.startAnalysis(db, log, { workId: 1, userId: 'user-1' }, { provider: pending });
+  assert.equal(retried.billing.held, 40);
+  assert.equal(creditLedger.getTenantAccount(db, 'tenant-1').held, 40, 'the retry must hold credits again');
+  const again = await redraw.startAnalysis(db, log, { workId: 1, userId: 'user-1' }, { provider: pending });
+  assert.equal(again.reservation_id, retried.reservation_id, 'a repeated submit reuses the held reservation');
+  assert.equal(creditLedger.getTenantAccount(db, 'tenant-1').held, 40);
+  const keys = db.prepare("SELECT operation_key, status FROM tenant_usage_reservations WHERE resource_type = 'redraw_analysis' ORDER BY created_at, operation_key").all();
+  assert.deepEqual(keys, [
+    { operation_key: 'redraw_analysis:1:501', status: 'refunded' },
+    { operation_key: 'redraw_analysis:1:501:attempt:2', status: 'held' },
+  ]);
+});

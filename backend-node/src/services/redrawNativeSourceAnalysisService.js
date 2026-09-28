@@ -243,7 +243,9 @@ function buildPrompt(probe, options = {}) {
     'Each shot MUST include composition, camera_movement, opening_state, continuous_action, ending_state, visible_character_ids, dialogue, text_regions, audio_contract, and confidence.',
     'text_regions polygon coordinates MUST be normalized 0..1 points with at least 3 non-collinear points.',
     'characters[].source_name is the name written or addressed in the subtitles (for example a name someone calls out); if a character is never named, use a short Chinese descriptor such as 母亲. Never leave source_name empty.',
-    'characters[].relationships is an array of plain strings such as "c2: classmate who mocks him", never objects.',
+    'characters[].relationships is an array of plain strings such as "c2: 嘲笑他的同学", never objects.',
+    'Write every free-text field in Simplified Chinese: story, display_name, relationship, relationships, scene location and time, prop names, composition, camera_movement, opening_state, continuous_action, ending_state, causal_chain, locked_facts, reversals, and episode_hook. Keep ids, enum values (kind, dialogue_mode, ambient_audio) and subtitle or dialogue source_text exactly as they appear.',
+    'Inside those free-text fields refer to people by their source_name (for example 林江), never by ids such as c1 or c2.',
     'Use this exact source_facts schema:',
     '{"schema_version":"2.0","duration_ms":1,"story":[""],"characters":[{"id":"c1","source_name":"","display_name":"","relationship":"","relationships":[]}],"scenes":[{"id":"s1","location":"","time":"","source_ranges":[{"start_ms":0,"end_ms":1}]}],"props":[{"id":"p1","name":"","evidence_ranges":[{"start_ms":0,"end_ms":1}]}],"shots":[{"id":"shot-1","index":1,"start_ms":0,"end_ms":1,"composition":"","camera_movement":"","opening_state":"","continuous_action":"","ending_state":"","visible_character_ids":["c1"],"dialogue":[],"text_regions":[{"id":"txt1","kind":"subtitle","source_text":"","polygon":[[0.1,0.8],[0.9,0.8],[0.9,0.9],[0.1,0.9]]}],"audio_contract":{"dialogue_mode":"silent","ambient_audio":"preserve_or_rebuild"},"confidence":{"character_mapping":0.5,"speaker_mapping":0.2,"text_regions":0.5,"shot_boundary":0.5}}],"causal_chain":[""],"locked_facts":[""],"reversals":[""],"episode_hook":""}',
     'Keep all required arrays non-empty only when supported by visible evidence; an unsupported clip must fail rather than be completed with invented facts.',
@@ -500,6 +502,22 @@ async function analyzeClip(ctx) {
   return { facts, enrichment, vision, sheets };
 }
 
+// 服务商偶发卡住（同类调用通常 1~2 分钟返回，偶尔 9 分钟无响应）：某一段超时只把这一段重跑一次，其它错误照常失败。
+function isProviderTimeout(error) {
+  const code = String(error?.code || error?.routeMeta?.transportCode || '');
+  return /TIMEOUT/.test(code) || /request timeout after|silence timeout after/i.test(String(error?.message || ''));
+}
+
+async function analyzeClipWithRetry(clipArgs, label) {
+  try {
+    return await analyzeClip(clipArgs);
+  } catch (error) {
+    if (!isProviderTimeout(error)) throw error;
+    clipArgs.log?.warn?.('redraw native analysis timed out, retrying this part once', { part: label, message: error.message });
+    return analyzeClip(clipArgs);
+  }
+}
+
 async function analyzeNativeSource(ctx = {}, input = {}) {
   const db = ctx.db;
   if (!db) throw codedError('REDRAW_NATIVE_DB_REQUIRED', '缺少数据库');
@@ -543,7 +561,7 @@ async function analyzeNativeSource(ctx = {}, input = {}) {
     let sheets;
     let segmentsReport = null;
     if (segmentCount <= 1) {
-      const clip = await analyzeClip({ ...clipCtx, sourcePath: source.absolute, probe, sheetDir });
+      const clip = await analyzeClipWithRetry({ ...clipCtx, sourcePath: source.absolute, probe, sheetDir }, 'whole');
       ({ facts: enrichedFacts, enrichment, vision, sheets } = clip);
     } else {
       // 长样片按段依次分析：每段输出小、不易超时；后面的段带上前面已识别的角色名单。
@@ -558,13 +576,13 @@ async function analyzeNativeSource(ctx = {}, input = {}) {
         const clipPath = path.join(segmentDir, 'clip.mp4');
         await cutSegmentClip(source.absolute, clipPath, segment, Number(input.ffmpegTimeoutMs || 30000) * 4);
         const clipProbe = await ffprobeVideo(clipPath, Number(input.probeTimeoutMs || 15000));
-        const clip = await analyzeClip({
+        const clip = await analyzeClipWithRetry({
           ...clipCtx,
           sourcePath: clipPath,
           probe: clipProbe,
           sheetDir: segmentDir,
           knownCast: knownCastFrom(mergeSegmentFacts(analyzed, analyzed.length ? analyzed[analyzed.length - 1].end_ms : 0)),
-        });
+        }, `segment ${index + 1}/${plan.length}`);
         analyzed.push({ ...segment, facts: clip.facts });
         sheets.push(...clip.sheets);
         vision = vision || clip.vision;

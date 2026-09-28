@@ -561,6 +561,52 @@ test('coerceShotAudioContracts drops off-screen dialogue turns and settles inven
   assert.equal(coerced.shots[2].audio_contract.dialogue_mode, 'silent');
 });
 
+test('analyzeNativeSource retries a part once when the provider call times out, but not on other errors', async () => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'native-redraw-retry-'));
+  const db = createDb();
+  try {
+    addWork(db, { localPath: createSampleVideo(storageRoot) });
+    const facts = validFacts();
+    facts.shots[0].visible_character_ids = ['c1'];
+    facts.shots[0].text_regions = [{
+      id: 't1', kind: 'subtitle', source_text: '你好', polygon: [[0.1, 0.8], [0.9, 0.8], [0.9, 0.9], [0.1, 0.9]],
+    }];
+    let firstPassCalls = 0;
+    const result = await nativeAnalysis.analyzeNativeSource({
+      db,
+      log,
+      storageRoot,
+      assetService,
+      visionDetailed: async (payload) => {
+        if (/recreation details/.test(payload.userPrompt)) throw new Error('enrichment skipped in this test');
+        firstPassCalls += 1;
+        if (firstPassCalls === 1) {
+          throw Object.assign(new Error('AI non-stream request timeout after 540000ms'), { code: 'AI_NON_STREAM_TIMEOUT' });
+        }
+        return { text: JSON.stringify({ source_facts: facts }), provider_task_id: 'vision-retry', model: 'm' };
+      },
+    }, { workId: 1, tenantId: 'tenant-1', userId: 'user-1', taskId: 'task-native-retry', model: 'm' });
+    assert.equal(firstPassCalls, 2, 'the timed out part ran once more');
+    assert.ok(result.result_asset_id);
+
+    let failingCalls = 0;
+    await assert.rejects(nativeAnalysis.analyzeNativeSource({
+      db,
+      log,
+      storageRoot,
+      assetService,
+      visionDetailed: async () => {
+        failingCalls += 1;
+        throw new Error('HTTP 400 bad request');
+      },
+    }, { workId: 1, tenantId: 'tenant-1', userId: 'user-1', taskId: 'task-native-noretry', model: 'm' }), /HTTP 400/);
+    assert.equal(failingCalls, 1, 'other errors are not retried');
+  } finally {
+    db.close();
+    fs.rmSync(storageRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});
+
 test('coerceShotAudioContracts clamps dialogue that runs past its shot into the shot range', () => {
   const shot = (id, startMs, endMs, dialogue) => ({
     id, start_ms: startMs, end_ms: endMs, visible_character_ids: ['c1', 'c2'], dialogue,

@@ -129,7 +129,7 @@ test('adapter keeps screen text out of dialogue, drops subtitles carried across 
   const [first, second] = pkg.episodes[0].scenes.flatMap((group) => group.shots);
   assert.equal(first.dialogue, '你谁啊\n世界杯就是我的起步资金');
   assert.equal(second.dialogue, '', 'carried subtitle and screen text are not spoken');
-  assert.match(second.description, /On-screen text: "South Africa vs\. Mexico"/);
+  assert.match(second.description, /画面文字：「South Africa vs\. Mexico」/);
   assert.equal(pkg.scenes[1].location, "Ethan Brooks's bedroom");
   assert.deepEqual(pkg.props.map((p) => p.prop_id), ['p1'], 'clothing is not a prop even when mentioned in the story');
   assert.match(pkg.props[0].name, /Ethan Brooks/);
@@ -144,11 +144,30 @@ test('adapter uses analysed appearance, scene visuals, shot size and subtitle sp
   const pkg = buildRedrawFactoryPackage({ sourceFacts: facts, localization: localization(), analysisSettings: SETTINGS });
   const noah = pkg.characters.find((c) => c.character_id === 'c2');
   assert.equal(noah.appearance, 'Noah Carter is a stocky teen in a white tracksuit', 'analysed appearance wins and is localized');
-  assert.match(pkg.scenes[0].prompt, /Street, Day\. Neon storefront, wet asphalt, cool blue palette\. Empty establishing shot, no people\./);
+  assert.match(pkg.scenes[0].prompt, /Street，Day\. Neon storefront, wet asphalt, cool blue palette\. 空镜，画面中没有人物。/);
   const [first, second] = pkg.episodes[0].scenes.flatMap((group) => group.shots);
-  assert.equal(first.shot_type, 'close-up');
+  assert.equal(first.shot_type, '特写');
   assert.equal(second.shot_type, null);
   assert.equal(first.dialogue, 'Noah Carter：Who even are you?');
+});
+
+test('adapter replaces leaked character ids with names in every prompt field and writes Chinese labels', () => {
+  const facts = sourceFacts();
+  facts.shots[0].composition = 'tight close-up of c1 in front of the storefront';
+  facts.shots[0].continuous_action = 'c1 points at c2';
+  facts.shots[0].camera_movement = 'slow push toward c2';
+  facts.scenes[0].visual = 'c1 的家门口，暖色灯光';
+  const pkg = buildRedrawFactoryPackage({ sourceFacts: facts, analysisSettings: SETTINGS });
+  const [first] = pkg.episodes[0].scenes.flatMap((group) => group.shots);
+  const names = pkg.characters.map((c) => c.name);
+  for (const field of [first.description, first.action, first.movement, first.image_prompt, first.video_prompt, pkg.scenes[0].prompt]) {
+    assert.doesNotMatch(field, /\bc\d+\b/, field);
+  }
+  assert.match(first.description, new RegExp(names[0]));
+  assert.match(first.video_prompt, new RegExp(`运镜：slow push toward ${names[1]}`));
+  assert.match(first.image_prompt, /角色：/);
+  assert.match(first.title, /^镜头 /);
+  assert.match(pkg.scenes[0].prompt, /家门口，暖色灯光。 空镜，画面中没有人物。$/);
 });
 
 test('adapter treats a display name containing group as a crowd', () => {
