@@ -3,6 +3,7 @@ const path = require('path');
 const creditLedger = require('./creditLedgerService');
 const modelPrice = require('./modelPriceService');
 const taskService = require('./taskService');
+const { assertSourceDurationAllowed, MAX_SOURCE_MS, segmentCountForDuration } = require('./redrawAnalysisSegmentation');
 const { normalizeSourceFacts } = require('./redrawAnalysisService');
 const {
   evaluateAutomationDecision,
@@ -60,12 +61,23 @@ function loadVerifiedCapability(db) {
   throw codedError('VIDEO_UNDERSTANDING_NOT_VERIFIED', '视频理解模型缺少真实生成且结果可读的验证证据');
 }
 
-function quoteAnalysis(db, log) {
+// 长样片按约 20 秒分段分析，每段收一次分析价；段数只由作品时长决定，与预扣和实际切段一致。
+function quoteAnalysis(db, log, work = null) {
   try {
     const config = loadVerifiedCapability(db);
     const model = modelPrice.canonicalModel(config.default_model || config.model || 'GPT-5.5');
-    const amount = modelPrice.calculateCharge(db, model);
-    return { model, credits: amount, amount };
+    const unit = modelPrice.calculateCharge(db, model);
+    const segments = segmentCountForDuration(work?.duration_ms);
+    const total = unit * segments;
+    return {
+      model,
+      credits: total,
+      amount: total,
+      unit_credits: unit,
+      segments,
+      max_duration_ms: MAX_SOURCE_MS,
+      exceeds_max_duration: Number(work?.duration_ms) > MAX_SOURCE_MS,
+    };
   } catch (error) {
     if (['VIDEO_UNDERSTANDING_NOT_VERIFIED', 'MODEL_PRICE_NOT_CONFIGURED', 'MODEL_DISABLED'].includes(error.code)) {
       return null;
@@ -270,15 +282,20 @@ async function startAnalysis(db, log, input, options = {}) {
   const tenantId = input.tenantId || work.tenant_id;
   if (!userId) throw codedError('UNAUTHORIZED', '缺少用户身份');
 
+  assertSourceDurationAllowed(work.duration_ms);
   const config = loadVerifiedCapability(db);
   const model = modelPrice.canonicalModel(config.default_model || config.model || 'GPT-5.5');
-  const price = modelPrice.calculateCharge(db, model);
+  const segmentCount = segmentCountForDuration(work.duration_ms);
+  const price = modelPrice.calculateCharge(db, model) * segmentCount;
   const sourceAssetId = input.sourceAssetId || work.source_asset_id;
   if (!sourceAssetId) throw codedError('SOURCE_ASSET_REQUIRED', '缺少源片资产');
   const analysisSettings = input.analysisSettings && typeof input.analysisSettings === 'object'
     ? input.analysisSettings
     : {};
-  const metadata = JSON.stringify({ redraw_analysis: analysisSettings });
+  const metadata = JSON.stringify({
+    redraw_analysis: analysisSettings,
+    ...(segmentCount > 1 ? { redraw_analysis_segments: segmentCount } : {}),
+  });
 
   const now = new Date().toISOString();
   const created = db.transaction(() => {
@@ -336,6 +353,7 @@ async function startAnalysis(db, log, input, options = {}) {
         sourceAssetId,
         config,
         analysisSettings,
+        segmentCount,
         operationKey: `redraw_analysis:${work.id}:${sourceAssetId}`,
       })
       : {};
@@ -881,6 +899,34 @@ async function runAnalyzeTask(db, log, taskId, options = {}) {
   return finalizeCompletedAnalysis(db, log, task, work, result, options);
 }
 
+function reportAnalysisProgress(db, taskId, completed, total) {
+  const progress = 10 + Math.round((80 * Number(completed)) / Math.max(1, Number(total)));
+  taskService.updateTaskStatus(db, taskId, 'processing', progress, `分段分析 ${completed}/${total}`);
+}
+
+/**
+ * 多段样片的分析要跑很多分钟，不能卡在网页请求里：立即返回 processing，后台跑完后复用
+ * runAnalyzeTask 的收尾逻辑写入事实并结算；失败则按现有规则释放预扣。
+ * 服务重启会丢失进行中的后台任务，启动恢复时查询不到它，任务按现有规则转为 needs_attention。
+ */
+function startBackgroundAnalysis(db, log, request, run, options = {}) {
+  const providerTaskId = `native-segmented:${request.taskId}`;
+  setImmediate(async () => {
+    let result;
+    try {
+      result = await run();
+    } catch (error) {
+      result = { status: 'failed', error: error?.message || '分段源片分析失败' };
+    }
+    try {
+      await runAnalyzeTask(db, log, request.taskId, { ...options, provider: { pollAnalysisTask: async () => result } });
+    } catch (error) {
+      log?.error?.('redraw background analysis finalize failed', { task_id: request.taskId, message: error?.message });
+    }
+  });
+  return { status: 'processing', provider_task_id: providerTaskId };
+}
+
 async function resumeRedrawTasks(db, log, options = {}) {
   const shotNeedsAttention = redrawGenerationService.markInterruptedShotGenerationsNeedsAttention(db, log);
   let rows;
@@ -921,6 +967,8 @@ async function resumeRedrawTasks(db, log, options = {}) {
 
 module.exports = {
   startAnalysis,
+  startBackgroundAnalysis,
+  reportAnalysisProgress,
   runAnalyzeTask,
   resumeRedrawTasks,
   generateShot(db, log, input, options = {}) {

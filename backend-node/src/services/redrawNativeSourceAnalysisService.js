@@ -8,6 +8,12 @@ const realAssetService = require('./assetService');
 const aiClient = require('./aiClient');
 const { normalizeSourceFacts } = require('./redrawAnalysisService');
 const { enrichSourceFacts } = require('./redrawSourceEnrichmentService');
+const {
+  assertSourceDurationAllowed,
+  planSegments,
+  segmentCountForDuration,
+} = require('./redrawAnalysisSegmentation');
+const { knownCastFrom, mergeSegmentFacts } = require('./redrawSegmentFactsMerge');
 
 function codedError(code, message) {
   return Object.assign(new Error(message), { code });
@@ -222,7 +228,8 @@ function getAsset(db, assetId) {
   return asset;
 }
 
-function buildPrompt(probe) {
+function buildPrompt(probe, options = {}) {
+  const knownCast = Array.isArray(options.knownCast) ? options.knownCast : [];
   return [
     'You are analyzing a short-drama source video for strict 1:1 redraw facts v2.',
     'Return ONLY JSON with one top-level key named source_facts.',
@@ -240,8 +247,14 @@ function buildPrompt(probe) {
     'Use this exact source_facts schema:',
     '{"schema_version":"2.0","duration_ms":1,"story":[""],"characters":[{"id":"c1","source_name":"","display_name":"","relationship":"","relationships":[]}],"scenes":[{"id":"s1","location":"","time":"","source_ranges":[{"start_ms":0,"end_ms":1}]}],"props":[{"id":"p1","name":"","evidence_ranges":[{"start_ms":0,"end_ms":1}]}],"shots":[{"id":"shot-1","index":1,"start_ms":0,"end_ms":1,"composition":"","camera_movement":"","opening_state":"","continuous_action":"","ending_state":"","visible_character_ids":["c1"],"dialogue":[],"text_regions":[{"id":"txt1","kind":"subtitle","source_text":"","polygon":[[0.1,0.8],[0.9,0.8],[0.9,0.9],[0.1,0.9]]}],"audio_contract":{"dialogue_mode":"silent","ambient_audio":"preserve_or_rebuild"},"confidence":{"character_mapping":0.5,"speaker_mapping":0.2,"text_regions":0.5,"shot_boundary":0.5}}],"causal_chain":[""],"locked_facts":[""],"reversals":[""],"episode_hook":""}',
     'Keep all required arrays non-empty only when supported by visible evidence; an unsupported clip must fail rather than be completed with invented facts.',
+    ...(knownCast.length
+      ? [
+        'This clip is one part of a longer episode. Characters already identified in earlier parts are listed below; when the same person appears, reuse the exact source_name. Add a new character only for a new person.',
+        JSON.stringify(knownCast),
+      ]
+      : []),
     `Measured video metadata: duration_ms=${probe.duration_ms}, width=${probe.width || 'unknown'}, height=${probe.height || 'unknown'}.`,
-  ].join('\n');
+  ].filter((line) => line !== undefined).join('\n');
 }
 
 function assertStrictNativeFacts(facts, probe) {
@@ -347,6 +360,34 @@ function coerceShotAudioContracts(rawFacts) {
   return facts;
 }
 
+const KNOWN_TEXT_REGION_KINDS = new Set(['subtitle', 'screen_text', 'sign', 'title', 'label']);
+
+function uniqueWithinFacts(seen, id, shotId, fallback) {
+  const base = String(id || fallback);
+  let candidate = seen.has(base) ? `${base}-${shotId}` : base;
+  for (let suffix = 2; seen.has(candidate); suffix += 1) candidate = `${base}-${shotId}-${suffix}`;
+  seen.add(candidate);
+  return candidate;
+}
+
+function coerceTextRegionKinds(rawFacts) {
+  const facts = cloneJson(rawFacts);
+  const regionIds = new Set();
+  const turnIds = new Set();
+  for (const shot of Array.isArray(facts.shots) ? facts.shots : []) {
+    const shotId = String(shot?.id || '');
+    for (const [index, region] of (Array.isArray(shot?.text_regions) ? shot.text_regions : []).entries()) {
+      if (!region || typeof region !== 'object') continue;
+      if (!KNOWN_TEXT_REGION_KINDS.has(region.kind)) region.kind = 'screen_text';
+      region.id = uniqueWithinFacts(regionIds, region.id, shotId, `txt${index + 1}`);
+    }
+    for (const [index, turn] of (Array.isArray(shot?.dialogue) ? shot.dialogue : []).entries()) {
+      if (turn && typeof turn === 'object') turn.id = uniqueWithinFacts(turnIds, turn.id, shotId, `t${index + 1}`);
+    }
+  }
+  return facts;
+}
+
 function applyNoTranscriptEvidencePolicy(rawFacts) {
   const facts = cloneJson(rawFacts);
   const shots = Array.isArray(facts.shots) ? facts.shots : [];
@@ -364,6 +405,71 @@ function applyNoTranscriptEvidencePolicy(rawFacts) {
     }
   }
   return facts;
+}
+
+// 镜头切换检测（尽力而为）：失败时返回空数组，分段边界退回均分。
+async function detectSceneCuts(sourcePath, timeoutMs) {
+  try {
+    const { stderr } = await execFileChecked('ffmpeg', [
+      '-hide_banner', '-nostats', '-i', sourcePath, '-an', '-sn',
+      '-vf', "select='gt(scene,0.3)',showinfo", '-f', 'null', '-',
+    ], timeoutMs);
+    return [...String(stderr).matchAll(/pts_time:([0-9.]+)/g)].map((match) => Math.round(Number(match[1]) * 1000));
+  } catch (_) {
+    return [];
+  }
+}
+
+async function cutSegmentClip(sourcePath, outputPath, segment, timeoutMs) {
+  await execFileChecked('ffmpeg', [
+    '-hide_banner', '-loglevel', 'error', '-y',
+    '-ss', (segment.start_ms / 1000).toFixed(3),
+    '-i', sourcePath,
+    '-t', ((segment.end_ms - segment.start_ms) / 1000).toFixed(3),
+    '-an', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
+    outputPath,
+  ], timeoutMs);
+}
+
+/**
+ * 对一段视频做两段式分析：拼图 → 第一段（拆镜、字幕、名字）→ 校验 → 第二段补外观。
+ * 返回已合并补充信息的原始事实；第一段校验不过时直接抛错，不再付第二段的钱。
+ */
+async function analyzeClip(ctx) {
+  const { sourcePath, probe, sheetDir, input, visionDetailed, visionOptions, visionSource, log } = ctx;
+  ensureDir(sheetDir);
+  const sheets = [];
+  for (const mode of ['full', 'lower_third']) {
+    const pages = sheetPlan(probe.duration_ms, mode);
+    for (const [index, page] of pages.entries()) {
+      const sheetPath = path.join(sheetDir, `contact-sheet-${mode}-${index + 1}.jpg`);
+      await createSheet(sourcePath, sheetPath, mode, page, Number(input.ffmpegTimeoutMs || 30000));
+      sheets.push({ mode, path: sheetPath, sha256: sha256File(sheetPath) });
+    }
+  }
+  const imageSources = sheets.map((sheet) => ({ localAbsPath: sheet.path }));
+  const vision = await visionDetailed({
+    userPrompt: buildPrompt(probe, { knownCast: ctx.knownCast }),
+    systemPrompt: 'Return strict JSON only for short-drama source analysis.',
+    imageSources,
+    options: { ...visionOptions, max_tokens: Number(input.maxTokens || 16000) },
+    source: visionSource,
+  });
+  if (!vision?.provider_task_id) {
+    throw codedError('VISION_PROVIDER_RESPONSE_ID_MISSING', '视觉分析缺少真实 provider response id');
+  }
+  const parsed = parseJsonObject(vision.text);
+  const firstPass = coerceTextRegionKinds(coerceShotAudioContracts(coerceCharacterFields(parsed.source_facts || parsed)));
+  assertStrictNativeFacts(normalizeSourceFacts(applyNoTranscriptEvidencePolicy(firstPass)), probe);
+  const { facts, enrichment } = await enrichSourceFacts({
+    visionDetailed,
+    parseJsonObject,
+    imageSources,
+    options: visionOptions,
+    source: visionSource,
+    log,
+  }, firstPass);
+  return { facts, enrichment, vision, sheets };
 }
 
 async function analyzeNativeSource(ctx = {}, input = {}) {
@@ -393,51 +499,63 @@ async function analyzeNativeSource(ctx = {}, input = {}) {
     const source = resolveSourcePath(storageRoot, sourceAsset.local_path);
     ensureDir(workDir);
     const probe = await ffprobeVideo(source.absolute, Number(input.probeTimeoutMs || 15000));
-    const sheets = [];
-    for (const mode of ['full', 'lower_third']) {
-      const pages = sheetPlan(probe.duration_ms, mode);
-      for (const [index, page] of pages.entries()) {
-        const sheetPath = path.join(sheetDir, `contact-sheet-${mode}-${index + 1}.jpg`);
-        await createSheet(
-          source.absolute,
-          sheetPath,
-          mode,
-          page,
-          Number(input.ffmpegTimeoutMs || 30000),
-        );
-        sheets.push({ mode, path: sheetPath, sha256: sha256File(sheetPath) });
-      }
-    }
-
-    const imageSources = sheets.map((sheet) => ({ localAbsPath: sheet.path }));
-    // 整集样片的逐镜分析输出很长，推理模型常超过通用视觉调用的 120 秒；放宽到 9 分钟，仍短于前端 10 分钟的请求超时。
+    assertSourceDurationAllowed(probe.duration_ms);
+    // 整集样片的逐镜分析输出很长，推理模型常超过通用视觉调用的 120 秒；单次调用放宽到 9 分钟。
     const visionOptions = {
       model: input.model || undefined,
       temperature: 0.1,
       timeout_ms: Number(input.visionTimeoutMs || 540000),
     };
     const visionSource = { work_id: Number(work.id), source_asset_id: Number(sourceAsset.id) };
-    const vision = await visionDetailed({
-      userPrompt: buildPrompt(probe),
-      systemPrompt: 'Return strict JSON only for short-drama source analysis.',
-      imageSources,
-      options: { ...visionOptions, max_tokens: Number(input.maxTokens || 16000) },
-      source: visionSource,
-    });
-    if (!vision?.provider_task_id) {
-      throw codedError('VISION_PROVIDER_RESPONSE_ID_MISSING', '视觉分析缺少真实 provider response id');
+    const segmentCount = Number(input.segmentCount) || segmentCountForDuration(probe.duration_ms);
+    const clipCtx = { input, visionDetailed, visionOptions, visionSource, log };
+    let enrichedFacts;
+    let enrichment;
+    let vision;
+    let sheets;
+    let segmentsReport = null;
+    if (segmentCount <= 1) {
+      const clip = await analyzeClip({ ...clipCtx, sourcePath: source.absolute, probe, sheetDir });
+      ({ facts: enrichedFacts, enrichment, vision, sheets } = clip);
+    } else {
+      // 长样片按段依次分析：每段输出小、不易超时；后面的段带上前面已识别的角色名单。
+      const cuts = await detectSceneCuts(source.absolute, Number(input.sceneDetectTimeoutMs || 120000));
+      const plan = planSegments(probe.duration_ms, segmentCount, cuts);
+      const analyzed = [];
+      segmentsReport = [];
+      sheets = [];
+      for (const [index, segment] of plan.entries()) {
+        const segmentDir = path.join(sheetDir, `segment-${index + 1}`);
+        ensureDir(segmentDir);
+        const clipPath = path.join(segmentDir, 'clip.mp4');
+        await cutSegmentClip(source.absolute, clipPath, segment, Number(input.ffmpegTimeoutMs || 30000) * 4);
+        const clipProbe = await ffprobeVideo(clipPath, Number(input.probeTimeoutMs || 15000));
+        const clip = await analyzeClip({
+          ...clipCtx,
+          sourcePath: clipPath,
+          probe: clipProbe,
+          sheetDir: segmentDir,
+          knownCast: knownCastFrom(mergeSegmentFacts(analyzed, analyzed.length ? analyzed[analyzed.length - 1].end_ms : 0)),
+        });
+        analyzed.push({ ...segment, facts: clip.facts });
+        sheets.push(...clip.sheets);
+        vision = vision || clip.vision;
+        segmentsReport.push({
+          start_ms: segment.start_ms,
+          end_ms: segment.end_ms,
+          provider_task_id: String(clip.vision.provider_task_id),
+          usage: clip.vision.usage || null,
+          enrichment: clip.enrichment,
+        });
+        if (typeof ctx.onProgress === 'function') ctx.onProgress({ completed: index + 1, total: plan.length });
+      }
+      enrichedFacts = mergeSegmentFacts(analyzed, probe.duration_ms);
+      const enrichmentStatuses = segmentsReport.map((item) => item.enrichment?.status);
+      enrichment = {
+        status: enrichmentStatuses.every((status) => status === 'completed') ? 'completed'
+          : enrichmentStatuses.some((status) => status === 'completed') ? 'partial' : 'failed',
+      };
     }
-    const parsed = parseJsonObject(vision.text);
-    const firstPass = coerceShotAudioContracts(coerceCharacterFields(parsed.source_facts || parsed));
-    assertStrictNativeFacts(normalizeSourceFacts(applyNoTranscriptEvidencePolicy(firstPass)), probe);
-    const { facts: enrichedFacts, enrichment } = await enrichSourceFacts({
-      visionDetailed,
-      parseJsonObject,
-      imageSources,
-      options: visionOptions,
-      source: visionSource,
-      log,
-    }, firstPass);
     const facts = normalizeSourceFacts(applyNoTranscriptEvidencePolicy(enrichedFacts));
     assertStrictNativeFacts(facts, probe);
     const mediaProbe = safeMediaProbeMetadata(probe, sheets.length);
@@ -451,6 +569,7 @@ async function analyzeNativeSource(ctx = {}, input = {}) {
       raw_hash: vision.raw_hash || null,
       facts,
       enrichment,
+      segments: segmentsReport,
       diagnostics: {
         source: {
           relative_path_hash: crypto.createHash('sha256').update(source.relative).digest('hex'),
@@ -518,6 +637,7 @@ module.exports = {
   analyzeNativeSource,
   coerceCharacterFields,
   coerceShotAudioContracts,
+  coerceTextRegionKinds,
   buildPrompt,
   sheetFilter,
   parseJsonObject,

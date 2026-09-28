@@ -1215,7 +1215,15 @@ test('作品状态返回真实分析报价和 async task 状态', () => {
     handlers.getWork(request({ id: workId }), own);
 
     assert.equal(own.statusCode, 200);
-    assert.deepEqual(own.body.data.analysis_quote, { model: 'GPT-5.5', credits: 6, amount: 6 });
+    assert.deepEqual(own.body.data.analysis_quote, {
+      model: 'GPT-5.5',
+      credits: 30,
+      amount: 30,
+      unit_credits: 6,
+      segments: 5,
+      max_duration_ms: 300_000,
+      exceeds_max_duration: false,
+    });
     assert.equal(own.body.data.task_id, 'task-real-progress');
     assert.equal(own.body.data.task_status, 'processing');
     assert.equal(own.body.data.task_progress, 64);
@@ -1493,7 +1501,7 @@ test('未注入外部分析器时路由使用原生视觉服务完成真实编�
       VALUES (102, 'analysis', 'json', 'redraw_source_analysis', 'redraw-analysis/result.json', ?, ?)`)
       .run(NOW, NOW);
     const projectId = insertProject(db);
-    const workId = insertWork(db, projectId);
+    const workId = insertWork(db, projectId, { duration_ms: 20_000 });
     let nativeInput;
     const handlers = redrawRoutes(db, { error() {}, warn() {}, info() {} }, routeDeps({
       cfg: { storage: { local_path: tempRoot } },

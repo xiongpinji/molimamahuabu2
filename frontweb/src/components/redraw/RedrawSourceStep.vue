@@ -333,7 +333,8 @@ function startTaskPolling() {
   pollAttempts = 0
   pollTimer = setInterval(async () => {
     pollAttempts += 1
-    if (pollAttempts > 120 || !shouldPollWork(workState.value)) {
+    // 分段分析最长约一小时（5 分钟样片约 15 段），轮询覆盖到这个时长。
+    if (pollAttempts > 1800 || !shouldPollWork(workState.value)) {
       stopTaskPolling()
       return
     }

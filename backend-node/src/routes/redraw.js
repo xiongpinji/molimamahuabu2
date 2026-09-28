@@ -1932,23 +1932,32 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     const nativeSourceAnalysis = options.nativeSourceAnalysis
       || redrawNativeSourceAnalysisService.analyzeNativeSource;
     analysisOptions.provider = {
-      startAnalysis: (request) => nativeSourceAnalysis({
-        db,
-        log,
-        storageRoot: uploadLimits.storageRoot,
-        assetService: options.assetService || assetService,
-        visionDetailed: options.visionDetailed,
-        serviceType: options.nativeAnalysisServiceType || 'video_understanding',
-      }, {
-        taskId: request.taskId,
-        workId: request.workId,
-        tenantId: request.tenantId,
-        userId: request.userId,
-        model: request.model,
-        probeTimeoutMs: options.nativeAnalysisProbeTimeoutMs,
-        ffmpegTimeoutMs: options.nativeAnalysisFfmpegTimeoutMs,
-        maxTokens: options.nativeAnalysisMaxTokens,
-      }),
+      startAnalysis: (request) => {
+        const run = () => nativeSourceAnalysis({
+          db,
+          log,
+          storageRoot: uploadLimits.storageRoot,
+          assetService: options.assetService || assetService,
+          visionDetailed: options.visionDetailed,
+          serviceType: options.nativeAnalysisServiceType || 'video_understanding',
+          onProgress: ({ completed, total }) => redrawOrchestrator.reportAnalysisProgress(db, request.taskId, completed, total),
+        }, {
+          taskId: request.taskId,
+          workId: request.workId,
+          tenantId: request.tenantId,
+          userId: request.userId,
+          model: request.model,
+          segmentCount: request.segmentCount,
+          probeTimeoutMs: options.nativeAnalysisProbeTimeoutMs,
+          ffmpegTimeoutMs: options.nativeAnalysisFfmpegTimeoutMs,
+          maxTokens: options.nativeAnalysisMaxTokens,
+        });
+        // 多段样片在后台分析，接口立即返回 processing，前端轮询作品状态。
+        if (Number(request.segmentCount) > 1) {
+          return redrawOrchestrator.startBackgroundAnalysis(db, log, request, run, analysisOptions);
+        }
+        return run();
+      },
     };
   }
 
@@ -3330,7 +3339,7 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
             cleanupRegisteredSource(db, log, registered, uploadLimits.storageRoot);
           }
           createdItems.push(mapWork(work, registered.sourceAsset, {
-            analysisQuote: quoteAnalysis(db, log),
+            analysisQuote: quoteAnalysis(db, log, work),
           }));
         }
         return createdItems;
@@ -3382,7 +3391,7 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
         ...mapWork(projectedWork, null, {
           task: analysisTask,
           versionId: currentVersion?.id || null,
-          analysisQuote: quoteAnalysis(db, log),
+          analysisQuote: quoteAnalysis(db, log, work),
           analysisDecision,
           localizationDecision,
         }),
