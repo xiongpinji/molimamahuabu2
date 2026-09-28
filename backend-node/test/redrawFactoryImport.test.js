@@ -135,6 +135,22 @@ test('adapter keeps screen text out of dialogue, drops subtitles carried across 
   assert.match(pkg.props[0].name, /Ethan Brooks/);
 });
 
+test('adapter uses analysed appearance, scene visuals, shot size and subtitle speakers', () => {
+  const facts = sourceFacts();
+  facts.characters[1].appearance = 'Chen Zi\'ang is a stocky teen in a white tracksuit';
+  facts.scenes[0].visual = 'Neon storefront, wet asphalt, cool blue palette';
+  facts.shots[0].shot_size = 'close-up';
+  facts.shots[0].text_regions = [{ id: 'txt1', kind: 'subtitle', source_text: '你谁啊', speaker_id: 'c2' }];
+  const pkg = buildRedrawFactoryPackage({ sourceFacts: facts, localization: localization(), analysisSettings: SETTINGS });
+  const noah = pkg.characters.find((c) => c.character_id === 'c2');
+  assert.equal(noah.appearance, 'Noah Carter is a stocky teen in a white tracksuit', 'analysed appearance wins and is localized');
+  assert.match(pkg.scenes[0].prompt, /Street, Day\. Neon storefront, wet asphalt, cool blue palette\. Empty establishing shot, no people\./);
+  const [first, second] = pkg.episodes[0].scenes.flatMap((group) => group.shots);
+  assert.equal(first.shot_type, 'close-up');
+  assert.equal(second.shot_type, null);
+  assert.equal(first.dialogue, 'Noah Carter：Who even are you?');
+});
+
 function createDb() {
   const db = new Database(':memory:');
   runMigrationsAndEnsure(db);

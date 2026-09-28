@@ -222,9 +222,9 @@ function insertFactoryRows(db, logger, dramaId, productionPackage) {
   const insertStoryboard = db.prepare(`
     INSERT INTO storyboards (
       episode_id, scene_id, storyboard_number, title, description, location, time, duration,
-      dialogue, action, image_prompt, video_prompt, characters, movement, continuity_snapshot,
+      dialogue, action, image_prompt, video_prompt, characters, shot_type, movement, continuity_snapshot,
       creation_mode, status, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'universal', 'draft', ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'universal', 'draft', ?, ?)
   `);
   const linkProp = db.prepare('INSERT OR IGNORE INTO storyboard_props (storyboard_id, prop_id) VALUES (?, ?)');
   let storyboardNumber = 0;
@@ -247,6 +247,7 @@ function insertFactoryRows(db, logger, dramaId, productionPackage) {
         shot.image_prompt || null,
         shot.video_prompt || null,
         JSON.stringify(shot.characters.map((key) => characterIdByKey.get(key)).filter(Boolean)),
+        shot.shot_type || null,
         shot.movement || null,
         JSON.stringify(shot.continuity),
         now,

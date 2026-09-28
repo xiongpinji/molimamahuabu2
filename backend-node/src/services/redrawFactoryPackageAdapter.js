@@ -105,7 +105,7 @@ function mapCharacters(facts, names, glossary, characterImages = {}) {
   return list(facts.characters).filter((character) => !isGroupCharacter(character)).map((character) => {
     const id = text(character.id);
     // 外貌只取该角色单独出镜（群演不计）的构图：多人镜头的构图描述的是整个画面，拿来当外貌会串到别人身上。
-    const appearanceSeed = list(facts.shots)
+    const appearanceSeed = text(character.appearance) || list(facts.shots)
       .filter((shot) => {
         const people = list(shot.visible_character_ids).map(text).filter((visible) => !groupIds.has(visible));
         return people.length === 1 && people[0] === id;
@@ -136,7 +136,12 @@ function mapScenes(facts, style, glossary) {
       scene_id: text(scene.id),
       location: location || text(scene.id),
       time,
-      prompt: joinSentences(style.positive, `${location}${time ? `, ${time}` : ''}, empty establishing shot, no people.`),
+      prompt: joinSentences(
+        style.positive,
+        `${location}${time ? `, ${time}` : ''}`,
+        localizeTerms(scene.visual, glossary),
+        'Empty establishing shot, no people.',
+      ),
     };
   });
 }
@@ -167,7 +172,7 @@ function primarySceneId(facts, shot) {
   return best;
 }
 
-function shotTextRegions(shot, localization) {
+function shotTextRegions(shot, localization, names) {
   // 反推阶段没有转写证据时，台词只存在于硬字幕；本地化后用 text_map 的目标语字幕。
   // 只有字幕是台词。屏幕文字（电视、网页、招牌）是画面内容，放进台词会被原生音频念出来。
   const textMap = localization?.text_map || {};
@@ -178,7 +183,8 @@ function shotTextRegions(shot, localization) {
     const target = text(textMap[`${text(shot.id)}:${text(region?.id)}`]) || source;
     if (!target) continue;
     const kind = text(region?.kind);
-    if (!kind || kind === 'subtitle') subtitles.push({ source, text: target });
+    const speaker = names?.get(text(region?.speaker_id));
+    if (!kind || kind === 'subtitle') subtitles.push({ source, text: speaker ? `${speaker}：${target}` : target });
     else screenText.push(target);
   }
   return { subtitles, screenText };
@@ -193,7 +199,7 @@ function dropCarriedSubtitles(subtitles, previousLastSource) {
 
 function mapShot(facts, shot, { names, glossary, localization, style, propIds, previousLastSubtitle }) {
   const characterNames = list(shot.visible_character_ids).map((id) => names.get(text(id))).filter(Boolean);
-  const { subtitles, screenText } = shotTextRegions(shot, localization);
+  const { subtitles, screenText } = shotTextRegions(shot, localization, names);
   const spoken = dropCarriedSubtitles(subtitles, previousLastSubtitle);
   const description = joinSentences(
     localizeTerms(shot.composition, glossary),
@@ -217,6 +223,7 @@ function mapShot(facts, shot, { names, glossary, localization, style, propIds, p
     last_subtitle_source: subtitles.length ? subtitles[subtitles.length - 1].source : '',
     action,
     movement,
+    shot_type: text(shot.shot_size) || null,
     characters: list(shot.visible_character_ids).map(text).filter(Boolean),
     props,
     image_prompt: joinSentences(style.positive, description, characterNames.length ? `Characters: ${characterNames.join(', ')}.` : ''),

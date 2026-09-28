@@ -9,7 +9,7 @@ const TOP_LEVEL_FIELDS = [
 const SHOT_FIELDS = [
   'id', 'index', 'start_ms', 'end_ms', 'composition', 'camera_movement',
   'opening_state', 'continuous_action', 'ending_state', 'visible_character_ids',
-  'dialogue', 'text_regions', 'audio_contract', 'confidence',
+  'dialogue', 'text_regions', 'audio_contract', 'confidence', 'shot_size',
 ];
 
 const DANGEROUS_KEYS = new Set([
@@ -93,6 +93,16 @@ function optionalSafeText(value, name, maxLength = 500) {
   return safeText(value, name, maxLength);
 }
 
+// 外貌、场景视觉、景别只是导入工厂时的描述提示：超长截断，不安全就丢弃，不拒绝整份分析。
+function optionalHintText(value, name, maxLength) {
+  if (typeof value !== 'string' || !value.trim()) return undefined;
+  try {
+    return safeText(value.trim().slice(0, maxLength), name, maxLength);
+  } catch (_) {
+    return undefined;
+  }
+}
+
 function confidence(value, name) {
   if (!Number.isFinite(value) || value < 0 || value > 1) throw new Error(`${name} confidence 无效`);
   return value;
@@ -140,7 +150,7 @@ function normalizeCharacters(value) {
   assertNonEmptyArray(value, 'characters');
   const seen = new Set();
   return value.map((character, index) => {
-    assertAllowedKeys(character, `characters[${index}]`, ['id', 'source_name', 'display_name', 'relationship', 'relationships']);
+    assertAllowedKeys(character, `characters[${index}]`, ['id', 'source_name', 'display_name', 'relationship', 'relationships', 'appearance']);
     const normalized = {
       id: uniqueId(character.id, `characters[${index}].id`, seen),
     };
@@ -148,6 +158,8 @@ function normalizeCharacters(value) {
     if (character.display_name != null) normalized.display_name = safeText(character.display_name, `characters[${index}].display_name`, 120);
     if (!normalized.source_name && !normalized.display_name) throw new Error(`characters[${index}] 必须包含可显示名称`);
     if (character.relationship != null) normalized.relationship = safeText(character.relationship, `characters[${index}].relationship`, 200);
+    const appearance = optionalHintText(character.appearance, `characters[${index}].appearance`, 400);
+    if (appearance) normalized.appearance = appearance;
     if (character.relationships != null) {
       assertArray(character.relationships, `characters[${index}].relationships`);
       normalized.relationships = character.relationships.map((item, relIndex) => {
@@ -165,13 +177,16 @@ function normalizeScenes(value, durationMs) {
   assertNonEmptyArray(value, 'scenes');
   const seen = new Set();
   return value.map((scene, index) => {
-    assertAllowedKeys(scene, `scenes[${index}]`, ['id', 'location', 'time', 'source_ranges']);
-    return {
+    assertAllowedKeys(scene, `scenes[${index}]`, ['id', 'location', 'time', 'source_ranges', 'visual']);
+    const normalized = {
       id: uniqueId(scene.id, `scenes[${index}].id`, seen),
       location: safeText(scene.location, `scenes[${index}].location`, 200),
       time: safeText(scene.time, `scenes[${index}].time`, 120),
       source_ranges: normalizeRanges(scene.source_ranges, `scenes[${index}].source_ranges`, durationMs),
     };
+    const visual = optionalHintText(scene.visual, `scenes[${index}].visual`, 500);
+    if (visual) normalized.visual = visual;
+    return normalized;
   }).sort((a, b) => compareCodeUnit(a.id, b.id));
 }
 
@@ -232,11 +247,11 @@ function normalizePolygon(value, name) {
   return points;
 }
 
-function normalizeTextRegions(value, name, seenTextRegionIds) {
+function normalizeTextRegions(value, name, seenTextRegionIds, knownCharacters = new Set()) {
   assertArray(value, name);
   const allowedKinds = new Set(['subtitle', 'screen_text', 'sign', 'title', 'label']);
   return value.map((region, index) => {
-    assertAllowedKeys(region, `${name}[${index}]`, ['id', 'kind', 'polygon', 'source_text']);
+    assertAllowedKeys(region, `${name}[${index}]`, ['id', 'kind', 'polygon', 'source_text', 'speaker_id']);
     const id = uniqueId(region.id, `${name}[${index}].id`, seenTextRegionIds);
     if (!allowedKinds.has(region.kind)) throw new Error(`${name}[${index}].kind 未知`);
     const normalized = {
@@ -246,6 +261,9 @@ function normalizeTextRegions(value, name, seenTextRegionIds) {
     };
     const text = optionalSafeText(region.source_text, `${name}[${index}].source_text`, 300);
     if (text) normalized.source_text = text;
+    // 字幕说话人只是导入工厂时的提示：不是已知角色就丢弃，不因此拒绝整份付费分析。
+    const speakerId = typeof region.speaker_id === 'string' ? region.speaker_id.trim() : '';
+    if (region.kind === 'subtitle' && knownCharacters.has(speakerId)) normalized.speaker_id = speakerId;
     return normalized;
   }).sort((a, b) => compareCodeUnit(a.id, b.id));
 }
@@ -310,10 +328,12 @@ function normalizeShots(value, durationMs, knownCharacters) {
       ending_state: safeText(shot.ending_state, `shots[${index}].ending_state`, 500),
       visible_character_ids: visibleCharacterIds,
       dialogue: [],
-      text_regions: normalizeTextRegions(shot.text_regions, `shots[${index}].text_regions`, seenTextRegionIds),
+      text_regions: normalizeTextRegions(shot.text_regions, `shots[${index}].text_regions`, seenTextRegionIds, knownCharacters),
       audio_contract: normalizeAudioContract(shot.audio_contract, `shots[${index}].audio_contract`),
       confidence: normalizeConfidence(shot.confidence, `shots[${index}].confidence`),
     };
+    const shotSize = optionalHintText(shot.shot_size, `shots[${index}].shot_size`, 40);
+    if (shotSize) normalizedShot.shot_size = shotSize;
     normalizedShot.dialogue = normalizeDialogue(
       shot.dialogue,
       `shots[${index}].dialogue`,
