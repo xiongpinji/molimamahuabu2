@@ -94,6 +94,9 @@
           开始分析
         </el-button>
       </div>
+      <small v-if="analysisLocked" class="analysis-locked-hint">
+        该作品已完成样片分析，结果已锁定；如需重新分析，请新建作品重新上传样片。
+      </small>
     </div>
 
     <section v-if="taskState.task_id || workState?.task_id" class="task-card">
@@ -205,6 +208,7 @@ import {
   localizationTaskState,
   createLocalizationQuoteRequestGate,
   isCurrentLocalizationConfirmation,
+  redrawAnalysisLocked,
   redrawWorkflowPhase,
   resolveEightStageState,
   shouldResetLocalizationIdempotencyKey,
@@ -265,6 +269,7 @@ const canStartAnalysis = computed(() => canStartRedrawAnalysis({
   selectedPreset: selectedPreset.value,
   freeStyle: freeStyle.value,
 }))
+const analysisLocked = computed(() => redrawAnalysisLocked(workState.value))
 const canSubmitLocalization = computed(() => canConfirmLocalization(workState.value))
 const needsAnalysisReview = computed(() => analysisReviewPending(workState.value))
 const needsLocalizationReview = computed(() => localizationReviewPending(workState.value))
@@ -625,6 +630,13 @@ onUnmounted(() => {
 .source-stage-strip .needs_attention {
   border-color: #b63b3b;
   color: #ff8585;
+}
+
+.analysis-locked-hint {
+  display: block;
+  margin-top: 8px;
+  color: #f0b86e;
+  text-align: right;
 }
 
 .section-heading,

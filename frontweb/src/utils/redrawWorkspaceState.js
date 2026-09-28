@@ -391,7 +391,13 @@ export function buildLocalizationPayload(body) {
   }
 }
 
+// 作品的分析结果只写一次：已完成分析（current_version > 0）的作品再分析会被后端拒绝，重新分析要新建作品。
+export function redrawAnalysisLocked(work) {
+  return Number(work?.current_version || 0) > 0
+}
+
 export function canStartRedrawAnalysis({ work, selectedFile, locales, selectedPreset, freeStyle }) {
+  if (redrawAnalysisLocked(work)) return false
   const hasStyle = Boolean(
     selectedPreset?.id != null
       || String(freeStyle?.positivePrompt || freeStyle?.positive || '').trim(),

@@ -297,6 +297,10 @@ async function startAnalysis(db, log, input, options = {}) {
   if (!userId) throw codedError('UNAUTHORIZED', '缺少用户身份');
 
   assertSourceDurationAllowed(work.duration_ms);
+  // 作品的分析结果只写一次（writeFactsOnce）：已有锁定结果再分析，新结果一定写不进去还会白扣积分，所以预扣之前就拒绝。
+  if (lockedFactsVersion(db, work.id)) {
+    throw codedError('REDRAW_ANALYSIS_ALREADY_LOCKED', '该作品已完成样片分析，结果已锁定；如需重新分析，请新建作品重新上传样片');
+  }
   const config = loadVerifiedCapability(db);
   const model = modelPrice.canonicalModel(config.default_model || config.model || 'GPT-5.5');
   const segmentCount = segmentCountForDuration(work.duration_ms);
@@ -683,6 +687,12 @@ function automationOutcome(db, work, normalized) {
   };
 }
 
+function lockedFactsVersion(db, workId) {
+  return db.prepare(
+    'SELECT * FROM redraw_versions WHERE work_id = ? AND source_facts_json IS NOT NULL ORDER BY id ASC LIMIT 1'
+  ).get(workId);
+}
+
 function writeFactsOnce(db, work, normalized, outcome = null) {
   const now = new Date().toISOString();
   const state = outcome || {
@@ -692,9 +702,7 @@ function writeFactsOnce(db, work, normalized, outcome = null) {
     errorMessage: null,
   };
   let changed = true;
-  let version = db.prepare(
-    'SELECT * FROM redraw_versions WHERE work_id = ? AND source_facts_json IS NOT NULL ORDER BY id ASC LIMIT 1'
-  ).get(work.id);
+  let version = lockedFactsVersion(db, work.id);
   if (version) {
     if (version.facts_hash !== normalized.facts_hash) {
       const error = codedError('SOURCE_FACTS_HASH_CONFLICT', '源片事实 hash 冲突，请人工确认后再继续');
@@ -872,6 +880,10 @@ function finalizeCompletedAnalysis(db, log, task, work, result, options = {}) {
   } catch (error) {
     if (error.code === 'SOURCE_FACTS_HASH_CONFLICT') {
       markNeedsAttention(db, task, work, error.message);
+      // 这次分析的结果写不进已锁定的作品、用户拿不到：仍在预扣中的积分退回；已结算过的不再动。
+      const reservationId = task.credit_reservation_id || work.credit_reservation_id;
+      const reservation = reservationId ? creditLedger.getReservation(db, reservationId) : null;
+      if (reservation?.status === 'held') creditLedger.refund(db, reservationId, error.message);
       return { status: 'needs_attention', error: error.message };
     }
     if (error.atomic_finalize_failed) {

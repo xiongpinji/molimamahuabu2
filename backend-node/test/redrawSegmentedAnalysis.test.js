@@ -278,6 +278,63 @@ test('a multi-segment analysis runs in the background, reserves per segment and 
   assert.equal(creditLedger.getTenantAccount(db, 'tenant-1').held, 0);
 });
 
+function lockFacts(db, factsHash = 'locked-hash') {
+  const now = new Date().toISOString();
+  db.prepare(`INSERT INTO redraw_versions (work_id, tenant_id, user_id, version, locale, market, localization_level,
+    source_facts_json, facts_hash, status, created_at, updated_at)
+    VALUES (1, 'tenant-1', 'user-1', 1, 'source', '', 'faithful', '{}', ?, 'asset_review', ?, ?)`).run(factsHash, now, now);
+}
+
+const SMALL_FACTS = {
+  duration_ms: 10_000,
+  characters: [{ id: 'c1', source_name: '阿岚', relationships: [] }],
+  scenes: [{ id: 's1', location: '天台', time: '夜', source_ranges: [{ start_ms: 0, end_ms: 10_000 }] }],
+  props: [{ id: 'p1', name: '旧手机', evidence_ranges: [{ start_ms: 0, end_ms: 1_000 }] }],
+  shots: [{ id: 'sh1', start_ms: 0, end_ms: 10_000, dialogue: [], screen_text: '', opening_state: 'a', continuous_action: 'b', ending_state: 'c' }],
+  causal_chain: ['c'], locked_facts: ['l'], reversals: ['r'], episode_hook: 'h',
+};
+
+test('a work whose analysis is already locked is refused before any credits are reserved', async () => {
+  const db = createDb();
+  addVerifiedConfig(db);
+  prices.set(db, 'GPT-5.5', 10);
+  creditLedger.setTenantAccountBalance(db, 'tenant-1', 1000);
+  addWork(db, 68_733);
+  lockFacts(db);
+  let providerCalled = false;
+  await assert.rejects(
+    redraw.startAnalysis(db, log, { workId: 1, userId: 'user-1' }, { provider: { startAnalysis: async () => { providerCalled = true; return {}; } } }),
+    (error) => error.code === 'REDRAW_ANALYSIS_ALREADY_LOCKED' && /新建作品/.test(error.message),
+  );
+  assert.equal(providerCalled, false);
+  assert.equal(creditLedger.getTenantAccount(db, 'tenant-1').held, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM tenant_usage_reservations WHERE resource_type = 'redraw_analysis'").get().n, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM async_tasks WHERE type = 'redraw_analysis'").get().n, 0);
+});
+
+test('a facts conflict that slips past the check refunds the held credits', async () => {
+  const db = createDb();
+  addVerifiedConfig(db);
+  prices.set(db, 'GPT-5.5', 10);
+  creditLedger.setTenantAccountBalance(db, 'tenant-1', 1000);
+  addWork(db, 68_733);
+  const started = await redraw.startAnalysis(db, log, { workId: 1, userId: 'user-1' }, {
+    provider: { startAnalysis: async () => ({ provider_task_id: 'race-1', status: 'processing' }) },
+  });
+  assert.equal(creditLedger.getTenantAccount(db, 'tenant-1').held, 40);
+  lockFacts(db, 'another-hash');
+  const result = await redraw.runAnalyzeTask(db, log, started.task_id, {
+    provider: { pollAnalysisTask: async () => ({ status: 'completed', result_asset_id: 502, facts: SMALL_FACTS }) },
+    assetReader: { canRead: (asset) => Boolean(asset?.local_path) },
+  });
+  assert.equal(result.status, 'needs_attention');
+  assert.deepEqual(
+    [creditLedger.getTenantAccount(db, 'tenant-1').available, creditLedger.getTenantAccount(db, 'tenant-1').held],
+    [1000, 0],
+  );
+  assert.equal(db.prepare('SELECT status FROM tenant_usage_reservations WHERE id = ?').get(started.reservation_id).status, 'refunded');
+});
+
 test('re-analysis after a refunded failure reserves again while a held reservation stays idempotent', async () => {
   const db = createDb();
   addVerifiedConfig(db);

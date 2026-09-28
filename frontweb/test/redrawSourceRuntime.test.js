@@ -13,6 +13,7 @@ import {
   localizationQuoteCredits,
   localizationTaskState,
   localeReady,
+  redrawAnalysisLocked,
   createLocalizationQuoteRequestGate,
   isCurrentLocalizationConfirmation,
   resolveUpdatedStep,
@@ -32,6 +33,16 @@ test('有效报价启用且无报价禁用，只读取 work.analysis_quote', () 
     locales: [{ locale: 'ja-JP', market: 'JP' }],
     selectedPreset: presetWithFakeCredits,
   }), false)
+})
+
+test('已完成分析（结果已锁定）的作品不能再点开始分析', () => {
+  const locales = [{ locale: 'ja-JP', market: 'JP' }]
+  const quote = { credits: 40 }
+  assert.equal(canStartRedrawAnalysis({ work: { id: 5, analysis_quote: quote, current_version: 0 }, locales, selectedPreset: { id: 3 } }), true)
+  assert.equal(canStartRedrawAnalysis({ work: { id: 5, analysis_quote: quote, current_version: 1 }, locales, selectedPreset: { id: 3 } }), false)
+  assert.equal(redrawAnalysisLocked({ current_version: 1 }), true)
+  assert.equal(redrawAnalysisLocked({ current_version: 0 }), false)
+  assert.equal(redrawAnalysisLocked(null), false)
 })
 
 test('分析 payload 包含语言地区、比例、普通 preset 或自由风格参考图字段', () => {
