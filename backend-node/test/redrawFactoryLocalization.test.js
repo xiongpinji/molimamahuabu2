@@ -106,6 +106,36 @@ test('adapter turns a full localization into target-country names, looks, places
   }
 });
 
+test('localized looks, places and roles are used as written, without swapping ordinary words for names', () => {
+  const facts = factsV2();
+  facts.characters.push({ id: 'c3', source_name: '父亲', relationship: '主角的父亲', relationships: [], appearance: '中年男人' });
+  facts.scenes[0].time = 'daytime';
+  const compact = localization.compactFacts(facts);
+  const output = localization.validateOutput(TARGET, compact, modelOutput({
+    characters: [
+      { id: 'c1', name: 'Diego', role: '被同学嘲笑的主角', appearance: '墨西哥少年，和父亲一样的浓眉' },
+      { id: 'c2', name: 'Mateo', role: 'Diego 的同学', appearance: '墨西哥少年' },
+      { id: 'c3', name: 'Papá', role: 'Diego 的父亲', appearance: '四十多岁的墨西哥工薪父亲' },
+    ],
+    scenes: [
+      { id: 's1', location: '街角小卖部门口', time: '白天', visual: '墨西哥城街角' },
+      { id: 's2', location: '卧室', time: '夜间', visual: '墨西哥家庭卧室' },
+    ],
+  }));
+  const pkg = buildRedrawFactoryPackage({
+    sourceFacts: facts,
+    localization: { locale: 'es', market: 'MX', name_map: output.nameMap, text_map: output.textMap, glossary: {}, culture_map: output.cultureMap },
+    analysisSettings: {},
+  });
+  const papa = pkg.characters.find((c) => c.character_id === 'c3');
+  assert.equal(papa.appearance, '四十多岁的墨西哥工薪父亲', 'the word 父亲 stays a word');
+  assert.equal(papa.role, 'Diego 的父亲');
+  assert.equal(pkg.characters[0].appearance, '墨西哥少年，和父亲一样的浓眉');
+  assert.equal(pkg.characters[0].description, '被同学嘲笑的主角');
+  assert.equal(pkg.scenes[0].time, '白天');
+  assert.match(pkg.scenes[0].prompt, /街角小卖部门口，白天/);
+});
+
 test('localization output must cover every character and line in the target language', () => {
   const compact = localization.compactFacts(factsV2());
   assert.throws(() => localization.validateOutput(TARGET, compact, modelOutput({

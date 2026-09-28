@@ -135,7 +135,9 @@ function mapCharacters(facts, names, glossary, characterImages = {}, culture = c
     const id = text(character.id);
     // 外貌只取该角色单独出镜（群演不计）的构图：多人镜头的构图描述的是整个画面，拿来当外貌会串到别人身上。
     // 完全转绘时用目标国家的人物形象。
-    const appearanceSeed = text(culture.characters[id]?.appearance) || text(character.appearance) || list(facts.shots)
+    const localizedAppearance = text(culture.characters[id]?.appearance);
+    const localizedRole = text(culture.characters[id]?.role);
+    const appearanceSeed = localizedAppearance || text(character.appearance) || list(facts.shots)
       .filter((shot) => {
         const people = list(shot.visible_character_ids).map(text).filter((visible) => !groupIds.has(visible));
         return people.length === 1 && people[0] === id;
@@ -146,13 +148,12 @@ function mapCharacters(facts, names, glossary, characterImages = {}, culture = c
     return {
       character_id: id,
       name: names.get(id),
-      role: localizeText(character.relationship, names, glossary) || null,
-      description: localizeText(
-        [character.relationship, ...list(character.relationships)].filter(Boolean).join('; '),
-        names,
-        glossary,
-      ) || null,
-      appearance: localizeText(appearanceSeed, names, glossary) || null,
+      role: (localizedRole ? replaceCharacterIds(localizedRole, names) : localizeText(character.relationship, names, glossary)) || null,
+      description: (localizedRole
+        ? replaceCharacterIds(localizedRole, names)
+        : localizeText([character.relationship, ...list(character.relationships)].filter(Boolean).join('; '), names, glossary)) || null,
+      // 完全转绘的形象已是目标国家描述，只替换角色编号，不再按原名词表替换（避免把「父亲」这类普通词换成名字）。
+      appearance: (localizedAppearance ? replaceCharacterIds(localizedAppearance, names) : localizeText(appearanceSeed, names, glossary)) || null,
       ...(text(image.image_url) ? { image_url: text(image.image_url) } : {}),
       ...(text(image.local_path) ? { local_path: text(image.local_path) } : {}),
     };
@@ -162,8 +163,8 @@ function mapCharacters(facts, names, glossary, characterImages = {}, culture = c
 function mapScenes(facts, style, glossary, names, culture = cultureOf(null)) {
   return list(facts.scenes).map((scene) => {
     const localized = culture.scenes[text(scene.id)] || {};
-    const location = localizeText(text(localized.location) || scene.location, names, glossary);
-    const time = localizeText(scene.time, names, glossary);
+    const location = text(localized.location) ? replaceCharacterIds(localized.location, names) : localizeText(scene.location, names, glossary);
+    const time = text(localized.time) ? replaceCharacterIds(localized.time, names) : localizeText(scene.time, names, glossary);
     return {
       scene_id: text(scene.id),
       location: location || text(scene.id),
@@ -172,7 +173,7 @@ function mapScenes(facts, style, glossary, names, culture = cultureOf(null)) {
         style.positive,
         culture.setting,
         `${location}${time ? `，${time}` : ''}`,
-        localizeText(text(localized.visual) || scene.visual, names, glossary),
+        text(localized.visual) ? replaceCharacterIds(localized.visual, names) : localizeText(scene.visual, names, glossary),
         '空镜，画面中没有人物。',
       ),
     };
@@ -181,7 +182,8 @@ function mapScenes(facts, style, glossary, names, culture = cultureOf(null)) {
 
 function mapProps(facts, style, glossary, names, culture = cultureOf(null)) {
   return list(facts.props).map((prop) => {
-    const name = localizeText(text(culture.props[text(prop.id)]?.name) || prop.name, names, glossary);
+    const localizedName = text(culture.props[text(prop.id)]?.name);
+    const name = localizedName ? replaceCharacterIds(localizedName, names) : localizeText(prop.name, names, glossary);
     return {
       prop_id: text(prop.id),
       name: name || text(prop.id),

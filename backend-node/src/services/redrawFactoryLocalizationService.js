@@ -199,9 +199,9 @@ function buildPrompt(target, compact) {
     `You are fully re-localizing a short drama for ${target.country_en}. The finished drama must look and sound as if it were made in ${target.country_en} for ${target.country_en} viewers.`,
     `Every person becomes a person from ${target.country_en}, every line is spoken in ${target.language_en} as used in ${target.country_en}, and every place and prop belongs to ${target.country_en}.`,
     'Keep the plot, relationships, ages, body builds, emotions, actions and the role clothing plays in the story (for example a shared school uniform) exactly; change names, ethnicity and looks, language, and cultural details.',
-    'Return this JSON shape: {"characters":[{"id":"","name":"","appearance":""}],"scenes":[{"id":"","location":"","visual":""}],"props":[{"id":"","name":""}],"lines":[{"key":"","text":""}],"screen_texts":[{"key":"","text":""}],"setting":""}',
-    `characters: exactly one entry for EVERY supplied id, including groups and crowds, never skip one. name is a natural first name common in ${target.country_en} written as locals write it; for unnamed roles (mother, father, an athlete on TV) use a short natural ${target.language_en} role label, and for a group of people use a short plural ${target.language_en} label (for example the equivalent of "classmates"). appearance describes a person from ${target.country_en}: apparent age, build, skin tone, face, hair, and ${target.country_en}-style clothing that keeps the same story role; write appearance in Simplified Chinese and never mention the old name.`,
-    `scenes: one entry for every supplied id; move the place to ${target.country_en}: location is a short Simplified Chinese place name, visual describes ${target.country_en} architecture, signage in ${target.language_en}, street details, lighting and palette in Simplified Chinese; no Chinese characters on signs.`,
+    'Return this JSON shape: {"characters":[{"id":"","name":"","role":"","appearance":""}],"scenes":[{"id":"","location":"","time":"","visual":""}],"props":[{"id":"","name":""}],"lines":[{"key":"","text":""}],"screen_texts":[{"key":"","text":""}],"setting":""}',
+    `characters: exactly one entry for EVERY supplied id, including groups and crowds, never skip one. name is a natural first name common in ${target.country_en} written as locals write it; for unnamed roles (mother, father, an athlete on TV) use a short natural ${target.language_en} role label, and for a group of people use a short plural ${target.language_en} label (for example the equivalent of "classmates"). appearance describes a person from ${target.country_en}: apparent age, build, skin tone, face, hair, and ${target.country_en}-style clothing that keeps the same story role; write appearance in Simplified Chinese and never mention the old name. role is a short Simplified Chinese description of the person's place in the story using the new names.`,
+    `scenes: one entry for every supplied id; move the place to ${target.country_en}: location is a short Simplified Chinese place name, time is the time of day in Simplified Chinese, visual describes ${target.country_en} architecture, signage in ${target.language_en}, street details, lighting and palette in Simplified Chinese; no Chinese characters on signs.`,
     'props: one entry for every supplied id; Simplified Chinese name of the equivalent local object.',
     `lines: one entry for every supplied subtitle key; translate the line into natural spoken ${target.language_en} as used in ${target.country_en}, same meaning, tone and length, replacing any old character names with the new names. screen_texts: same for on-screen text keys.`,
     `setting: one Simplified Chinese sentence stating the story takes place in ${target.country_en} and all people are from ${target.country_en}.`,
@@ -272,7 +272,7 @@ function validateOutput(target, compact, parsed) {
     if (!name || badHan(name)) throw codedError('REDRAW_FACTORY_LOCALIZATION_INVALID', `角色 ${character.id} 缺少目标语言名字`);
     if (!appearance) throw codedError('REDRAW_FACTORY_LOCALIZATION_INVALID', `角色 ${character.id} 缺少目标国家形象`);
     nameMap[character.id] = name;
-    cultureCharacters[character.id] = { appearance };
+    cultureCharacters[character.id] = { appearance, ...(text(out?.role) ? { role: text(out.role) } : {}) };
   }
   const textMap = {};
   for (const line of compact.subtitles) {
@@ -287,8 +287,8 @@ function validateOutput(target, compact, parsed) {
   const cultureScenes = {};
   for (const scene of compact.scenes) {
     const out = scenes.get(scene.id);
-    if (text(out?.location) || text(out?.visual)) {
-      cultureScenes[scene.id] = { location: text(out?.location) || null, visual: text(out?.visual) || null };
+    if (text(out?.location) || text(out?.visual) || text(out?.time)) {
+      cultureScenes[scene.id] = { location: text(out?.location) || null, time: text(out?.time) || null, visual: text(out?.visual) || null };
     }
   }
   const cultureProps = {};
