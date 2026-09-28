@@ -372,7 +372,13 @@ async function analyzeNativeSource(ctx = {}, input = {}) {
       userPrompt: buildPrompt(probe),
       systemPrompt: 'Return strict JSON only for short-drama source analysis.',
       imageSources: sheets.map((sheet) => ({ localAbsPath: sheet.path })),
-      options: { model: input.model || undefined, max_tokens: Number(input.maxTokens || 8000), temperature: 0.1 },
+      // 整集样片的逐镜分析输出很长，推理模型常超过通用视觉调用的 120 秒；放宽到 9 分钟，仍短于前端 10 分钟的请求超时。
+      options: {
+        model: input.model || undefined,
+        max_tokens: Number(input.maxTokens || 16000),
+        temperature: 0.1,
+        timeout_ms: Number(input.visionTimeoutMs || 540000),
+      },
       source: { work_id: Number(work.id), source_asset_id: Number(sourceAsset.id) },
     });
     if (!vision?.provider_task_id) {

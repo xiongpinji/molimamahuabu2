@@ -1294,7 +1294,8 @@ async function generateTextWithVisionDetailed(db, log, serviceType, userPrompt, 
   let res;
   try {
     // 使用非流式请求：视觉分析响应短，且流式对推理模型（o1/o3/o4）和部分代理兼容性差
-    res = await postJSONNonStream(url, { Authorization: 'Bearer ' + (config.api_key || '') }, body, 120000);
+    const timeoutMs = Number(options.timeout_ms || process.env.AI_VISION_TIMEOUT_MS || 120000);
+    res = await postJSONNonStream(url, { Authorization: 'Bearer ' + (config.api_key || '') }, body, timeoutMs);
   } catch (httpErr) {
     log.error('[Vision] HTTP 请求失败', { model, url: url.slice(0, 80), error: httpErr.message });
     throw httpErr;
