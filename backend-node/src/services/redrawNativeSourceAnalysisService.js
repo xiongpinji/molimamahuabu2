@@ -325,6 +325,28 @@ function coerceCharacterFields(rawFacts) {
   return facts;
 }
 
+// 模型偶尔自创 dialogue_mode（如 subtitle_only），或把画外音写成台词条目。
+// 说话人不在画面里的台词条目丢弃（对应字幕仍在 text_regions 里）；dialogue_mode 按剩余台词归为 spoken / silent。
+function coerceShotAudioContracts(rawFacts) {
+  const facts = cloneJson(rawFacts);
+  for (const shot of Array.isArray(facts.shots) ? facts.shots : []) {
+    if (!shot || typeof shot !== 'object') continue;
+    if (Array.isArray(shot.dialogue) && Array.isArray(shot.visible_character_ids)) {
+      const visible = new Set(shot.visible_character_ids.map(String));
+      shot.dialogue = shot.dialogue.filter((turn) => turn && visible.has(String(turn.speaker_id)));
+    }
+    const contract = shot.audio_contract;
+    if (!contract || typeof contract !== 'object') continue;
+    const hasDialogue = Array.isArray(shot.dialogue) && shot.dialogue.length > 0;
+    if (!['spoken', 'silent'].includes(contract.dialogue_mode)
+      || (contract.dialogue_mode === 'spoken' && !hasDialogue)
+      || (contract.dialogue_mode === 'silent' && hasDialogue)) {
+      contract.dialogue_mode = hasDialogue ? 'spoken' : 'silent';
+    }
+  }
+  return facts;
+}
+
 function applyNoTranscriptEvidencePolicy(rawFacts) {
   const facts = cloneJson(rawFacts);
   const shots = Array.isArray(facts.shots) ? facts.shots : [];
@@ -406,7 +428,7 @@ async function analyzeNativeSource(ctx = {}, input = {}) {
       throw codedError('VISION_PROVIDER_RESPONSE_ID_MISSING', '视觉分析缺少真实 provider response id');
     }
     const parsed = parseJsonObject(vision.text);
-    const firstPass = coerceCharacterFields(parsed.source_facts || parsed);
+    const firstPass = coerceShotAudioContracts(coerceCharacterFields(parsed.source_facts || parsed));
     assertStrictNativeFacts(normalizeSourceFacts(applyNoTranscriptEvidencePolicy(firstPass)), probe);
     const { facts: enrichedFacts, enrichment } = await enrichSourceFacts({
       visionDetailed,
@@ -495,6 +517,7 @@ async function analyzeNativeSource(ctx = {}, input = {}) {
 module.exports = {
   analyzeNativeSource,
   coerceCharacterFields,
+  coerceShotAudioContracts,
   buildPrompt,
   sheetFilter,
   parseJsonObject,

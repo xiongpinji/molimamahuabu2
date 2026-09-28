@@ -83,7 +83,7 @@ const GROUP_CHARACTER_EN = /^(?:a\s+)?(?:group|crowd|cluster)\b|\b(?:onlookers|b
 const GROUP_CHARACTER_ZH = /围观|群众|路人|众人|人群/;
 
 function isGroupCharacter(character) {
-  return GROUP_CHARACTER_ZH.test(text(character?.source_name))
+  return [character?.source_name, character?.display_name].some((value) => GROUP_CHARACTER_ZH.test(text(value)))
     || /\b(?:group|crowd)\b/i.test(text(character?.display_name))
     || [character?.display_name, character?.relationship].some((value) => GROUP_CHARACTER_EN.test(text(value)));
 }

@@ -534,3 +534,29 @@ test('coerceCharacterFields turns object relationships into text and fills an em
   assert.deepEqual(coerced.characters[0].relationships, ['c2: classmate who mocks him', 'friend of c3']);
   assert.equal(coerced.characters[1].source_name, '陆飞');
 });
+
+test('coerceShotAudioContracts drops off-screen dialogue turns and settles invented dialogue modes', () => {
+  const coerced = nativeAnalysis.coerceShotAudioContracts({
+    shots: [
+      {
+        id: 'a', visible_character_ids: ['c1'],
+        dialogue: [{ speaker_id: 'c1', source_text: '你好' }, { speaker_id: 'c2', source_text: '画外音' }],
+        audio_contract: { dialogue_mode: 'subtitle_only', ambient_audio: 'preserve_or_rebuild' },
+      },
+      {
+        id: 'b', visible_character_ids: ['c1'],
+        dialogue: [{ speaker_id: 'c2', source_text: '画外音' }],
+        audio_contract: { dialogue_mode: 'spoken', ambient_audio: 'preserve_or_rebuild' },
+      },
+      {
+        id: 'c', visible_character_ids: [], dialogue: [],
+        audio_contract: { dialogue_mode: 'subtitle_only', ambient_audio: 'preserve_or_rebuild' },
+      },
+    ],
+  });
+  assert.deepEqual(coerced.shots[0].dialogue.map((turn) => turn.speaker_id), ['c1']);
+  assert.equal(coerced.shots[0].audio_contract.dialogue_mode, 'spoken');
+  assert.deepEqual(coerced.shots[1].dialogue, []);
+  assert.equal(coerced.shots[1].audio_contract.dialogue_mode, 'silent');
+  assert.equal(coerced.shots[2].audio_contract.dialogue_mode, 'silent');
+});
