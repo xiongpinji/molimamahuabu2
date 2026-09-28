@@ -277,6 +277,34 @@ test('a localization that is not in the target language fails and refunds', asyn
   }
 });
 
+test('items the model leaves out are asked for once more without charging again', async () => {
+  const calls = [];
+  const { db, storageRoot, call, settle } = setup(async (_db, _log, _type, user, system) => {
+    calls.push({ user, system });
+    if (calls.length === 1) {
+      return JSON.stringify(modelOutput({ characters: [modelOutput().characters[0]], lines: [modelOutput().lines[0]] }));
+    }
+    return JSON.stringify({ characters: [modelOutput().characters[1]], lines: [modelOutput().lines[1]] });
+  });
+  try {
+    await call({ action: 'start', localization: { locale: 'es', market: 'MX' }, expected_credits: 10 });
+    await settle();
+    assert.equal(calls.length, 2);
+    assert.match(calls[1].system, /left out or broke the items below/);
+    assert.deepEqual(JSON.parse(calls[1].user).characters.map((c) => c.id), ['c2']);
+    assert.deepEqual(JSON.parse(calls[1].user).subtitles.map((s) => s.key), ['shot-2:txt3']);
+    const status = await call({ action: 'status', localization: { locale: 'es', market: 'MX' } });
+    assert.equal(status.body.data.status, 'ready');
+    assert.equal(creditLedger.getTenantAccount(db, TENANT).spent, 10, 'the repair call is not charged');
+    const imported = await call({ action: 'import', localization: { locale: 'es', market: 'MX' } });
+    const names = db.prepare('SELECT name FROM characters WHERE drama_id = ? ORDER BY id').all(imported.body.data.drama_id).map((row) => row.name);
+    assert.deepEqual(names, ['Diego', 'Mateo']);
+  } finally {
+    db.close();
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  }
+});
+
 test('a running localization is reported by status and a second click does not start or charge again', async () => {
   let release;
   const gate = new Promise((resolve) => { release = resolve; });

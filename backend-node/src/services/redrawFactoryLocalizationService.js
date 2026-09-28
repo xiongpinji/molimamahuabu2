@@ -200,7 +200,7 @@ function buildPrompt(target, compact) {
     `Every person becomes a person from ${target.country_en}, every line is spoken in ${target.language_en} as used in ${target.country_en}, and every place and prop belongs to ${target.country_en}.`,
     'Keep the plot, relationships, ages, body builds, emotions, actions and the role clothing plays in the story (for example a shared school uniform) exactly; change names, ethnicity and looks, language, and cultural details.',
     'Return this JSON shape: {"characters":[{"id":"","name":"","appearance":""}],"scenes":[{"id":"","location":"","visual":""}],"props":[{"id":"","name":""}],"lines":[{"key":"","text":""}],"screen_texts":[{"key":"","text":""}],"setting":""}',
-    `characters: one entry for every supplied id. name is a natural first name common in ${target.country_en} written as locals write it; for unnamed roles (mother, father, classmates, an athlete on TV) use a short natural ${target.language_en} role label instead. appearance describes a person from ${target.country_en}: apparent age, build, skin tone, face, hair, and ${target.country_en}-style clothing that keeps the same story role; write appearance in Simplified Chinese and never mention the old name.`,
+    `characters: exactly one entry for EVERY supplied id, including groups and crowds, never skip one. name is a natural first name common in ${target.country_en} written as locals write it; for unnamed roles (mother, father, an athlete on TV) use a short natural ${target.language_en} role label, and for a group of people use a short plural ${target.language_en} label (for example the equivalent of "classmates"). appearance describes a person from ${target.country_en}: apparent age, build, skin tone, face, hair, and ${target.country_en}-style clothing that keeps the same story role; write appearance in Simplified Chinese and never mention the old name.`,
     `scenes: one entry for every supplied id; move the place to ${target.country_en}: location is a short Simplified Chinese place name, visual describes ${target.country_en} architecture, signage in ${target.language_en}, street details, lighting and palette in Simplified Chinese; no Chinese characters on signs.`,
     'props: one entry for every supplied id; Simplified Chinese name of the equivalent local object.',
     `lines: one entry for every supplied subtitle key; translate the line into natural spoken ${target.language_en} as used in ${target.country_en}, same meaning, tone and length, replacing any old character names with the new names. screen_texts: same for on-screen text keys.`,
@@ -208,6 +208,49 @@ function buildPrompt(target, compact) {
     'Do not add, drop or rename ids or keys.',
   ].join('\n');
   return { system, user: JSON.stringify(compact) };
+}
+
+// 模型偶尔漏掉个别条目（例如"同学们"这类群体角色没给名字）：只把缺的条目再问一次，不重新收费。
+function missingItems(target, compact, parsed) {
+  const badHan = (value) => !target.allows_han && HAN.test(value);
+  const characters = new Map(list(parsed?.characters).filter((item) => item && text(item.id)).map((item) => [text(item.id), item]));
+  const lines = new Map(list(parsed?.lines).filter((item) => item && text(item.key)).map((item) => [text(item.key), text(item.text)]));
+  const missingCharacters = compact.characters.filter((character) => {
+    const out = characters.get(character.id);
+    return !text(out?.name) || badHan(text(out?.name)) || !text(out?.appearance);
+  });
+  const missingLines = compact.subtitles.filter((line) => !lines.get(line.key) || badHan(lines.get(line.key)));
+  return {
+    characters: missingCharacters,
+    subtitles: missingLines,
+    setting: !text(parsed?.setting),
+    count: missingCharacters.length + missingLines.length + (text(parsed?.setting) ? 0 : 1),
+  };
+}
+
+function buildRepairPrompt(target, compact, missing) {
+  const base = buildPrompt(target, compact);
+  return {
+    system: `${base.system}\nYour previous answer left out or broke the items below. Return the same JSON shape containing only these items, completed.`,
+    user: JSON.stringify({
+      characters: missing.characters,
+      subtitles: missing.subtitles,
+      need_setting: missing.setting,
+    }),
+  };
+}
+
+function mergeOutputs(first, repair) {
+  const merged = { ...(first || {}) };
+  const byId = (items, key) => new Map(list(items).filter((item) => item && text(item[key])).map((item) => [text(item[key]), item]));
+  const characters = byId(first?.characters, 'id');
+  for (const item of list(repair?.characters)) if (item && text(item.id)) characters.set(text(item.id), item);
+  const lines = byId(first?.lines, 'key');
+  for (const item of list(repair?.lines)) if (item && text(item.key)) lines.set(text(item.key), item);
+  merged.characters = [...characters.values()];
+  merged.lines = [...lines.values()];
+  if (!text(merged.setting) && text(repair?.setting)) merged.setting = repair.setting;
+  return merged;
 }
 
 function validateOutput(target, compact, parsed) {
@@ -285,16 +328,25 @@ async function runLocalization(db, log, ctx, deps) {
   try {
     taskService.updateTaskStatus(db, taskId, 'processing', 30, '正在生成目标国家的名字、形象与台词');
     const compact = compactFacts(sourceFacts);
-    const prompt = buildPrompt(target, compact);
     const generateText = deps.generateText || require('./aiClient').generateText;
-    const raw = await generateText(db, log, 'text', prompt.user, prompt.system, {
-      model, json_mode: true, temperature: 0.4, min_max_tokens: 12000, silence_timeout_ms: MODEL_SILENCE_TIMEOUT_MS,
-    });
-    let parsed;
-    try {
-      parsed = typeof raw === 'string' ? JSON.parse(raw.replace(/^```(?:json)?\s*|\s*```$/g, '')) : raw;
-    } catch (error) {
-      throw codedError('REDRAW_FACTORY_LOCALIZATION_INVALID', `本地化结果不是合法 JSON：${error.message}`);
+    const ask = async (prompt) => {
+      const raw = await generateText(db, log, 'text', prompt.user, prompt.system, {
+        model, json_mode: true, temperature: 0.4, min_max_tokens: 12000, silence_timeout_ms: MODEL_SILENCE_TIMEOUT_MS,
+      });
+      try {
+        return typeof raw === 'string' ? JSON.parse(raw.replace(/^```(?:json)?\s*|\s*```$/g, '')) : raw;
+      } catch (error) {
+        throw codedError('REDRAW_FACTORY_LOCALIZATION_INVALID', `本地化结果不是合法 JSON：${error.message}`);
+      }
+    };
+    let parsed = await ask(buildPrompt(target, compact));
+    const missing = missingItems(target, compact, parsed);
+    if (missing.count) {
+      log?.warn?.('redraw factory localization repairing missing items', {
+        task_id: taskId, characters: missing.characters.map((c) => c.id), lines: missing.subtitles.length, setting: missing.setting,
+      });
+      taskService.updateTaskStatus(db, taskId, 'processing', 70, '正在补全遗漏的名字、形象或台词');
+      parsed = mergeOutputs(parsed, await ask(buildRepairPrompt(target, compact, missing)));
     }
     const output = validateOutput(target, compact, parsed);
     const versionId = db.transaction(() => {
