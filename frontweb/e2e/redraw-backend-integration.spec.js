@@ -3363,8 +3363,9 @@ export async function runRedrawFullProductFlow({ page }) {
 
   if (fullProductMode) {
     await page.locator('.redraw-step').filter({ hasText: '导出交付' }).click()
-    await expect(page.getByRole('heading', { name: `${fixtureLocale} 配音、合成预览与下载` })).toBeVisible()
-    const dialogueButton = page.getByRole('button', { name: `生成${fixtureLocale} 配音`, exact: true })
+    await expect(page.getByRole('heading', { name: '视频原生语音、合成预览与下载' })).toBeVisible()
+    // 产品默认保留视频原生语音；CI 以 TTS_ENABLED=1 覆盖导出页的 TTS 回退入口。
+    const dialogueButton = page.getByRole('button', { name: `启动${fixtureLocale} TTS 回退`, exact: true })
     const dialogueQuoteProbe = await browserApi(page, `/api/v1/redraw/versions/${versionId}/dialogue/quote`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
     })
