@@ -100,6 +100,41 @@ test('adapter keeps source text when no localization exists and rejects non-v2 f
     (error) => error.code === 'REDRAW_FACTORY_FACTS_INVALID');
 });
 
+test('adapter keeps screen text out of dialogue, drops subtitles carried across a cut and skips crowd characters', () => {
+  const facts = sourceFacts();
+  facts.characters.push({ id: 'c3', source_name: '围观学生', display_name: 'Watching students', relationship: 'Group of students watching', relationships: [] });
+  facts.shots[0].composition = 'Tight frontal close-up of Lin Jiang in a blue school jacket, with a blurred street background.';
+  facts.shots[0].visible_character_ids = ['c1', 'c3'];
+  facts.shots[0].text_regions = [
+    { id: 'txt1', kind: 'subtitle', source_text: '你谁啊' },
+    { id: 'txt2', kind: 'subtitle', source_text: '世界杯就是我的起步资金' },
+  ];
+  facts.shots[1].text_regions = [
+    { id: 'txt3', kind: 'subtitle', source_text: '世界杯就是我的起步资金' },
+    { id: 'txt4', kind: 'screen_text', source_text: '南非对墨西哥' },
+  ];
+  facts.shots[1].composition = 'Close-up of Lin Jiang reaching into his pocket.';
+  facts.scenes[1].location = "Lin Jiang's bedroom";
+  facts.props.push({ id: 'p4', name: 'Blue school jackets and school shirts', evidence_ranges: [{ start_ms: 0, end_ms: 8_000 }] });
+  facts.causal_chain.push('The school jackets mark them as classmates.');
+  const pkg = buildRedrawFactoryPackage({
+    sourceFacts: facts,
+    localization: { ...localization(), text_map: { 'shot-2:txt4': 'South Africa vs. Mexico' } },
+    analysisSettings: SETTINGS,
+  });
+
+  assert.deepEqual(pkg.characters.map((c) => c.name), ['Ethan Brooks', 'Noah Carter'], 'crowd is not a character');
+  assert.equal(pkg.characters[0].appearance, 'Ethan Brooks in a blue school jacket', 'crowd does not break a solo shot');
+  assert.equal(pkg.characters[1].appearance, null, 'no solo outfit shot means no guessed appearance');
+  const [first, second] = pkg.episodes[0].scenes.flatMap((group) => group.shots);
+  assert.equal(first.dialogue, '你谁啊\n世界杯就是我的起步资金');
+  assert.equal(second.dialogue, '', 'carried subtitle and screen text are not spoken');
+  assert.match(second.description, /On-screen text: "South Africa vs\. Mexico"/);
+  assert.equal(pkg.scenes[1].location, "Ethan Brooks's bedroom");
+  assert.deepEqual(pkg.props.map((p) => p.prop_id), ['p1'], 'clothing is not a prop even when mentioned in the story');
+  assert.match(pkg.props[0].name, /Ethan Brooks/);
+});
+
 function createDb() {
   const db = new Database(':memory:');
   runMigrationsAndEnsure(db);

@@ -78,14 +78,40 @@ function nameGlossary(facts, names) {
   return glossary;
 }
 
+// 围观群众、路人这类群体不是可复用的角色：不单独建角色、不出角色图，只留在镜头描述里。
+const GROUP_CHARACTER_EN = /^(?:a\s+)?(?:group|crowd|cluster)\b|\b(?:onlookers|bystanders|passers-?by|extras|crowd)\b/i;
+const GROUP_CHARACTER_ZH = /围观|群众|路人|众人|人群/;
+
+function isGroupCharacter(character) {
+  return GROUP_CHARACTER_ZH.test(text(character?.source_name))
+    || [character?.display_name, character?.relationship].some((value) => GROUP_CHARACTER_EN.test(text(value)));
+}
+
+// 构图句以景别开头（"Tight frontal close-up of X in ..."），去掉景别与背景，只留人物外观。
+const SHOT_FRAMING_PREFIX = /^(?:[a-z-]+\s+){0,4}?(?:close-?up|shot|view|two-shot|insert|framing)\s+of\s+/i;
+
+function appearanceFromComposition(composition, character) {
+  const body = text(composition).replace(SHOT_FRAMING_PREFIX, '');
+  if (body === text(composition)) return '';
+  // 只接受「角色名 + 穿着/服装」的句子，例如 "Lin Jiang in a blue school jacket"；
+  // "Lin Jiang reaching into his clothing" 这类动作描述不是外貌。
+  const namePrefix = [character.display_name, character.source_name].map(text).find((name) => name && body.startsWith(name));
+  if (!namePrefix || !/^\s+(?:in|wearing|dressed in)\s+/i.test(body.slice(namePrefix.length))) return '';
+  return body.split(/[;,]\s+(?:with|while|as|against|and a|behind)\b|;\s*/i)[0].replace(/[.\s]+$/, '');
+}
+
 function mapCharacters(facts, names, glossary, characterImages = {}) {
-  return list(facts.characters).map((character) => {
+  const groupIds = new Set(list(facts.characters).filter(isGroupCharacter).map((character) => text(character.id)));
+  return list(facts.characters).filter((character) => !isGroupCharacter(character)).map((character) => {
     const id = text(character.id);
-    const shotsWithCharacter = list(facts.shots)
-      .filter((shot) => list(shot.visible_character_ids).includes(id))
-      .map((shot) => text(shot.composition));
-    // 外貌与服装只零散出现在镜头构图里，取首个提到该角色的构图句作为外观种子。
-    const appearanceSeed = shotsWithCharacter.find(Boolean) || '';
+    // 外貌只取该角色单独出镜（群演不计）的构图：多人镜头的构图描述的是整个画面，拿来当外貌会串到别人身上。
+    const appearanceSeed = list(facts.shots)
+      .filter((shot) => {
+        const people = list(shot.visible_character_ids).map(text).filter((visible) => !groupIds.has(visible));
+        return people.length === 1 && people[0] === id;
+      })
+      .map((shot) => appearanceFromComposition(shot.composition, character))
+      .find(Boolean) || '';
     const image = characterImages[id] || {};
     return {
       character_id: id,
@@ -102,26 +128,30 @@ function mapCharacters(facts, names, glossary, characterImages = {}) {
   });
 }
 
-function mapScenes(facts, style) {
-  return list(facts.scenes).map((scene) => ({
-    scene_id: text(scene.id),
-    location: text(scene.location) || text(scene.id),
-    time: text(scene.time),
-    prompt: joinSentences(
-      style.positive,
-      `${text(scene.location)}${text(scene.time) ? `, ${text(scene.time)}` : ''}, empty establishing shot, no people.`,
-    ),
-  }));
+function mapScenes(facts, style, glossary) {
+  return list(facts.scenes).map((scene) => {
+    const location = localizeTerms(scene.location, glossary);
+    const time = localizeTerms(scene.time, glossary);
+    return {
+      scene_id: text(scene.id),
+      location: location || text(scene.id),
+      time,
+      prompt: joinSentences(style.positive, `${location}${time ? `, ${time}` : ''}, empty establishing shot, no people.`),
+    };
+  });
 }
 
-function mapProps(facts, style) {
-  return list(facts.props).map((prop) => ({
-    prop_id: text(prop.id),
-    name: text(prop.name) || text(prop.id),
-    type: null,
-    description: text(prop.name),
-    prompt: joinSentences(style.positive, `${text(prop.name)}, isolated product shot on a plain background.`),
-  }));
+function mapProps(facts, style, glossary) {
+  return list(facts.props).map((prop) => {
+    const name = localizeTerms(prop.name, glossary);
+    return {
+      prop_id: text(prop.id),
+      name: name || text(prop.id),
+      type: null,
+      description: name,
+      prompt: joinSentences(style.positive, `${name}, isolated product shot on a plain background.`),
+    };
+  });
 }
 
 function primarySceneId(facts, shot) {
@@ -137,19 +167,38 @@ function primarySceneId(facts, shot) {
   return best;
 }
 
-function shotDialogue(shot, localization) {
-  // 反推阶段没有转写证据时，台词只存在于硬字幕 text_regions；本地化后用 text_map 的目标语字幕。
+function shotTextRegions(shot, localization) {
+  // 反推阶段没有转写证据时，台词只存在于硬字幕；本地化后用 text_map 的目标语字幕。
+  // 只有字幕是台词。屏幕文字（电视、网页、招牌）是画面内容，放进台词会被原生音频念出来。
   const textMap = localization?.text_map || {};
-  return list(shot.text_regions)
-    .filter((region) => ['subtitle', 'title', 'screen_text'].includes(text(region?.kind)) || !region?.kind)
-    .map((region) => text(textMap[`${text(shot.id)}:${text(region.id)}`]) || text(region.source_text))
-    .filter(Boolean)
-    .join('\n');
+  const subtitles = [];
+  const screenText = [];
+  for (const region of list(shot.text_regions)) {
+    const source = text(region?.source_text);
+    const target = text(textMap[`${text(shot.id)}:${text(region?.id)}`]) || source;
+    if (!target) continue;
+    const kind = text(region?.kind);
+    if (!kind || kind === 'subtitle') subtitles.push({ source, text: target });
+    else screenText.push(target);
+  }
+  return { subtitles, screenText };
 }
 
-function mapShot(facts, shot, { names, glossary, localization, style, propIds }) {
+function dropCarriedSubtitles(subtitles, previousLastSource) {
+  // 同一句字幕跨过剪辑点时会在相邻两个镜头里各出现一次，只在前一个镜头里保留。
+  let start = 0;
+  while (start < subtitles.length && previousLastSource && subtitles[start].source === previousLastSource) start += 1;
+  return subtitles.slice(start);
+}
+
+function mapShot(facts, shot, { names, glossary, localization, style, propIds, previousLastSubtitle }) {
   const characterNames = list(shot.visible_character_ids).map((id) => names.get(text(id))).filter(Boolean);
-  const description = localizeTerms(shot.composition, glossary);
+  const { subtitles, screenText } = shotTextRegions(shot, localization);
+  const spoken = dropCarriedSubtitles(subtitles, previousLastSubtitle);
+  const description = joinSentences(
+    localizeTerms(shot.composition, glossary),
+    screenText.length ? `On-screen text: "${screenText.join('" / "')}"` : '',
+  );
   const action = localizeTerms(
     joinSentences(shot.opening_state, shot.continuous_action, shot.ending_state),
     glossary,
@@ -164,7 +213,8 @@ function mapShot(facts, shot, { names, glossary, localization, style, propIds })
     title: `Shot ${Number(shot.index) || text(shot.id)}`,
     description,
     duration: durationSeconds,
-    dialogue: shotDialogue(shot, localization),
+    dialogue: spoken.map((line) => line.text).join('\n'),
+    last_subtitle_source: subtitles.length ? subtitles[subtitles.length - 1].source : '',
     action,
     movement,
     characters: list(shot.visible_character_ids).map(text).filter(Boolean),
@@ -226,7 +276,18 @@ function propHeadNouns(prop) {
   return [...new Set(nouns.filter(Boolean))];
 }
 
+// 服装跟着角色走，家具和建筑是场景的一部分，屏幕画面是镜头内容：都不单独出道具图。
+const NON_PROP_NOUNS = new Set([
+  'jacket', 'jackets', 'shirt', 'shirts', 'uniform', 'uniforms', 'tracksuit', 'tracksuits', 'clothes', 'clothing',
+  'coat', 'coats', 'dress', 'dresses', 'pants', 'trousers', 'skirt', 'skirts', 'shoes', 'hat', 'hats',
+  'desk', 'desks', 'chair', 'chairs', 'table', 'tables', 'bed', 'beds', 'sofa', 'wardrobe', 'cabinet', 'shelf', 'shelves',
+  'gate', 'gates', 'fence', 'fences', 'wall', 'walls', 'door', 'doors', 'window', 'windows', 'building', 'buildings',
+  'broadcast', 'broadcasts', 'caption', 'captions', 'footage', 'headline', 'headlines', 'page', 'webpage',
+]);
+
 function isKeyProp(prop, facts) {
+  const nouns = propHeadNouns(prop);
+  if (nouns.length && nouns.every((noun) => NON_PROP_NOUNS.has(noun))) return false;
   const shotCount = list(facts.shots).filter((shot) => overlaps(prop?.evidence_ranges, shot)).length;
   if (shotCount === 0) return false;
   if (shotCount >= KEY_PROP_MIN_RECURRING_SHOTS) return true;
@@ -260,12 +321,16 @@ function buildRedrawFactoryPackage({
   const selectedPropIds = new Set(propIds
     ? [...propIds].map(text)
     : list(facts.props).filter((prop) => isKeyProp(prop, facts)).map((prop) => text(prop.id)));
+  let previousLastSubtitle = '';
   const mappedShots = [...facts.shots]
     .sort((left, right) => Number(left.start_ms) - Number(right.start_ms))
-    .map((shot) => ({
-      sceneId: primarySceneId(facts, shot),
-      shot: mapShot(facts, shot, { names, glossary, localization, style, propIds: selectedPropIds }),
-    }));
+    .map((shot) => {
+      const { last_subtitle_source: lastSubtitle, ...mapped } = mapShot(facts, shot, {
+        names, glossary, localization, style, propIds: selectedPropIds, previousLastSubtitle,
+      });
+      previousLastSubtitle = lastSubtitle;
+      return { sceneId: primarySceneId(facts, shot), shot: mapped };
+    });
   const characters = mapCharacters(facts, names, glossary, characterImages)
     .map((character) => (style.negative ? { ...character, negative_prompt: style.negative } : character));
   const story = list(facts.story).map((line) => localizeTerms(line, glossary)).filter(Boolean);
@@ -277,8 +342,8 @@ function buildRedrawFactoryPackage({
       target_duration_seconds: Math.round(Number(facts.duration_ms || 0) / 1000),
     },
     characters,
-    scenes: mapScenes(facts, style),
-    props: mapProps(facts, style).filter((prop) => selectedPropIds.has(prop.prop_id)),
+    scenes: mapScenes(facts, style, glossary),
+    props: mapProps(facts, style, glossary).filter((prop) => selectedPropIds.has(prop.prop_id)),
     episodes: [{
       episode_number: 1,
       title: title || 'Episode 1',
