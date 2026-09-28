@@ -672,25 +672,37 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-09-03 NewAPI 配置级能力隔离与六模型路由固定获批",
+          "approvedBy": "product-owner 2026-09-03 newapi-config-scoped-capability-binding",
+          "impactTests": [
+            "backend-node/test/canvasModelCatalogService.test.js",
+            "backend-node/test/modelPrice.test.js",
+            "backend-node/test/newapiVideo.test.js",
+            "backend-node/test/newapiWan3ConfigInstaller.test.js",
+            "backend-node/test/providerModelSelection.test.js",
+            "backend-node/test/providerPricingSync.test.js",
+            "backend-node/test/videoBilling.test.js",
+            "backend-node/test/modelUiProtectionGate.test.js",
+            "frontweb/test/billing-model-groups.test.js",
+            "frontweb/test/filmListCanvasEntry.test.js",
+            "frontweb/test/homeQuickGeneration.test.js",
+            "backend-node/test/sharedExternalModelReleaseGuard.test.js",
+            "frontweb/test/aiConfigProviderPresets.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-03 NewAPI 配置级能力隔离与六模型路由固定获批",
-        "approvedBy": "product-owner 2026-09-03 newapi-config-scoped-capability-binding",
+        "reason": "2026-09-28 一键转绘导入短剧工厂与样片分析超时修复获批",
+        "approvedBy": "product-owner 2026-09-28 redraw-import-to-factory",
         "impactTests": [
-          "backend-node/test/canvasModelCatalogService.test.js",
-          "backend-node/test/modelPrice.test.js",
-          "backend-node/test/newapiVideo.test.js",
-          "backend-node/test/newapiWan3ConfigInstaller.test.js",
-          "backend-node/test/providerModelSelection.test.js",
-          "backend-node/test/providerPricingSync.test.js",
-          "backend-node/test/videoBilling.test.js",
-          "backend-node/test/modelUiProtectionGate.test.js",
-          "frontweb/test/billing-model-groups.test.js",
-          "frontweb/test/filmListCanvasEntry.test.js",
-          "frontweb/test/homeQuickGeneration.test.js",
-          "backend-node/test/sharedExternalModelReleaseGuard.test.js",
-          "frontweb/test/aiConfigProviderPresets.test.js",
+          "backend-node/test/aiClientVisionMetadata.test.js",
+          "backend-node/test/redrawNativeSourceAnalysis.test.js",
+          "backend-node/test/redrawFactoryImport.test.js",
+          "backend-node/test/redrawRoutes.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]
@@ -1435,13 +1447,23 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-09-18 应用版本检测与更新弹窗 API/根壳挂载获批",
+          "approvedBy": "product-owner 2026-09-18 app-update-dialog",
+          "impactTests": [
+            "backend-node/test/appVersion.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-18 应用版本检测与更新弹窗 API/根壳挂载获批",
-        "approvedBy": "product-owner 2026-09-18 app-update-dialog",
+        "reason": "2026-09-28 一键转绘导入短剧工厂与样片分析超时修复获批",
+        "approvedBy": "product-owner 2026-09-28 redraw-import-to-factory",
         "impactTests": [
-          "backend-node/test/appVersion.test.js",
+          "backend-node/test/redrawFactoryImport.test.js",
+          "backend-node/test/redrawRoutes.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]
@@ -2097,13 +2119,26 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-09-18 应用版本检测与更新弹窗 API/根壳挂载获批",
+          "approvedBy": "product-owner 2026-09-18 app-update-dialog",
+          "impactTests": [
+            "backend-node/test/appVersion.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-18 应用版本检测与更新弹窗 API/根壳挂载获批",
-        "approvedBy": "product-owner 2026-09-18 app-update-dialog",
+        "reason": "2026-09-28 一键转绘导入短剧工厂与样片分析超时修复获批",
+        "approvedBy": "product-owner 2026-09-28 redraw-import-to-factory",
         "impactTests": [
-          "backend-node/test/appVersion.test.js",
+          "backend-node/test/aiClientVisionMetadata.test.js",
+          "backend-node/test/redrawNativeSourceAnalysis.test.js",
+          "backend-node/test/redrawLocalizationOrchestration.test.js",
+          "backend-node/test/redrawFactoryImport.test.js",
+          "backend-node/test/redrawRoutes.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]
@@ -2214,15 +2249,26 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-09-18 应用版本检测与更新弹窗 API/根壳挂载获批",
+          "approvedBy": "product-owner 2026-09-18 app-update-dialog",
+          "impactTests": [
+            "backend-node/test/appVersion.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/redrawProductMediaChain.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-18 应用版本检测与更新弹窗 API/根壳挂载获批",
-        "approvedBy": "product-owner 2026-09-18 app-update-dialog",
+        "reason": "2026-09-28 一键转绘导入短剧工厂与样片分析超时修复获批",
+        "approvedBy": "product-owner 2026-09-28 redraw-import-to-factory",
         "impactTests": [
-          "backend-node/test/appVersion.test.js",
+          "backend-node/test/redrawEpisodeFacts.test.js",
+          "backend-node/test/redrawFactoryImport.test.js",
           "backend-node/test/redrawRoutes.test.js",
-          "backend-node/test/redrawProductMediaChain.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]
@@ -2288,16 +2334,27 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-09-18 转绘默认关闭独立 TTS、优先原生视频音频交付获批",
+          "approvedBy": "product-owner 2026-09-18 redraw-tts-cleanup-delivery",
+          "impactTests": [
+            "backend-node/test/ttsPolicy.test.js",
+            "backend-node/test/redrawProviderAdapters.test.js",
+            "backend-node/test/redrawAssets.test.js",
+            "backend-node/test/redrawReferencePreparationOrchestration.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-18 转绘默认关闭独立 TTS、优先原生视频音频交付获批",
-        "approvedBy": "product-owner 2026-09-18 redraw-tts-cleanup-delivery",
+        "reason": "2026-09-28 一键转绘导入短剧工厂与样片分析超时修复获批",
+        "approvedBy": "product-owner 2026-09-28 redraw-import-to-factory",
         "impactTests": [
-          "backend-node/test/ttsPolicy.test.js",
           "backend-node/test/redrawProviderAdapters.test.js",
-          "backend-node/test/redrawAssets.test.js",
-          "backend-node/test/redrawReferencePreparationOrchestration.test.js",
+          "backend-node/test/redrawFactoryImport.test.js",
+          "backend-node/test/redrawRoutes.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]
@@ -2374,15 +2431,26 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-09-18 应用版本检测与更新弹窗 API/根壳挂载获批",
+          "approvedBy": "product-owner 2026-09-18 app-update-dialog",
+          "impactTests": [
+            "backend-node/test/appVersion.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/redrawProductMediaChain.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-18 应用版本检测与更新弹窗 API/根壳挂载获批",
-        "approvedBy": "product-owner 2026-09-18 app-update-dialog",
+        "reason": "2026-09-28 一键转绘导入短剧工厂与样片分析超时修复获批",
+        "approvedBy": "product-owner 2026-09-28 redraw-import-to-factory",
         "impactTests": [
-          "backend-node/test/appVersion.test.js",
+          "backend-node/test/redrawEpisodeFacts.test.js",
+          "backend-node/test/redrawFactoryImport.test.js",
           "backend-node/test/redrawRoutes.test.js",
-          "backend-node/test/redrawProductMediaChain.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
         ]
