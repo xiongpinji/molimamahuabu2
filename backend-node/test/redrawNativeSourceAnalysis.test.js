@@ -157,7 +157,9 @@ test('analyzeNativeSource creates contact sheets, strict facts JSON and a readab
       model: 'vision-model',
     });
 
-    assert.equal(calls.length, 1);
+    assert.equal(calls.length, 2, 'first pass plus enrichment pass');
+    assert.match(calls[1].userPrompt, /adding recreation details to an existing short-drama analysis/);
+    assert.equal(calls[1].options.max_tokens, 6000);
     assert.equal(result.status, 'completed');
     assert.equal(result.provider_task_id, 'vision-real-id-1');
     assert.equal(result.facts.characters[0].source_name, '林娜');

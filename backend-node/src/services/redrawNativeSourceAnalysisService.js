@@ -7,6 +7,7 @@ const { execFile } = require('child_process');
 const realAssetService = require('./assetService');
 const aiClient = require('./aiClient');
 const { normalizeSourceFacts } = require('./redrawAnalysisService');
+const { enrichSourceFacts } = require('./redrawSourceEnrichmentService');
 
 function codedError(code, message) {
   return Object.assign(new Error(message), { code });
@@ -234,16 +235,10 @@ function buildPrompt(probe) {
     'Shots MUST be chronological, continuous, gap-free, non-overlapping, start at 0, and end at duration_ms.',
     'Each shot MUST include composition, camera_movement, opening_state, continuous_action, ending_state, visible_character_ids, dialogue, text_regions, audio_contract, and confidence.',
     'text_regions polygon coordinates MUST be normalized 0..1 points with at least 3 non-collinear points.',
-    'Split shots at every visible camera cut or angle change. Never merge consecutive cuts into one shot, even when they share a location.',
     'characters[].source_name is the name written or addressed in the subtitles (for example a name someone calls out); if a character is never named, use a short Chinese descriptor such as 母亲. Never leave source_name empty.',
     'characters[].relationships is an array of plain strings such as "c2: classmate who mocks him", never objects.',
-    'Describe what is needed to recreate each asset with a generator, using only what is visible:',
-    'characters[].appearance: apparent age range, build, hair, and the outfit worn in this clip (colors, garments, accessories). Visual traits only; no names, personality, camera wording, or background. For a crowd, describe the group briefly.',
-    'scenes[].visual: set dressing, architecture, key furniture, lighting, and color palette of the empty location, without people.',
-    'shots[].shot_size: one of extreme close-up, close-up, medium close-up, medium, medium wide, wide, extreme wide, insert.',
-    'For each subtitle text_region, set speaker_id to the character id whose line it is when the speaker is clear from who is on screen and reacting; omit speaker_id for narration or when unsure.',
     'Use this exact source_facts schema:',
-    '{"schema_version":"2.0","duration_ms":1,"story":[""],"characters":[{"id":"c1","source_name":"","display_name":"","relationship":"","relationships":[],"appearance":""}],"scenes":[{"id":"s1","location":"","time":"","source_ranges":[{"start_ms":0,"end_ms":1}],"visual":""}],"props":[{"id":"p1","name":"","evidence_ranges":[{"start_ms":0,"end_ms":1}]}],"shots":[{"id":"shot-1","index":1,"start_ms":0,"end_ms":1,"shot_size":"medium","composition":"","camera_movement":"","opening_state":"","continuous_action":"","ending_state":"","visible_character_ids":["c1"],"dialogue":[],"text_regions":[{"id":"txt1","kind":"subtitle","source_text":"","speaker_id":"c1","polygon":[[0.1,0.8],[0.9,0.8],[0.9,0.9],[0.1,0.9]]}],"audio_contract":{"dialogue_mode":"silent","ambient_audio":"preserve_or_rebuild"},"confidence":{"character_mapping":0.5,"speaker_mapping":0.2,"text_regions":0.5,"shot_boundary":0.5}}],"causal_chain":[""],"locked_facts":[""],"reversals":[""],"episode_hook":""}',
+    '{"schema_version":"2.0","duration_ms":1,"story":[""],"characters":[{"id":"c1","source_name":"","display_name":"","relationship":"","relationships":[]}],"scenes":[{"id":"s1","location":"","time":"","source_ranges":[{"start_ms":0,"end_ms":1}]}],"props":[{"id":"p1","name":"","evidence_ranges":[{"start_ms":0,"end_ms":1}]}],"shots":[{"id":"shot-1","index":1,"start_ms":0,"end_ms":1,"composition":"","camera_movement":"","opening_state":"","continuous_action":"","ending_state":"","visible_character_ids":["c1"],"dialogue":[],"text_regions":[{"id":"txt1","kind":"subtitle","source_text":"","polygon":[[0.1,0.8],[0.9,0.8],[0.9,0.9],[0.1,0.9]]}],"audio_contract":{"dialogue_mode":"silent","ambient_audio":"preserve_or_rebuild"},"confidence":{"character_mapping":0.5,"speaker_mapping":0.2,"text_regions":0.5,"shot_boundary":0.5}}],"causal_chain":[""],"locked_facts":[""],"reversals":[""],"episode_hook":""}',
     'Keep all required arrays non-empty only when supported by visible evidence; an unsupported clip must fail rather than be completed with invented facts.',
     `Measured video metadata: duration_ms=${probe.duration_ms}, width=${probe.width || 'unknown'}, height=${probe.height || 'unknown'}.`,
   ].join('\n');
@@ -392,24 +387,36 @@ async function analyzeNativeSource(ctx = {}, input = {}) {
       }
     }
 
+    const imageSources = sheets.map((sheet) => ({ localAbsPath: sheet.path }));
+    // 整集样片的逐镜分析输出很长，推理模型常超过通用视觉调用的 120 秒；放宽到 9 分钟，仍短于前端 10 分钟的请求超时。
+    const visionOptions = {
+      model: input.model || undefined,
+      temperature: 0.1,
+      timeout_ms: Number(input.visionTimeoutMs || 540000),
+    };
+    const visionSource = { work_id: Number(work.id), source_asset_id: Number(sourceAsset.id) };
     const vision = await visionDetailed({
       userPrompt: buildPrompt(probe),
       systemPrompt: 'Return strict JSON only for short-drama source analysis.',
-      imageSources: sheets.map((sheet) => ({ localAbsPath: sheet.path })),
-      // 整集样片的逐镜分析输出很长，推理模型常超过通用视觉调用的 120 秒；放宽到 9 分钟，仍短于前端 10 分钟的请求超时。
-      options: {
-        model: input.model || undefined,
-        max_tokens: Number(input.maxTokens || 16000),
-        temperature: 0.1,
-        timeout_ms: Number(input.visionTimeoutMs || 540000),
-      },
-      source: { work_id: Number(work.id), source_asset_id: Number(sourceAsset.id) },
+      imageSources,
+      options: { ...visionOptions, max_tokens: Number(input.maxTokens || 16000) },
+      source: visionSource,
     });
     if (!vision?.provider_task_id) {
       throw codedError('VISION_PROVIDER_RESPONSE_ID_MISSING', '视觉分析缺少真实 provider response id');
     }
     const parsed = parseJsonObject(vision.text);
-    const facts = normalizeSourceFacts(applyNoTranscriptEvidencePolicy(coerceCharacterFields(parsed.source_facts || parsed)));
+    const firstPass = coerceCharacterFields(parsed.source_facts || parsed);
+    assertStrictNativeFacts(normalizeSourceFacts(applyNoTranscriptEvidencePolicy(firstPass)), probe);
+    const { facts: enrichedFacts, enrichment } = await enrichSourceFacts({
+      visionDetailed,
+      parseJsonObject,
+      imageSources,
+      options: visionOptions,
+      source: visionSource,
+      log,
+    }, firstPass);
+    const facts = normalizeSourceFacts(applyNoTranscriptEvidencePolicy(enrichedFacts));
     assertStrictNativeFacts(facts, probe);
     const mediaProbe = safeMediaProbeMetadata(probe, sheets.length);
     const output = {
@@ -421,6 +428,7 @@ async function analyzeNativeSource(ctx = {}, input = {}) {
       usage: vision.usage || null,
       raw_hash: vision.raw_hash || null,
       facts,
+      enrichment,
       diagnostics: {
         source: {
           relative_path_hash: crypto.createHash('sha256').update(source.relative).digest('hex'),
