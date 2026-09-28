@@ -71,6 +71,52 @@ function localizeText(value, names, glossary) {
   return localizeTerms(replaceCharacterIds(value, names), glossary);
 }
 
+// 反推描述会写「硬字幕留在画面下方」这类样片特征；转绘视频用原生音频、不烧字幕，
+// 这些分句会让视频模型照着画出字幕，按分句去掉。
+const SUBTITLE_MENTION = /\bsubtitles?\b|\bcaptions?\b|字幕/i;
+
+function stripSubtitleMentions(value) {
+  const parts = text(value).split(/([,;.!?，；。！？]\s*)/);
+  const kept = [];
+  for (let index = 0; index < parts.length; index += 2) {
+    const clause = parts[index];
+    const delimiter = parts[index + 1] || '';
+    if (!SUBTITLE_MENTION.test(clause)) {
+      kept.push(clause + delimiter);
+    } else if (/[.!?。！？]/.test(delimiter) && kept.length) {
+      // 去掉的是句末分句：把句号挪给前一个分句。
+      kept[kept.length - 1] = kept[kept.length - 1].replace(/[,;，；]\s*$/, delimiter);
+    }
+  }
+  return kept.join('').replace(/[,;，；]\s*$/, '').trim();
+}
+
+function displayName(code, type) {
+  try {
+    return new Intl.DisplayNames(['zh-CN'], { type }).of(code) || code;
+  } catch (_) {
+    return code;
+  }
+}
+
+// 台词的目标语言与口音，例如「西班牙语，墨西哥口音」；没有本地化时为空（沿用原片语言）。
+function spokenLanguageOf(localization) {
+  const locale = text(localization?.locale);
+  if (!locale || locale === 'source') return '';
+  const [language, region] = locale.split(/[-_]/);
+  const market = (text(localization?.market) || text(region)).toUpperCase();
+  const languageName = displayName(language.toLowerCase(), 'language');
+  return market ? `${languageName}，${displayName(market, 'region')}口音` : languageName;
+}
+
+function dialogueDirection(spoken, spokenLanguage) {
+  if (!spoken.length) return '';
+  const lines = spoken.map((line) => line.text).join(' ');
+  return spokenLanguage ? `台词全部用${spokenLanguage}说出：${lines}` : `台词：${lines}`;
+}
+
+const NO_SUBTITLES = '画面中不要出现字幕。';
+
 function characterNameMap(facts, localization) {
   const nameMap = localization?.name_map || {};
   const names = new Map();
@@ -232,16 +278,18 @@ function dropCarriedSubtitles(subtitles, previousLastSource) {
   return subtitles.slice(start);
 }
 
-function mapShot(facts, shot, { names, glossary, localization, style, propIds, previousLastSubtitle, setting = '' }) {
+function mapShot(facts, shot, {
+  names, glossary, localization, style, propIds, previousLastSubtitle, setting = '', spokenLanguage = '',
+}) {
   const characterNames = list(shot.visible_character_ids).map((id) => names.get(text(id))).filter(Boolean);
   const { subtitles, screenText } = shotTextRegions(shot, localization, names);
   const spoken = dropCarriedSubtitles(subtitles, previousLastSubtitle);
   const description = joinSentences(
-    localizeText(shot.composition, names, glossary),
+    localizeText(stripSubtitleMentions(shot.composition), names, glossary),
     screenText.length ? `画面文字：「${screenText.join('」/「')}」` : '',
   );
   const action = localizeText(
-    joinSentences(shot.opening_state, shot.continuous_action, shot.ending_state),
+    joinSentences(...[shot.opening_state, shot.continuous_action, shot.ending_state].map(stripSubtitleMentions)),
     names,
     glossary,
   );
@@ -262,14 +310,23 @@ function mapShot(facts, shot, { names, glossary, localization, style, propIds, p
     shot_type: SHOT_SIZE_ZH[text(shot.shot_size)] || text(shot.shot_size) || null,
     characters: list(shot.visible_character_ids).map(text).filter(Boolean),
     props,
-    image_prompt: joinSentences(style.positive, setting, description, characterNames.length ? `角色：${characterNames.join('、')}` : ''),
-    video_prompt: joinSentences(style.positive, setting, description, action, movement ? `运镜：${movement}` : ''),
+    image_prompt: joinSentences(style.positive, setting, description, characterNames.length ? `角色：${characterNames.join('、')}` : '', NO_SUBTITLES),
+    // 视频接口只收分镜的视频提示词，台词要写进来模型才会用原生音频说出。
+    video_prompt: joinSentences(
+      style.positive,
+      setting,
+      description,
+      action,
+      movement ? `运镜：${movement}` : '',
+      dialogueDirection(spoken, spokenLanguage),
+      NO_SUBTITLES,
+    ),
     continuity: {
       source_shot_id: text(shot.id),
       start_ms: Number(shot.start_ms),
       end_ms: Number(shot.end_ms),
-      opening_state: localizeText(shot.opening_state, names, glossary),
-      ending_state: localizeText(shot.ending_state, names, glossary),
+      opening_state: localizeText(stripSubtitleMentions(shot.opening_state), names, glossary),
+      ending_state: localizeText(stripSubtitleMentions(shot.ending_state), names, glossary),
     },
   };
 }
@@ -402,11 +459,12 @@ function buildRedrawFactoryPackage({
       return true;
     }).map((prop) => text(prop.id)));
   let previousLastSubtitle = '';
+  const spokenLanguage = spokenLanguageOf(localization);
   const mappedShots = [...facts.shots]
     .sort((left, right) => Number(left.start_ms) - Number(right.start_ms))
     .map((shot) => {
       const { last_subtitle_source: lastSubtitle, ...mapped } = mapShot(facts, shot, {
-        names, glossary, localization, style, propIds: selectedPropIds, previousLastSubtitle, setting: culture.setting,
+        names, glossary, localization, style, propIds: selectedPropIds, previousLastSubtitle, setting: culture.setting, spokenLanguage,
       });
       previousLastSubtitle = lastSubtitle;
       return { sceneId: primarySceneId(facts, shot), shot: mapped };

@@ -7,7 +7,8 @@
  * 创建一个全新的工厂项目，场景、道具、分镜按工厂现有表结构插入。不修改任何已有项目，
  * 也不改动短剧工厂与剧本分析导入的代码路径。导入后由工厂自己的一键流程补生成图片与视频。
  *
- * 幂等：dramas.metadata.redraw_import.import_key = redraw:{workId}:version:{versionId}:facts:{hash}。
+ * 幂等：dramas.metadata.redraw_import.import_key = redraw:{workId}:version:{versionId}:facts:{hash}，
+ * 完全转绘版本再加 :package:{生产包版本}。
  */
 
 const fs = require('node:fs');
@@ -19,6 +20,9 @@ const { buildRedrawFactoryPackage } = require('./redrawFactoryPackageAdapter');
 const { stageReferenceClips, registerStagedReferenceClips } = require('./redrawStoryboardReferenceClipService');
 
 const IMPORT_SCHEMA_VERSION = 'redraw-factory-import@1';
+// 完全转绘生产包的版本：提示词写法变了（带目标语言台词、去掉字幕描述、不提交原片参考），
+// 同一版本号的旧导入不再复用，重新导入会建新项目。
+const FULL_LOCALIZATION_PACKAGE_VERSION = 2;
 
 function codedError(code, message) {
   return Object.assign(new Error(message), { code });
@@ -355,7 +359,9 @@ async function importRedrawWorkToFactory(db, log, {
   const logger = silentLogger(log);
 
   const source = loadRedrawSource(db, owner, workId, storageRoot, { localizedVersionId });
-  const importKey = `redraw:${source.work.id}:version:${source.localizedVersion?.id || source.sourceVersion.id}:facts:${source.sourceVersion.facts_hash}`;
+  const fullLocalization = Boolean(localizedVersionId && source.localizedVersion);
+  const importKey = `redraw:${source.work.id}:version:${source.localizedVersion?.id || source.sourceVersion.id}:facts:${source.sourceVersion.facts_hash}`
+    + (fullLocalization ? `:package:${FULL_LOCALIZATION_PACKAGE_VERSION}` : '');
   const existingBefore = findExistingImport(db, owner, importKey);
   if (existingBefore) return existingResult(existingBefore, importKey);
 
@@ -384,8 +390,9 @@ async function importRedrawWorkToFactory(db, log, {
           project_type: 'factory',
           aspect_ratio: text(source.analysisSettings.aspect_ratio) || undefined,
           // 分镜以全能参考模式导入，并默认提交对应样片片段作参考视频、使用模型原生音频（不烧字幕）。
+          // 完全转绘换了国家与演员：原片片段会把原演员长相和硬字幕带进新视频，默认不提交（片段仍登记，可手动打开）。
           storyboard_universal_omni: true,
-          video_use_storyboard_reference_video: true,
+          video_use_storyboard_reference_video: !fullLocalization,
           video_native_audio: true,
           merge_trim_to_storyboard_duration: true,
           redraw_import: {
@@ -396,6 +403,7 @@ async function importRedrawWorkToFactory(db, log, {
             localized_version_id: source.localizedVersion ? Number(source.localizedVersion.id) : null,
             locale: source.localizedVersion?.locale || null,
             market: source.localizedVersion?.market || null,
+            full_localization_package: fullLocalization ? FULL_LOCALIZATION_PACKAGE_VERSION : null,
             facts_hash: source.sourceVersion.facts_hash,
             style_preset_id: Number(source.analysisSettings.style_preset_id) || null,
             style_prompt: source.style.positive || null,

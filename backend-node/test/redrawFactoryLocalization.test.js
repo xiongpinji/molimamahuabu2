@@ -99,11 +99,38 @@ test('adapter turns a full localization into target-country names, looks, places
   assert.match(first.description, /画面文字：「Abarrotes」/);
   assert.match(first.description, /Diego的近景/);
   assert.match(first.video_prompt, /故事发生在墨西哥城/);
-  assert.match(first.image_prompt, /角色：Diego、Mateo/);
+  assert.match(first.video_prompt, /台词全部用西班牙语，墨西哥口音说出：Diego：¿Y tú quién eres\? 画面中不要出现字幕。$/);
+  assert.match(first.image_prompt, /角色：Diego、Mateo。 画面中不要出现字幕。$/);
   assert.equal(second.dialogue, 'El Mundial será mi capital inicial.');
+  assert.match(second.video_prompt, /说出：El Mundial será mi capital inicial\. 画面中不要出现字幕。$/);
   for (const field of [first.description, first.action, first.video_prompt, pkg.characters[0].description]) {
     assert.doesNotMatch(field, /林江|林哥/, field);
   }
+});
+
+test('shot text drops burned-in subtitle descriptions so the video model does not draw subtitles', () => {
+  const facts = factsV2();
+  facts.shots[0].composition = 'tight close-up of c1 in a school uniform; burned-in subtitles remain at the lower part of the frame';
+  facts.shots[0].continuous_action = 'c1 points and speaks toward someone off-camera, subtitles appear below. He steps back.';
+  facts.shots[0].ending_state = '字幕消失，林江皱眉';
+  const output = localization.validateOutput(TARGET, localization.compactFacts(facts), modelOutput());
+  const pkg = buildRedrawFactoryPackage({
+    sourceFacts: facts,
+    localization: { locale: 'es', market: 'MX', name_map: output.nameMap, text_map: output.textMap, glossary: {}, culture_map: output.cultureMap },
+    analysisSettings: { free_style: { positive: '真人写实风格', negative: '' } },
+  });
+  const [first] = pkg.episodes[0].scenes.flatMap((group) => group.shots);
+  assert.match(first.description, /^tight close-up of Diego in a school uniform\. 画面文字/);
+  assert.match(first.action, /Diego points and speaks toward someone off-camera\. He steps back\./);
+  assert.equal(first.continuity.ending_state, 'Diego皱眉');
+  const body = first.video_prompt.replace(/画面中不要出现字幕。/g, '');
+  assert.doesNotMatch(body, /subtitle|字幕/i, first.video_prompt);
+});
+
+test('the source-language import speaks the original lines without naming a language', () => {
+  const pkg = buildRedrawFactoryPackage({ sourceFacts: factsV2(), analysisSettings: { free_style: { positive: '真人写实风格', negative: '' } } });
+  const [first] = pkg.episodes[0].scenes.flatMap((group) => group.shots);
+  assert.match(first.video_prompt, /台词：林江：你谁啊。 画面中不要出现字幕。$/);
 });
 
 test('localized looks, places and roles are used as written, without swapping ordinary words for names', () => {
@@ -274,12 +301,19 @@ test('route lists targets, quotes, charges once, imports a Mexican Spanish proje
       WHERE e.drama_id = ? ORDER BY s.storyboard_number`).all(dramaId);
     assert.equal(storyboards[0].dialogue, 'Diego：¿Y tú quién eres?');
     assert.match(storyboards[0].video_prompt, /墨西哥/);
+    assert.match(storyboards[0].video_prompt, /台词全部用西班牙语，墨西哥口音说出：Diego：¿Y tú quién eres\?/);
     const metadata = JSON.parse(db.prepare('SELECT metadata FROM dramas WHERE id = ?').get(dramaId).metadata);
     assert.deepEqual([metadata.redraw_import.locale, metadata.redraw_import.market], ['es', 'MX']);
+    assert.equal(metadata.video_use_storyboard_reference_video, false, 'source clips carry the original actors and subtitles');
+    assert.equal(metadata.redraw_import.full_localization_package, 2);
+    assert.match(metadata.redraw_import.import_key, /:package:2$/);
 
     const plain = await call({});
     assert.equal(plain.statusCode, 200);
     assert.notEqual(plain.body.data.drama_id, dramaId, 'the source-language import stays a separate project');
+    const plainMetadata = JSON.parse(db.prepare('SELECT metadata FROM dramas WHERE id = ?').get(plain.body.data.drama_id).metadata);
+    assert.equal(plainMetadata.video_use_storyboard_reference_video, true, 'the plain redraw import keeps the source clip reference');
+    assert.doesNotMatch(plainMetadata.redraw_import.import_key, /:package:/);
     const plainNames = db.prepare('SELECT name FROM characters WHERE drama_id = ? ORDER BY id').all(plain.body.data.drama_id).map((row) => row.name);
     assert.deepEqual(plainNames, ['林江', '林哥']);
   } finally {
