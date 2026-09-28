@@ -11,11 +11,12 @@
  */
 
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const dramaService = require('./dramaService');
 const storageLayout = require('./storageLayout');
 const { buildRedrawFactoryPackage } = require('./redrawFactoryPackageAdapter');
-const { createStoryboardReferenceClips } = require('./redrawStoryboardReferenceClipService');
+const { stageReferenceClips, registerStagedReferenceClips } = require('./redrawStoryboardReferenceClipService');
 
 const IMPORT_SCHEMA_VERSION = 'redraw-factory-import@1';
 
@@ -85,6 +86,7 @@ function loadRedrawSource(db, owner, workId) {
     : null;
   if (!analysisTask) throw codedError('REDRAW_FACTORY_ANALYSIS_REQUIRED', '请先完成样片分析');
   const analysisSettings = parseJson(analysisTask.metadata, {})?.redraw_analysis || {};
+  const style = resolveStyle(db, owner, analysisSettings);
   // 若已有本地化版本（目标语名字与字幕），优先使用最新一版；否则按源片事实导入。
   const localizedVersion = db.prepare(`
     SELECT * FROM redraw_versions
@@ -92,7 +94,25 @@ function loadRedrawSource(db, owner, workId) {
       AND facts_hash = ? AND status NOT IN ('draft', 'failed') AND deleted_at IS NULL
     ORDER BY version DESC, id DESC LIMIT 1
   `).get(work.id, owner.tenantId, owner.userId, sourceVersion.facts_hash);
-  return { work, sourceVersion, sourceFacts, analysisSettings, localizedVersion };
+  return { work, sourceVersion, sourceFacts, analysisSettings, style, localizedVersion };
+}
+
+function resolveStyle(db, owner, analysisSettings) {
+  // 分析设置里风格二选一：自由风格直接用；预设按 id 取出正、负向提示词模板。
+  const freeStyle = analysisSettings?.free_style;
+  if (freeStyle && typeof freeStyle === 'object') {
+    return { positive: text(freeStyle.positive), negative: text(freeStyle.negative) };
+  }
+  const presetId = Number(analysisSettings?.style_preset_id);
+  if (!Number.isInteger(presetId) || presetId <= 0) return { positive: '', negative: '' };
+  const preset = db.prepare(`
+    SELECT prompt_template, negative_prompt_template FROM redraw_style_presets
+    WHERE id = ? AND deleted_at IS NULL AND (tenant_id IS NULL OR tenant_id = '' OR tenant_id = ?)
+  `).get(presetId, owner.tenantId);
+  return {
+    positive: text(preset?.prompt_template),
+    negative: text(preset?.negative_prompt_template),
+  };
 }
 
 function localizationOf(version) {
@@ -285,86 +305,106 @@ function episodeScript(productionPackage) {
   return lines.join('\n').trim();
 }
 
-function importRedrawWorkToFactory(db, log, { workId, tenantId, userId, propIds = null, storageRoot = null }) {
+function existingResult(existing, importKey) {
+  return { created: false, drama_id: Number(existing.id), title: existing.title, import_key: importKey };
+}
+
+async function stageClipsForSource(db, logger, source, productionPackage, storageRoot, stagingDir) {
+  if (!storageRoot || !source.work.source_asset_id) return new Map();
+  const sourceAsset = db.prepare('SELECT local_path FROM assets WHERE id = ? AND deleted_at IS NULL')
+    .get(Number(source.work.source_asset_id));
+  const shots = productionPackage.episodes[0].scenes.flatMap((group) => group.shots.map((shot) => ({
+    sourceShotId: shot.continuity.source_shot_id,
+    startMs: shot.continuity.start_ms,
+    endMs: shot.continuity.end_ms,
+  })));
+  try {
+    return await stageReferenceClips({
+      storageRoot,
+      sourceAsset,
+      sourceDurationMs: Number(source.work.duration_ms || source.sourceFacts.duration_ms || 0),
+      stagingDir,
+    }, shots);
+  } catch (error) {
+    // 样片文件不在本机（例如跨环境迁移）时仍导入剧本与资产，只是不带分镜参考片段。
+    if (error?.code !== 'REDRAW_REFERENCE_SOURCE_UNREADABLE') throw error;
+    logger.warn('Redraw sample unavailable; importing without reference clips', { work_id: source.work.id });
+    return new Map();
+  }
+}
+
+async function importRedrawWorkToFactory(db, log, { workId, tenantId, userId, propIds = null, storageRoot = null }) {
   const owner = { tenantId: text(tenantId), userId: text(userId) };
   if (!owner.tenantId || !owner.userId) throw codedError('REDRAW_OWNER_REQUIRED', '缺少租户或用户身份');
   const logger = silentLogger(log);
+
+  const source = loadRedrawSource(db, owner, workId);
+  const importKey = `redraw:${source.work.id}:version:${source.localizedVersion?.id || source.sourceVersion.id}:facts:${source.sourceVersion.facts_hash}`;
+  const existingBefore = findExistingImport(db, owner, importKey);
+  if (existingBefore) return existingResult(existingBefore, importKey);
+
+  const title = text(source.work.project_title) || `样片转绘 #${source.work.id}`;
+  const productionPackage = buildRedrawFactoryPackage({
+    sourceFacts: source.sourceFacts,
+    localization: localizationOf(source.localizedVersion),
+    analysisSettings: { ...source.analysisSettings, free_style: source.style },
+    title,
+    characterImages: characterImagesOf(db, owner, source.localizedVersion),
+    propIds,
+  });
+
+  // 切片耗时较长：先在事务外异步切好，事务内只做复制与插入，避免阻塞事件循环和长时间持有 SQLite 写锁。
+  const stagingDir = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-factory-import-'));
   const copiedFiles = [];
   try {
+    const staged = await stageClipsForSource(db, logger, source, productionPackage, storageRoot, stagingDir);
     return db.transaction(() => {
-    const source = loadRedrawSource(db, owner, workId);
-    const importKey = `redraw:${source.work.id}:version:${source.localizedVersion?.id || source.sourceVersion.id}:facts:${source.sourceVersion.facts_hash}`;
-    const existing = findExistingImport(db, owner, importKey);
-    if (existing) return { created: false, drama_id: Number(existing.id), title: existing.title, import_key: importKey };
-
-    const title = text(source.work.project_title) || `样片转绘 #${source.work.id}`;
-    const productionPackage = buildRedrawFactoryPackage({
-      sourceFacts: source.sourceFacts,
-      localization: localizationOf(source.localizedVersion),
-      analysisSettings: source.analysisSettings,
-      title,
-      characterImages: characterImagesOf(db, owner, source.localizedVersion),
-      propIds,
-    });
-    const drama = dramaService.createDrama(db, logger, {
-      title,
-      description: productionPackage.normalized_script.logline || null,
-      metadata: {
-        project_type: 'factory',
-        aspect_ratio: text(source.analysisSettings.aspect_ratio) || undefined,
-        // 分镜以全能参考模式导入，并默认提交对应样片片段作参考视频、使用模型原生音频（不烧字幕）。
-        storyboard_universal_omni: true,
-        video_use_storyboard_reference_video: true,
-        video_native_audio: true,
-        merge_trim_to_storyboard_duration: true,
-        redraw_import: {
-          schema_version: IMPORT_SCHEMA_VERSION,
-          import_key: importKey,
-          source_work_id: Number(source.work.id),
-          source_version_id: Number(source.sourceVersion.id),
-          localized_version_id: source.localizedVersion ? Number(source.localizedVersion.id) : null,
-          locale: source.localizedVersion?.locale || null,
-          market: source.localizedVersion?.market || null,
-          facts_hash: source.sourceVersion.facts_hash,
-          style_prompt: text(source.analysisSettings?.free_style?.positive) || null,
-          negative_prompt: text(source.analysisSettings?.free_style?.negative) || null,
-          locked_facts: productionPackage.source.locked_facts,
-          continuity_rules: productionPackage.continuity_rules,
-          imported_at: new Date().toISOString(),
+      const existing = findExistingImport(db, owner, importKey);
+      if (existing) return existingResult(existing, importKey);
+      const drama = dramaService.createDrama(db, logger, {
+        title,
+        description: productionPackage.normalized_script.logline || null,
+        metadata: {
+          project_type: 'factory',
+          aspect_ratio: text(source.analysisSettings.aspect_ratio) || undefined,
+          // 分镜以全能参考模式导入，并默认提交对应样片片段作参考视频、使用模型原生音频（不烧字幕）。
+          storyboard_universal_omni: true,
+          video_use_storyboard_reference_video: true,
+          video_native_audio: true,
+          merge_trim_to_storyboard_duration: true,
+          redraw_import: {
+            schema_version: IMPORT_SCHEMA_VERSION,
+            import_key: importKey,
+            source_work_id: Number(source.work.id),
+            source_version_id: Number(source.sourceVersion.id),
+            localized_version_id: source.localizedVersion ? Number(source.localizedVersion.id) : null,
+            locale: source.localizedVersion?.locale || null,
+            market: source.localizedVersion?.market || null,
+            facts_hash: source.sourceVersion.facts_hash,
+            style_preset_id: Number(source.analysisSettings.style_preset_id) || null,
+            style_prompt: source.style.positive || null,
+            negative_prompt: source.style.negative || null,
+            locked_facts: productionPackage.source.locked_facts,
+            continuity_rules: productionPackage.continuity_rules,
+            imported_at: new Date().toISOString(),
+          },
         },
-      },
-      user_id: owner.userId,
-      tenant_id: owner.tenantId,
-    });
+        user_id: owner.userId,
+        tenant_id: owner.tenantId,
+      });
       copiedFiles.push(...copyCharacterImagesIntoProject(db, storageRoot, Number(drama.id), productionPackage));
       const { counts, storyboardSources } = insertFactoryRows(db, logger, Number(drama.id), productionPackage);
-      let referenceClips = 0;
-      if (storageRoot && source.work.source_asset_id) {
-        const sourceAsset = db.prepare('SELECT local_path FROM assets WHERE id = ? AND deleted_at IS NULL')
-          .get(Number(source.work.source_asset_id));
-        try {
-          const clips = createStoryboardReferenceClips({
-            db,
-            storageRoot,
-            dramaId: Number(drama.id),
-            sourceAsset,
-            sourceDurationMs: Number(source.work.duration_ms || source.sourceFacts.duration_ms || 0),
-          }, storyboardSources);
-          copiedFiles.push(...clips.files);
-          referenceClips = clips.created.length;
-        } catch (error) {
-          // 样片文件不在本机（例如跨环境迁移）时仍导入剧本与资产，只是不带分镜参考片段。
-          if (error?.code !== 'REDRAW_REFERENCE_SOURCE_UNREADABLE') throw error;
-          logger.warn('Redraw sample unavailable; importing without reference clips', { work_id: source.work.id });
-        }
-      }
+      const clips = storageRoot
+        ? registerStagedReferenceClips({ db, storageRoot, dramaId: Number(drama.id) }, staged, storyboardSources)
+        : { created: [], files: [] };
+      copiedFiles.push(...clips.files);
       logger.info('Redraw work imported to factory', { drama_id: drama.id, work_id: source.work.id });
       return {
         created: true,
         drama_id: Number(drama.id),
         title: drama.title,
         import_key: importKey,
-        counts: { ...counts, reference_clips: referenceClips },
+        counts: { ...counts, reference_clips: clips.created.length },
       };
     })();
   } catch (error) {
@@ -372,6 +412,8 @@ function importRedrawWorkToFactory(db, log, { workId, tenantId, userId, propIds 
       try { fs.rmSync(file, { force: true }); } catch (_) { /* best effort */ }
     }
     throw error;
+  } finally {
+    fs.rmSync(stagingDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
 }
 

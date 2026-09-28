@@ -3728,15 +3728,17 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
     }
   }
 
-  function importToFactory(req, res) {
-    const currentOwner = owner(req);
-    const work = findOwnedWork(req.params.id, currentOwner);
-    if (!work) return response.error(res, 404, 'REDRAW_WORK_NOT_FOUND', '转绘作品不存在');
-    if (Object.keys(req.body || {}).length) {
-      return response.error(res, 400, 'REDRAW_FACTORY_IMPORT_INVALID', '导入短剧工厂不接受请求参数');
-    }
+  async function importToFactory(req, res) {
+    let workId = null;
     try {
-      const result = redrawFactoryImportService.importRedrawWorkToFactory(db, log, {
+      const currentOwner = owner(req);
+      const work = findOwnedWork(req.params.id, currentOwner);
+      if (!work) return response.error(res, 404, 'REDRAW_WORK_NOT_FOUND', '转绘作品不存在');
+      workId = work.id;
+      if (Object.keys(req.body || {}).length) {
+        return response.error(res, 400, 'REDRAW_FACTORY_IMPORT_INVALID', '导入短剧工厂不接受请求参数');
+      }
+      const result = await redrawFactoryImportService.importRedrawWorkToFactory(db, log, {
         workId: work.id,
         tenantId: currentOwner.tenantId,
         userId: currentOwner.userId,
@@ -3747,7 +3749,7 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
       if (error?.code === 'REDRAW_FACTORY_ANALYSIS_REQUIRED' || error?.code === 'REDRAW_FACTORY_FACTS_INVALID') {
         return response.error(res, 409, error.code, error.message);
       }
-      return sendRedrawError(res, error, '导入短剧工厂失败', log, { workId: work.id });
+      return sendRedrawError(res, error, '导入短剧工厂失败', log, { workId });
     }
   }
 

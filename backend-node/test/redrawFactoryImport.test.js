@@ -142,7 +142,7 @@ function seedRedrawWork(db, { tenantId = TENANT, userId = USER } = {}) {
   return workId;
 }
 
-test('import creates a new factory drama with episode, characters, scenes, key props and storyboards', () => {
+test('import creates a new factory drama with episode, characters, scenes, key props and storyboards', async () => {
   const db = createDb();
   try {
     const existingFactory = Number(db.prepare(`
@@ -151,7 +151,7 @@ test('import creates a new factory drama with episode, characters, scenes, key p
     `).run(TENANT, USER).lastInsertRowid);
     const workId = seedRedrawWork(db);
 
-    const result = importRedrawWorkToFactory(db, null, { workId, tenantId: TENANT, userId: USER });
+    const result = await importRedrawWorkToFactory(db, null, { workId, tenantId: TENANT, userId: USER });
     assert.equal(result.created, true);
     assert.deepEqual(result.counts, { characters: 2, scenes: 2, props: 1, episodes: 1, storyboards: 2, reference_clips: 0 });
     assert.notEqual(result.drama_id, existingFactory);
@@ -182,30 +182,30 @@ test('import creates a new factory drama with episode, characters, scenes, key p
   }
 });
 
-test('import is idempotent per work version and isolated by tenant and user', () => {
+test('import is idempotent per work version and isolated by tenant and user', async () => {
   const db = createDb();
   try {
     const workId = seedRedrawWork(db);
-    const first = importRedrawWorkToFactory(db, null, { workId, tenantId: TENANT, userId: USER });
-    const second = importRedrawWorkToFactory(db, null, { workId, tenantId: TENANT, userId: USER });
+    const first = await importRedrawWorkToFactory(db, null, { workId, tenantId: TENANT, userId: USER });
+    const second = await importRedrawWorkToFactory(db, null, { workId, tenantId: TENANT, userId: USER });
     assert.equal(second.created, false);
     assert.equal(second.drama_id, first.drama_id);
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM dramas WHERE json_extract(metadata, '$.redraw_import.source_work_id') = ?").get(workId).n, 1);
 
-    assert.throws(() => importRedrawWorkToFactory(db, null, { workId, tenantId: 'personal:user-b', userId: 'user-b' }),
+    await assert.rejects(importRedrawWorkToFactory(db, null, { workId, tenantId: 'personal:user-b', userId: 'user-b' }),
       (error) => error.code === 'REDRAW_WORK_NOT_FOUND');
   } finally {
     db.close();
   }
 });
 
-test('import requires a completed analysis and rolls back on failure', () => {
+test('import requires a completed analysis and rolls back on failure', async () => {
   const db = createDb();
   try {
     const workId = seedRedrawWork(db);
     db.prepare("UPDATE async_tasks SET status = 'processing' WHERE type = 'redraw_analysis'").run();
     const before = db.prepare('SELECT COUNT(*) AS n FROM dramas').get().n;
-    assert.throws(() => importRedrawWorkToFactory(db, null, { workId, tenantId: TENANT, userId: USER }),
+    await assert.rejects(importRedrawWorkToFactory(db, null, { workId, tenantId: TENANT, userId: USER }),
       (error) => error.code === 'REDRAW_FACTORY_ANALYSIS_REQUIRED');
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM dramas').get().n, before);
   } finally {
@@ -213,7 +213,7 @@ test('import requires a completed analysis and rolls back on failure', () => {
   }
 });
 
-test('import copies generated redraw character images into the factory project folder', () => {
+test('import copies generated redraw character images into the factory project folder', async () => {
   const fs = require('node:fs');
   const os = require('node:os');
   const path = require('node:path');
@@ -235,7 +235,7 @@ test('import copies generated redraw character images into the factory project f
       VALUES (?, ?, ?, 'character', ?, 'Ethan Brooks', ?, 'generated', 'pending', ?, ?)
     `).run(version.id, TENANT, USER, JSON.stringify({ source_ref: { kind: 'character', source_character_key: 'c1' } }), assetId, now, now);
 
-    const result = importRedrawWorkToFactory(db, null, { workId, tenantId: TENANT, userId: USER, storageRoot });
+    const result = await importRedrawWorkToFactory(db, null, { workId, tenantId: TENANT, userId: USER, storageRoot });
     const character = db.prepare("SELECT image_url, local_path FROM characters WHERE drama_id = ? AND name = 'Ethan Brooks'").get(result.drama_id);
     assert.match(character.local_path, new RegExp(`^projects/0*${result.drama_id}_.+/characters/redraw_c1_c1\.jpg$`));
     assert.equal(character.image_url, `/static/${character.local_path}`);
@@ -249,6 +249,35 @@ test('import copies generated redraw character images into the factory project f
   }
 });
 
+test('import resolves a style preset into positive and negative prompts', async () => {
+  const db = createDb();
+  try {
+    const now = new Date().toISOString();
+    const presetId = Number(db.prepare(`
+      INSERT INTO redraw_style_presets (stable_key, name, category, version, prompt_template, negative_prompt_template,
+        status, created_at, updated_at)
+      VALUES ('cinematic', 'Cinematic', 'live_action', 1, 'cinematic film look', 'low quality', 'verified', ?, ?)
+    `).run(now, now).lastInsertRowid);
+    const workId = seedRedrawWork(db);
+    db.prepare("UPDATE async_tasks SET metadata = ? WHERE type = 'redraw_analysis'")
+      .run(JSON.stringify({ redraw_analysis: { aspect_ratio: '16:9', style_preset_id: presetId } }));
+    const result = await importRedrawWorkToFactory(db, null, { workId, tenantId: TENANT, userId: USER });
+    const metadata = JSON.parse(db.prepare('SELECT metadata FROM dramas WHERE id = ?').get(result.drama_id).metadata);
+    assert.equal(metadata.redraw_import.style_preset_id, presetId);
+    assert.equal(metadata.redraw_import.style_prompt, 'cinematic film look');
+    assert.equal(metadata.redraw_import.negative_prompt, 'low quality');
+    const storyboard = db.prepare(`
+      SELECT s.video_prompt FROM storyboards s JOIN episodes e ON e.id = s.episode_id
+      WHERE e.drama_id = ? ORDER BY s.storyboard_number LIMIT 1
+    `).get(result.drama_id);
+    assert.match(storyboard.video_prompt, /^cinematic film look. /);
+    const character = db.prepare('SELECT negative_prompt FROM characters WHERE drama_id = ? ORDER BY id LIMIT 1').get(result.drama_id);
+    assert.equal(character.negative_prompt, 'low quality');
+  } finally {
+    db.close();
+  }
+});
+
 test('reference clip window pads short shots to the minimum and stays inside the sample', () => {
   const { clipWindow, MIN_REFERENCE_MS } = require('../src/services/redrawStoryboardReferenceClipService');
   assert.deepEqual(clipWindow(10_000, 11_000, 60_000), { start_ms: 9_500, end_ms: 9_500 + MIN_REFERENCE_MS });
@@ -258,7 +287,7 @@ test('reference clip window pads short shots to the minimum and stays inside the
   assert.equal(clipWindow(5_000, 5_000, 60_000), null);
 });
 
-test('import cuts one sample reference clip per storyboard, owned by the new project, exposed on storyboards', { skip: !require('../src/utils/ffmpegPath').hasLocalFfmpeg() }, () => {
+test('import cuts one sample reference clip per storyboard, owned by the new project, exposed on storyboards', { skip: !require('../src/utils/ffmpegPath').hasLocalFfmpeg() }, async () => {
   const fs = require('node:fs');
   const os = require('node:os');
   const path = require('node:path');
@@ -276,7 +305,7 @@ test('import cuts one sample reference clip per storyboard, owned by the new pro
       '-f', 'lavfi', '-i', 'sine=frequency=440', '-t', '20', '-shortest', path.join(storageRoot, sourceRel)]);
     assert.equal(made.status, 0);
 
-    const result = importRedrawWorkToFactory(db, null, { workId, tenantId: TENANT, userId: USER, storageRoot });
+    const result = await importRedrawWorkToFactory(db, null, { workId, tenantId: TENANT, userId: USER, storageRoot });
     assert.equal(result.counts.reference_clips, 2);
     const clips = db.prepare("SELECT storyboard_id, local_path, drama_id, type, metadata FROM assets WHERE category = 'storyboard_reference_video' ORDER BY id").all();
     assert.equal(clips.length, 2);
@@ -297,6 +326,9 @@ test('import cuts one sample reference clip per storyboard, owned by the new pro
     assert.equal(metadata.video_native_audio, true);
     assert.equal(metadata.video_use_storyboard_reference_video, true);
     assert.equal(metadata.merge_trim_to_storyboard_duration, true);
+    const stagingLeft = fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith('redraw-factory-import-')
+      && fs.readdirSync(path.join(os.tmpdir(), name)).length > 0);
+    assert.deepEqual(stagingLeft, [], 'staging directories are removed');
   } finally {
     db.close();
     fs.rmSync(storageRoot, { recursive: true, force: true });
