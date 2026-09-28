@@ -234,6 +234,9 @@ function buildPrompt(probe) {
     'Shots MUST be chronological, continuous, gap-free, non-overlapping, start at 0, and end at duration_ms.',
     'Each shot MUST include composition, camera_movement, opening_state, continuous_action, ending_state, visible_character_ids, dialogue, text_regions, audio_contract, and confidence.',
     'text_regions polygon coordinates MUST be normalized 0..1 points with at least 3 non-collinear points.',
+    'Split shots at every visible camera cut or angle change. Never merge consecutive cuts into one shot, even when they share a location.',
+    'characters[].source_name is the name written or addressed in the subtitles (for example a name someone calls out); if a character is never named, use a short Chinese descriptor such as 母亲. Never leave source_name empty.',
+    'characters[].relationships is an array of plain strings such as "c2: classmate who mocks him", never objects.',
     'Describe what is needed to recreate each asset with a generator, using only what is visible:',
     'characters[].appearance: apparent age range, build, hair, and the outfit worn in this clip (colors, garments, accessories). Visual traits only; no names, personality, camera wording, or background. For a crowd, describe the group briefly.',
     'scenes[].visual: set dressing, architecture, key furniture, lighting, and color palette of the empty location, without people.',
@@ -304,6 +307,27 @@ function hasVisibleDialogueTextEvidence(shot) {
     && typeof region.source_text === 'string'
     && region.source_text.trim()
   ));
+}
+
+// 模型偶尔把角色关系写成对象、或漏掉 source_name：就地转成文本 / 用显示名补上，不让格式小偏差作废整次付费分析。
+function coerceCharacterFields(rawFacts) {
+  const facts = cloneJson(rawFacts);
+  for (const character of Array.isArray(facts.characters) ? facts.characters : []) {
+    if (!character || typeof character !== 'object') continue;
+    if (Array.isArray(character.relationships)) {
+      character.relationships = character.relationships.map((item) => {
+        if (typeof item === 'string') return item;
+        if (!item || typeof item !== 'object') return '';
+        const target = String(item.character_id || item.id || '').trim();
+        const relation = String(item.relationship || item.description || item.relation || '').trim();
+        return [target, relation].filter(Boolean).join(': ');
+      }).filter(Boolean);
+    }
+    if (!String(character.source_name || '').trim() && String(character.display_name || '').trim()) {
+      character.source_name = String(character.display_name).trim();
+    }
+  }
+  return facts;
 }
 
 function applyNoTranscriptEvidencePolicy(rawFacts) {
@@ -385,7 +409,7 @@ async function analyzeNativeSource(ctx = {}, input = {}) {
       throw codedError('VISION_PROVIDER_RESPONSE_ID_MISSING', '视觉分析缺少真实 provider response id');
     }
     const parsed = parseJsonObject(vision.text);
-    const facts = normalizeSourceFacts(applyNoTranscriptEvidencePolicy(parsed.source_facts || parsed));
+    const facts = normalizeSourceFacts(applyNoTranscriptEvidencePolicy(coerceCharacterFields(parsed.source_facts || parsed)));
     assertStrictNativeFacts(facts, probe);
     const mediaProbe = safeMediaProbeMetadata(probe, sheets.length);
     const output = {
@@ -462,6 +486,7 @@ async function analyzeNativeSource(ctx = {}, input = {}) {
 
 module.exports = {
   analyzeNativeSource,
+  coerceCharacterFields,
   buildPrompt,
   sheetFilter,
   parseJsonObject,

@@ -151,6 +151,13 @@ test('adapter uses analysed appearance, scene visuals, shot size and subtitle sp
   assert.equal(first.dialogue, 'Noah Carter：Who even are you?');
 });
 
+test('adapter treats a display name containing group as a crowd', () => {
+  const facts = sourceFacts();
+  facts.characters.push({ id: 'c3', source_name: 'Classmate group', display_name: 'Classmate group', relationship: 'students gathered outside', relationships: [] });
+  const pkg = buildRedrawFactoryPackage({ sourceFacts: facts, analysisSettings: SETTINGS });
+  assert.deepEqual(pkg.characters.map((c) => c.character_id), ['c1', 'c2']);
+});
+
 function createDb() {
   const db = new Database(':memory:');
   runMigrationsAndEnsure(db);

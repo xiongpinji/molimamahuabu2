@@ -520,3 +520,15 @@ test('analyzeNativeSource rejects absolute, traversal and symlink source paths a
     fs.rmSync(outsideRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
 });
+
+test('coerceCharacterFields turns object relationships into text and fills an empty source_name', () => {
+  const coerced = nativeAnalysis.coerceCharacterFields({
+    characters: [
+      { id: 'c1', source_name: '', display_name: 'Student with bicycle', relationships: [{ character_id: 'c2', relationship: 'classmate who mocks him' }, 'friend of c3'] },
+      { id: 'c2', source_name: '陆飞', display_name: 'Lu Fei', relationships: [] },
+    ],
+  });
+  assert.equal(coerced.characters[0].source_name, 'Student with bicycle');
+  assert.deepEqual(coerced.characters[0].relationships, ['c2: classmate who mocks him', 'friend of c3']);
+  assert.equal(coerced.characters[1].source_name, '陆飞');
+});
