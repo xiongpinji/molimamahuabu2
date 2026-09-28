@@ -123,6 +123,26 @@
           导入短剧工厂
         </el-button>
       </div>
+      <div v-if="fullLocalizationTargets.length" class="billing-row factory-localization-row">
+        <strong>完全转绘：{{ localizationStatusText(fullLocalizationState, selectedFullLocalizationLabel) }}</strong>
+        <div class="factory-localization-actions">
+          <el-select v-model="fullLocalizationKey" placeholder="选择目标语言与国家" :disabled="fullLocalizationBusy">
+            <el-option v-for="item in fullLocalizationTargets" :key="item.key" :label="item.label" :value="item.key" />
+          </el-select>
+          <strong
+            v-if="fullLocalizationState.credits != null && fullLocalizationState.status !== 'ready'"
+            class="canvas-credit-callout-v1"
+          >本次预计扣除 {{ fullLocalizationState.credits }} 积分</strong>
+          <el-button
+            type="primary"
+            :loading="fullLocalizationBusy"
+            :disabled="!fullLocalizationKey || fullLocalizationState.status === 'localizing'"
+            @click="runFullLocalization"
+          >
+            {{ localizationActionLabel(fullLocalizationState) }}
+          </el-button>
+        </div>
+      </div>
       <div v-if="needsAnalysisReview" class="billing-row">
         <strong>安全模式：请人工确认分析结果后再进入本地化</strong>
         <el-button
@@ -195,6 +215,12 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { redrawAPI } from '@/api/redraw'
 import StylePresetPicker from '@/components/redraw/StylePresetPicker.vue'
+import {
+  defaultLocalizationTarget,
+  localizationActionLabel,
+  localizationBody,
+  localizationStatusText,
+} from '@/utils/redrawFactoryLocalization'
 import {
   analysisQuoteCredits,
   analysisReviewPending,
@@ -400,6 +426,117 @@ async function importToFactory() {
   }
 }
 
+// 完全转绘：选目标语言 + 国家 → 付费生成该国的名字、形象、台词与场景 → 轮询完成 → 导入短剧工厂。
+const FULL_LOCALIZATION_POLL_MS = 5000
+const FULL_LOCALIZATION_POLL_LIMIT = 240
+const fullLocalizationTargets = ref([])
+const fullLocalizationKey = ref('')
+const fullLocalizationState = ref({ status: '', credits: null })
+const fullLocalizationBusy = ref(false)
+let fullLocalizationTimer = null
+let fullLocalizationPolls = 0
+const selectedFullLocalizationLabel = computed(() => fullLocalizationTargets.value
+  .find((item) => item.key === fullLocalizationKey.value)?.label || '')
+
+function stopFullLocalizationPolling() {
+  if (fullLocalizationTimer) clearTimeout(fullLocalizationTimer)
+  fullLocalizationTimer = null
+}
+
+async function loadFullLocalizationTargets() {
+  const work = workState.value
+  if (!work?.id || fullLocalizationTargets.value.length) return
+  try {
+    const result = await redrawAPI.factoryLocalization(work.id, { action: 'targets' })
+    fullLocalizationTargets.value = Array.isArray(result?.targets) ? result.targets : []
+    fullLocalizationKey.value = defaultLocalizationTarget(fullLocalizationTargets.value, result?.default_locale, result?.default_market)
+  } catch (_) {
+    fullLocalizationTargets.value = []
+  }
+}
+
+async function refreshFullLocalizationStatus() {
+  const body = localizationBody(fullLocalizationTargets.value, fullLocalizationKey.value, 'status')
+  if (!workState.value?.id || !body) return null
+  fullLocalizationState.value = await redrawAPI.factoryLocalization(workState.value.id, body)
+  return fullLocalizationState.value
+}
+
+async function importFullLocalization() {
+  const body = localizationBody(fullLocalizationTargets.value, fullLocalizationKey.value, 'import')
+  const result = await redrawAPI.factoryLocalization(workState.value.id, body)
+  ElMessage.success(result?.created === false ? '已导入过，打开现有短剧工厂项目' : `已按${selectedFullLocalizationLabel.value}导入短剧工厂`)
+  if (result?.drama_id) await router.push(`/film/${result.drama_id}`)
+}
+
+function pollFullLocalization() {
+  stopFullLocalizationPolling()
+  fullLocalizationTimer = setTimeout(async () => {
+    fullLocalizationPolls += 1
+    try {
+      const state = await refreshFullLocalizationStatus()
+      if (state?.status === 'ready') {
+        fullLocalizationBusy.value = true
+        await importFullLocalization()
+        fullLocalizationBusy.value = false
+        return
+      }
+      if (state?.status === 'failed') {
+        ElMessage.error(localizationStatusText(state))
+        return
+      }
+    } catch (error) {
+      ElMessage.error(error.message || '查询转绘进度失败')
+    }
+    if (fullLocalizationPolls < FULL_LOCALIZATION_POLL_LIMIT) pollFullLocalization()
+  }, FULL_LOCALIZATION_POLL_MS)
+}
+
+async function runFullLocalization() {
+  if (!workState.value?.id || fullLocalizationBusy.value) return
+  fullLocalizationBusy.value = true
+  try {
+    const current = await refreshFullLocalizationStatus()
+    if (current?.status === 'ready') {
+      await importFullLocalization()
+      return
+    }
+    const started = await redrawAPI.factoryLocalization(
+      workState.value.id,
+      localizationBody(fullLocalizationTargets.value, fullLocalizationKey.value, 'start', { expected_credits: current?.credits }),
+    )
+    fullLocalizationState.value = started
+    if (started?.status === 'ready') {
+      await importFullLocalization()
+      return
+    }
+    ElMessage.success(`已开始生成${selectedFullLocalizationLabel.value}版本`)
+    fullLocalizationPolls = 0
+    pollFullLocalization()
+  } catch (error) {
+    ElMessage.error(error.message || '完全转绘失败')
+  } finally {
+    fullLocalizationBusy.value = false
+  }
+}
+
+watch(fullLocalizationKey, async () => {
+  stopFullLocalizationPolling()
+  try {
+    const state = await refreshFullLocalizationStatus()
+    if (state?.status === 'localizing') {
+      fullLocalizationPolls = 0
+      pollFullLocalization()
+    }
+  } catch (_) {
+    fullLocalizationState.value = { status: '', credits: null }
+  }
+})
+
+watch(workflowPhase, (phase) => {
+  if (phase === 'analysis_review') void loadFullLocalizationTargets()
+}, { immediate: true })
+
 async function confirmAnalysisReview() {
   const work = workState.value
   if (!analysisReviewPending(work) || analysisReviewSubmitting.value) return
@@ -579,6 +716,7 @@ watch(() => props.initialWork, (next) => {
 
 onUnmounted(() => {
   stopTaskPolling()
+  stopFullLocalizationPolling()
 })
 </script>
 
@@ -647,6 +785,18 @@ onUnmounted(() => {
   justify-content: space-between;
   gap: 12px;
   min-width: 0;
+}
+
+.factory-localization-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.factory-localization-actions .el-select {
+  width: 200px;
 }
 
 .section-heading > div {

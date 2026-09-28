@@ -60,7 +60,9 @@ function findExistingImport(db, owner, importKey) {
   `).get(...params);
 }
 
-function loadRedrawSource(db, owner, workId) {
+const FACTORY_LOCALIZATION_MARKER = '%"factory_localization@1"%';
+
+function loadRedrawSource(db, owner, workId, _storageRoot = null, { localizedVersionId = null } = {}) {
   const work = db.prepare(`
     SELECT w.*, p.title AS project_title
     FROM redraw_works w
@@ -87,13 +89,24 @@ function loadRedrawSource(db, owner, workId) {
   if (!analysisTask) throw codedError('REDRAW_FACTORY_ANALYSIS_REQUIRED', '请先完成样片分析');
   const analysisSettings = parseJson(analysisTask.metadata, {})?.redraw_analysis || {};
   const style = resolveStyle(db, owner, analysisSettings);
-  // 若已有本地化版本（目标语名字与字幕），优先使用最新一版；否则按源片事实导入。
-  const localizedVersion = db.prepare(`
-    SELECT * FROM redraw_versions
-    WHERE work_id = ? AND tenant_id = ? AND user_id = ? AND COALESCE(locale, '') != 'source'
-      AND facts_hash = ? AND status NOT IN ('draft', 'failed') AND deleted_at IS NULL
-    ORDER BY version DESC, id DESC LIMIT 1
-  `).get(work.id, owner.tenantId, owner.userId, sourceVersion.facts_hash);
+  // 指定了「完全转绘」版本就用它（目标国家的名字、形象、台词、场景）；
+  // 否则沿用旧流水线已有的本地化版本（若有），完全转绘版本只在明确选择时使用。
+  const localizedVersion = localizedVersionId
+    ? db.prepare(`
+      SELECT * FROM redraw_versions
+      WHERE id = ? AND work_id = ? AND tenant_id = ? AND user_id = ? AND facts_hash = ?
+        AND status = 'asset_review' AND deleted_at IS NULL
+    `).get(Number(localizedVersionId), work.id, owner.tenantId, owner.userId, sourceVersion.facts_hash)
+    : db.prepare(`
+      SELECT * FROM redraw_versions
+      WHERE work_id = ? AND tenant_id = ? AND user_id = ? AND COALESCE(locale, '') != 'source'
+        AND facts_hash = ? AND status NOT IN ('draft', 'failed') AND deleted_at IS NULL
+        AND COALESCE(localization_model_snapshot_json, '') NOT LIKE ?
+      ORDER BY version DESC, id DESC LIMIT 1
+    `).get(work.id, owner.tenantId, owner.userId, sourceVersion.facts_hash, FACTORY_LOCALIZATION_MARKER);
+  if (localizedVersionId && !localizedVersion) {
+    throw codedError('REDRAW_FACTORY_LOCALIZATION_NOT_READY', '转绘本地化版本不存在或还没完成');
+  }
   return { work, sourceVersion, sourceFacts, analysisSettings, style, localizedVersion };
 }
 
@@ -334,12 +347,14 @@ async function stageClipsForSource(db, logger, source, productionPackage, storag
   }
 }
 
-async function importRedrawWorkToFactory(db, log, { workId, tenantId, userId, propIds = null, storageRoot = null }) {
+async function importRedrawWorkToFactory(db, log, {
+  workId, tenantId, userId, propIds = null, storageRoot = null, localizedVersionId = null,
+}) {
   const owner = { tenantId: text(tenantId), userId: text(userId) };
   if (!owner.tenantId || !owner.userId) throw codedError('REDRAW_OWNER_REQUIRED', '缺少租户或用户身份');
   const logger = silentLogger(log);
 
-  const source = loadRedrawSource(db, owner, workId);
+  const source = loadRedrawSource(db, owner, workId, storageRoot, { localizedVersionId });
   const importKey = `redraw:${source.work.id}:version:${source.localizedVersion?.id || source.sourceVersion.id}:facts:${source.sourceVersion.facts_hash}`;
   const existingBefore = findExistingImport(db, owner, importKey);
   if (existingBefore) return existingResult(existingBefore, importKey);
@@ -420,4 +435,5 @@ async function importRedrawWorkToFactory(db, log, { workId, tenantId, userId, pr
 
 module.exports = {
   importRedrawWorkToFactory,
+  loadRedrawSource,
 };

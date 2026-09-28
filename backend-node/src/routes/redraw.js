@@ -27,6 +27,7 @@ const redrawNativeSourceAnalysisService = require('../services/redrawNativeSourc
 const redrawProjectPolicyService = require('../services/redrawProjectPolicyService');
 const redrawWorkflowEventService = require('../services/redrawWorkflowEventService');
 const redrawFactoryImportService = require('../services/redrawFactoryImportService');
+const redrawFactoryLocalizationService = require('../services/redrawFactoryLocalizationService');
 const redrawCharacterPlanService = require('../services/redrawCharacterPlanService');
 const redrawPreparationGateService = require('../services/redrawPreparationGateService');
 const redrawReferencePreparationOrchestrator = require('../services/redrawReferencePreparationOrchestrator');
@@ -3737,6 +3738,54 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
     }
   }
 
+  // 完全转绘：按目标语言 + 目标国家把名字、形象、台词、场景全部本地化后再导入工厂。
+  // 复用导入路由，用 action 区分：targets 列出可选目标、status 查询、start 付费发起、import 导入。
+  async function factoryLocalization(req, res, currentOwner, work) {
+    const body = req.body || {};
+    const action = String(body.action || '').trim();
+    const storageRoot = storageRootFromConfig(cfg);
+    const source = redrawFactoryImportService.loadRedrawSource(db, currentOwner, work.id, storageRoot);
+    if (action === 'targets') {
+      const settings = source.analysisSettings || {};
+      return response.success(res, {
+        targets: redrawFactoryLocalizationService.listTargets(db, canReadArtifact)
+          .map(({ key, locale, market, label }) => ({ key, locale, market, label })),
+        default_locale: String(settings.locale || '').trim() || null,
+        default_market: String(settings.market || '').trim().toUpperCase() || null,
+      });
+    }
+    const target = redrawFactoryLocalizationService.resolveTarget(
+      db, canReadArtifact, body.localization?.locale, body.localization?.market,
+    );
+    const ctx = { owner: currentOwner, work: source.work, sourceVersion: source.sourceVersion, target, canReadArtifact };
+    if (action === 'status') {
+      return response.success(res, redrawFactoryLocalizationService.localizationStatus(db, ctx));
+    }
+    if (action === 'start') {
+      const { completion, ...started } = redrawFactoryLocalizationService.startLocalization(db, log, {
+        ...ctx,
+        sourceFacts: source.sourceFacts,
+        expectedCredits: body.expected_credits,
+      }, { schedule: options.factoryLocalizationSchedule, generateText: options.factoryLocalizationGenerateText });
+      return started.status === 'ready' ? response.success(res, started) : response.accepted(res, started);
+    }
+    if (action === 'import') {
+      const status = redrawFactoryLocalizationService.localizationStatus(db, ctx);
+      if (status.status !== 'ready') {
+        return response.error(res, 409, 'REDRAW_FACTORY_LOCALIZATION_NOT_READY', '转绘本地化还没完成，请先生成目标国家版本');
+      }
+      const result = await redrawFactoryImportService.importRedrawWorkToFactory(db, log, {
+        workId: work.id,
+        tenantId: currentOwner.tenantId,
+        userId: currentOwner.userId,
+        storageRoot,
+        localizedVersionId: status.version_id,
+      });
+      return response.success(res, { ...result, localization: { target: status.target, label: status.label } });
+    }
+    return response.error(res, 400, 'REDRAW_FACTORY_IMPORT_INVALID', '未知的转绘操作');
+  }
+
   async function importToFactory(req, res) {
     let workId = null;
     try {
@@ -3745,7 +3794,10 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
       if (!work) return response.error(res, 404, 'REDRAW_WORK_NOT_FOUND', '转绘作品不存在');
       workId = work.id;
       if (Object.keys(req.body || {}).length) {
-        return response.error(res, 400, 'REDRAW_FACTORY_IMPORT_INVALID', '导入短剧工厂不接受请求参数');
+        if (!req.body.action) {
+          return response.error(res, 400, 'REDRAW_FACTORY_IMPORT_INVALID', '导入短剧工厂不接受请求参数');
+        }
+        return await factoryLocalization(req, res, currentOwner, work);
       }
       const result = await redrawFactoryImportService.importRedrawWorkToFactory(db, log, {
         workId: work.id,
@@ -3755,8 +3807,9 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
       });
       return response.success(res, result);
     } catch (error) {
-      if (error?.code === 'REDRAW_FACTORY_ANALYSIS_REQUIRED' || error?.code === 'REDRAW_FACTORY_FACTS_INVALID') {
-        return response.error(res, 409, error.code, error.message);
+      if (['REDRAW_FACTORY_ANALYSIS_REQUIRED', 'REDRAW_FACTORY_FACTS_INVALID',
+        'REDRAW_FACTORY_LOCALIZATION_QUOTE_CHANGED', 'REDRAW_FACTORY_LOCALIZATION_NOT_READY'].includes(error?.code)) {
+        return response.error(res, 409, error.code, error.message, error.quote != null ? { quote: error.quote } : undefined);
       }
       return sendRedrawError(res, error, '导入短剧工厂失败', log, { workId });
     }

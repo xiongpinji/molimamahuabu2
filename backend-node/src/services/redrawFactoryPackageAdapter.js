@@ -118,12 +118,24 @@ function appearanceFromComposition(composition, character) {
   return body.split(/[;,]\s+(?:with|while|as|against|and a|behind)\b|;\s*/i)[0].replace(/[.\s]+$/, '');
 }
 
-function mapCharacters(facts, names, glossary, characterImages = {}) {
+// 完全转绘版本的文化映射：目标国家的人物形象、场景、道具与一句国家设定；没有就是空对象。
+function cultureOf(localization) {
+  const culture = localization?.culture_map && typeof localization.culture_map === 'object' ? localization.culture_map : {};
+  return {
+    characters: culture.characters && typeof culture.characters === 'object' ? culture.characters : {},
+    scenes: culture.scenes && typeof culture.scenes === 'object' ? culture.scenes : {},
+    props: culture.props && typeof culture.props === 'object' ? culture.props : {},
+    setting: text(culture.setting),
+  };
+}
+
+function mapCharacters(facts, names, glossary, characterImages = {}, culture = cultureOf(null)) {
   const groupIds = new Set(list(facts.characters).filter(isGroupCharacter).map((character) => text(character.id)));
   return list(facts.characters).filter((character) => !isGroupCharacter(character)).map((character) => {
     const id = text(character.id);
     // 外貌只取该角色单独出镜（群演不计）的构图：多人镜头的构图描述的是整个画面，拿来当外貌会串到别人身上。
-    const appearanceSeed = text(character.appearance) || list(facts.shots)
+    // 完全转绘时用目标国家的人物形象。
+    const appearanceSeed = text(culture.characters[id]?.appearance) || text(character.appearance) || list(facts.shots)
       .filter((shot) => {
         const people = list(shot.visible_character_ids).map(text).filter((visible) => !groupIds.has(visible));
         return people.length === 1 && people[0] === id;
@@ -147,9 +159,10 @@ function mapCharacters(facts, names, glossary, characterImages = {}) {
   });
 }
 
-function mapScenes(facts, style, glossary, names) {
+function mapScenes(facts, style, glossary, names, culture = cultureOf(null)) {
   return list(facts.scenes).map((scene) => {
-    const location = localizeText(scene.location, names, glossary);
+    const localized = culture.scenes[text(scene.id)] || {};
+    const location = localizeText(text(localized.location) || scene.location, names, glossary);
     const time = localizeText(scene.time, names, glossary);
     return {
       scene_id: text(scene.id),
@@ -157,17 +170,18 @@ function mapScenes(facts, style, glossary, names) {
       time,
       prompt: joinSentences(
         style.positive,
+        culture.setting,
         `${location}${time ? `，${time}` : ''}`,
-        localizeText(scene.visual, names, glossary),
+        localizeText(text(localized.visual) || scene.visual, names, glossary),
         '空镜，画面中没有人物。',
       ),
     };
   });
 }
 
-function mapProps(facts, style, glossary, names) {
+function mapProps(facts, style, glossary, names, culture = cultureOf(null)) {
   return list(facts.props).map((prop) => {
-    const name = localizeText(prop.name, names, glossary);
+    const name = localizeText(text(culture.props[text(prop.id)]?.name) || prop.name, names, glossary);
     return {
       prop_id: text(prop.id),
       name: name || text(prop.id),
@@ -216,7 +230,7 @@ function dropCarriedSubtitles(subtitles, previousLastSource) {
   return subtitles.slice(start);
 }
 
-function mapShot(facts, shot, { names, glossary, localization, style, propIds, previousLastSubtitle }) {
+function mapShot(facts, shot, { names, glossary, localization, style, propIds, previousLastSubtitle, setting = '' }) {
   const characterNames = list(shot.visible_character_ids).map((id) => names.get(text(id))).filter(Boolean);
   const { subtitles, screenText } = shotTextRegions(shot, localization, names);
   const spoken = dropCarriedSubtitles(subtitles, previousLastSubtitle);
@@ -246,8 +260,8 @@ function mapShot(facts, shot, { names, glossary, localization, style, propIds, p
     shot_type: SHOT_SIZE_ZH[text(shot.shot_size)] || text(shot.shot_size) || null,
     characters: list(shot.visible_character_ids).map(text).filter(Boolean),
     props,
-    image_prompt: joinSentences(style.positive, description, characterNames.length ? `角色：${characterNames.join('、')}` : ''),
-    video_prompt: joinSentences(style.positive, description, action, movement ? `运镜：${movement}` : ''),
+    image_prompt: joinSentences(style.positive, setting, description, characterNames.length ? `角色：${characterNames.join('、')}` : ''),
+    video_prompt: joinSentences(style.positive, setting, description, action, movement ? `运镜：${movement}` : ''),
     continuity: {
       source_shot_id: text(shot.id),
       start_ms: Number(shot.start_ms),
@@ -370,6 +384,7 @@ function buildRedrawFactoryPackage({
     negative: text(analysisSettings?.free_style?.negative),
   };
   const names = characterNameMap(facts, localization);
+  const culture = cultureOf(localization);
   const glossary = {
     ...(localization?.glossary || {}),
     ...nameGlossary(facts, names),
@@ -389,12 +404,12 @@ function buildRedrawFactoryPackage({
     .sort((left, right) => Number(left.start_ms) - Number(right.start_ms))
     .map((shot) => {
       const { last_subtitle_source: lastSubtitle, ...mapped } = mapShot(facts, shot, {
-        names, glossary, localization, style, propIds: selectedPropIds, previousLastSubtitle,
+        names, glossary, localization, style, propIds: selectedPropIds, previousLastSubtitle, setting: culture.setting,
       });
       previousLastSubtitle = lastSubtitle;
       return { sceneId: primarySceneId(facts, shot), shot: mapped };
     });
-  const characters = mapCharacters(facts, names, glossary, characterImages)
+  const characters = mapCharacters(facts, names, glossary, characterImages, culture)
     .map((character) => (style.negative ? { ...character, negative_prompt: style.negative } : character));
   const story = list(facts.story).map((line) => localizeText(line, names, glossary)).filter(Boolean);
   return {
@@ -405,8 +420,8 @@ function buildRedrawFactoryPackage({
       target_duration_seconds: Math.round(Number(facts.duration_ms || 0) / 1000),
     },
     characters,
-    scenes: mapScenes(facts, style, glossary, names),
-    props: mapProps(facts, style, glossary, names).filter((prop) => selectedPropIds.has(prop.prop_id)),
+    scenes: mapScenes(facts, style, glossary, names, culture),
+    props: mapProps(facts, style, glossary, names, culture).filter((prop) => selectedPropIds.has(prop.prop_id)),
     episodes: [{
       episode_number: 1,
       title: title || '第 1 集',
