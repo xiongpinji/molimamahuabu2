@@ -14,6 +14,7 @@ const {
   segmentCountForDuration,
 } = require('./redrawAnalysisSegmentation');
 const { knownCastFrom, mergeSegmentFacts } = require('./redrawSegmentFactsMerge');
+const seriesCastService = require('./redrawSeriesCastService');
 
 function codedError(code, message) {
   return Object.assign(new Error(message), { code });
@@ -251,7 +252,7 @@ function buildPrompt(probe, options = {}) {
     'Keep all required arrays non-empty only when supported by visible evidence; an unsupported clip must fail rather than be completed with invented facts.',
     ...(knownCast.length
       ? [
-        'This clip is one part of a longer episode. Characters already identified in earlier parts are listed below; when the same person appears, reuse the exact source_name. Add a new character only for a new person.',
+        'Characters already identified in earlier parts of this episode or in earlier episodes of the same series are listed below; when the same person appears, reuse the exact source_name. Add a new character only for a new person.',
         JSON.stringify(knownCast),
       ]
       : []),
@@ -555,13 +556,24 @@ async function analyzeNativeSource(ctx = {}, input = {}) {
     const visionSource = { work_id: Number(work.id), source_asset_id: Number(sourceAsset.id) };
     const segmentCount = Number(input.segmentCount) || segmentCountForDuration(probe.duration_ms);
     const clipCtx = { input, visionDetailed, visionOptions, visionSource, log };
+    // 整部剧：同一转绘项目里前几集已认出的角色，让同一个人在各集用同一个原名。读不到不影响本集分析。
+    let seriesCast = { cast: [], episodes: [] };
+    try {
+      seriesCast = ctx.seriesKnownCast
+        ? ctx.seriesKnownCast(db, work, storageRoot)
+        : seriesCastService.seriesKnownCast(db, work, storageRoot, { log });
+    } catch (error) {
+      log.warn('[整部剧] 读取前几集角色失败，本集按单集分析', { work_id: Number(work.id), error: error.message });
+    }
     let enrichedFacts;
     let enrichment;
     let vision;
     let sheets;
     let segmentsReport = null;
     if (segmentCount <= 1) {
-      const clip = await analyzeClipWithRetry({ ...clipCtx, sourcePath: source.absolute, probe, sheetDir }, 'whole');
+      const clip = await analyzeClipWithRetry({
+        ...clipCtx, sourcePath: source.absolute, probe, sheetDir, knownCast: seriesCast.cast,
+      }, 'whole');
       ({ facts: enrichedFacts, enrichment, vision, sheets } = clip);
     } else {
       // 长样片按段依次分析：每段输出小、不易超时；后面的段带上前面已识别的角色名单。
@@ -581,7 +593,10 @@ async function analyzeNativeSource(ctx = {}, input = {}) {
           sourcePath: clipPath,
           probe: clipProbe,
           sheetDir: segmentDir,
-          knownCast: knownCastFrom(mergeSegmentFacts(analyzed, analyzed.length ? analyzed[analyzed.length - 1].end_ms : 0)),
+          knownCast: seriesCastService.mergeKnownCast(
+            seriesCast.cast,
+            knownCastFrom(mergeSegmentFacts(analyzed, analyzed.length ? analyzed[analyzed.length - 1].end_ms : 0)),
+          ),
         }, `segment ${index + 1}/${plan.length}`);
         analyzed.push({ ...segment, facts: clip.facts });
         sheets.push(...clip.sheets);
@@ -616,6 +631,7 @@ async function analyzeNativeSource(ctx = {}, input = {}) {
       facts,
       enrichment,
       segments: segmentsReport,
+      series_cast: { earlier_episode_work_ids: seriesCast.episodes, known_cast_count: seriesCast.cast.length },
       diagnostics: {
         source: {
           relative_path_hash: crypto.createHash('sha256').update(source.relative).digest('hex'),
