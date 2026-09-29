@@ -255,6 +255,17 @@ function primarySceneId(facts, shot) {
   return best;
 }
 
+// 字幕没标说话人时，用同镜头的对白条目补：对白条目只保留画面里的说话人（画外音已在分析时丢弃），
+// 所以先按原文对上，其次镜头里只有一个说话人时归给他；都不满足就不标，绝不猜画外音。
+function regionSpeakerId(shot, region) {
+  if (text(region?.speaker_id)) return text(region.speaker_id);
+  const turns = list(shot.dialogue).filter((turn) => text(turn?.speaker_id));
+  const same = turns.find((turn) => text(turn.source_text) && text(turn.source_text) === text(region?.source_text));
+  if (same) return text(same.speaker_id);
+  const speakers = [...new Set(turns.map((turn) => text(turn.speaker_id)))];
+  return speakers.length === 1 ? speakers[0] : '';
+}
+
 function shotTextRegions(shot, localization, names) {
   // 反推阶段没有转写证据时，台词只存在于硬字幕；本地化后用 text_map 的目标语字幕。
   // 只有字幕是台词。屏幕文字（电视、网页、招牌）是画面内容，放进台词会被原生音频念出来。
@@ -266,11 +277,22 @@ function shotTextRegions(shot, localization, names) {
     const target = text(textMap[`${text(shot.id)}:${text(region?.id)}`]) || source;
     if (!target) continue;
     const kind = text(region?.kind);
-    const speaker = names?.get(text(region?.speaker_id));
-    if (!kind || kind === 'subtitle') subtitles.push({ source, text: speaker ? `${speaker}：${target}` : target });
+    const speakerId = regionSpeakerId(shot, region);
+    const speaker = names?.get(speakerId);
+    if (!kind || kind === 'subtitle') {
+      subtitles.push({ source, speakerId: speaker ? speakerId : '', text: speaker ? `${speaker}：${target}` : target });
+    }
     else screenText.push(target);
   }
   return { subtitles, screenText };
+}
+
+// 本镜所有台词都标了说话人、且只有同一个画面里的角色在说话：这个镜头能单独提取他的音色。
+function soloSpeakerId(spoken, shot) {
+  if (!spoken.length || spoken.some((line) => !line.speakerId)) return '';
+  const speakers = [...new Set(spoken.map((line) => line.speakerId))];
+  const visible = new Set(list(shot.visible_character_ids).map(text));
+  return speakers.length === 1 && visible.has(speakers[0]) ? speakers[0] : '';
 }
 
 function dropCarriedSubtitles(subtitles, previousLastSource) {
@@ -306,6 +328,7 @@ function mapShot(facts, shot, {
     description,
     duration: durationSeconds,
     dialogue: spoken.map((line) => line.text).join('\n'),
+    solo_speaker_id: soloSpeakerId(spoken, shot),
     last_subtitle_source: subtitles.length ? subtitles[subtitles.length - 1].source : '',
     action,
     movement,
@@ -475,6 +498,7 @@ function buildRedrawFactoryPackage({
     });
   const characters = mapCharacters(facts, names, glossary, characterImages, culture)
     .map((character) => (style.negative ? { ...character, negative_prompt: style.negative } : character));
+  const voiceCasting = markVoiceCastingShots(mappedShots.map((item) => item.shot), characters);
   const scenes = mapScenes(facts, style, glossary, names, culture);
   // 完全转绘的剧情梗概已是目标国家版本（新名字、新地点），只解析角色编号；否则用原梗概按名词表替换名字。
   const story = culture.story.length
@@ -499,7 +523,24 @@ function buildRedrawFactoryPackage({
       scenes: groupShotsByScene(mappedShots, scenes),
     }],
     continuity_rules: [...list(facts.causal_chain), ...list(facts.reversals)].map((line) => localizeText(line, names, glossary)),
+    voice_casting: voiceCasting,
   };
+}
+
+// 定音镜头：每个说话角色第一次单独说话的镜头。先生成这些镜头，后台会从中提取该角色的音色，
+// 之后他再出场的镜头自动带上同一段声音。标题里写明，方便在工厂里先挑出来生成。
+function markVoiceCastingShots(shots, characters) {
+  const byId = new Map(characters.map((character) => [character.character_id, character.name]));
+  const casting = [];
+  const cast = new Set();
+  for (const shot of shots) {
+    const id = shot.solo_speaker_id;
+    if (!id || cast.has(id) || !byId.has(id)) continue;
+    cast.add(id);
+    shot.title = `${shot.title} · ${byId.get(id)} 定音`;
+    casting.push({ character_id: id, name: byId.get(id), shot_number: shot.shot_number });
+  }
+  return casting;
 }
 
 module.exports = {

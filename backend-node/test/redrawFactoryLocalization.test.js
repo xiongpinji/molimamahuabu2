@@ -115,6 +115,31 @@ test('adapter turns a full localization into target-country names, looks, places
   }
 });
 
+test('lines without a speaker take it from the on-screen dialogue of the shot, and the first solo shot of each speaker is marked for voice casting', () => {
+  const facts = factsV2();
+  facts.shots[1].dialogue = [{ id: 'd1', speaker_id: 'c1', source_text: '世界杯就是我的起步资金', start_ms: 4_100, end_ms: 5_000 }];
+  facts.shots.push({
+    id: 'shot-3', index: 3, start_ms: 8_000, end_ms: 9_000, composition: '林哥的近景', camera_movement: '固定',
+    opening_state: '', continuous_action: '', ending_state: '', visible_character_ids: ['c2'],
+    text_regions: [{ id: 'txt4', kind: 'subtitle', source_text: '回家吃饭' }], dialogue: [],
+  });
+  const output = localization.validateOutput(TARGET, localization.compactFacts(facts), modelOutput({
+    lines: [...modelOutput().lines, { key: 'shot-3:txt4', text: 'Vamos a comer.' }],
+  }));
+  const pkg = buildRedrawFactoryPackage({
+    sourceFacts: facts,
+    localization: { locale: 'es', market: 'MX', name_map: output.nameMap, text_map: output.textMap, glossary: {}, culture_map: output.cultureMap },
+    analysisSettings: { free_style: { positive: '真人写实风格', negative: '' } },
+  });
+  const [first, second, third] = pkg.episodes[0].scenes.flatMap((group) => group.shots);
+  assert.equal(second.dialogue, 'Diego：El Mundial será mi capital inicial.', 'the on-screen dialogue turn names the speaker');
+  assert.equal(third.dialogue, 'Vamos a comer.', 'an off-screen line with no dialogue turn stays unlabeled');
+  assert.equal(first.title, '镜头 1 · Diego 定音');
+  assert.equal(second.title, '镜头 2', 'only the first solo shot casts the voice');
+  assert.equal(third.title, '镜头 3');
+  assert.deepEqual(pkg.voice_casting, [{ character_id: 'c1', name: 'Diego', shot_number: 1 }]);
+});
+
 test('shot text drops burned-in subtitle descriptions so the video model does not draw subtitles', () => {
   const facts = factsV2();
   facts.shots[0].composition = 'tight close-up of c1 in a school uniform; burned-in subtitles remain at the lower part of the frame';
@@ -427,8 +452,10 @@ test('route lists targets, quotes, charges once, imports a Mexican Spanish proje
     const metadata = JSON.parse(db.prepare('SELECT metadata FROM dramas WHERE id = ?').get(dramaId).metadata);
     assert.deepEqual([metadata.redraw_import.locale, metadata.redraw_import.market], ['es', 'MX']);
     assert.equal(metadata.video_use_storyboard_reference_video, false, 'source clips carry the original actors and subtitles');
-    assert.equal(metadata.redraw_import.full_localization_package, 4);
-    assert.match(metadata.redraw_import.import_key, /:package:4$/);
+    assert.equal(metadata.redraw_import.full_localization_package, 5);
+    assert.match(metadata.redraw_import.import_key, /:package:5$/);
+    assert.equal(metadata.voice_auto_bind, true, 'redraw imports turn on first-dialogue voice reuse');
+    assert.deepEqual(metadata.redraw_import.voice_casting, [{ character_id: 'c1', name: 'Diego', shot_number: 1 }]);
     const episode = db.prepare('SELECT script_content, description FROM episodes WHERE drama_id = ?').get(dramaId);
     assert.match(episode.script_content, /^Diego在墨西哥城街角小卖部被同学嘲笑/, 'the episode script opens with the localized plot');
     assert.doesNotMatch(episode.script_content, /林江|林哥/);
