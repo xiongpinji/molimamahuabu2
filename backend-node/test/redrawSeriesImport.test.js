@@ -479,3 +479,105 @@ test('第 2 集沿用第 1 集的设定句，并带上前几集的梗概和已�
     cleanup(t);
   }
 });
+
+test('梗概里出现剧中没有的名字时补问一次，并告诉模型每个角色定好的新名字；梗概里人名多不算外文', async () => {
+  const t = setup();
+  try {
+    const { dramaId } = await importFirstEpisode(t);
+    const ep2 = seedEpisode(t, episodeTwoFacts(), '2026-09-29T02:00:00.000Z');
+    // 第一次梗概用了剧中没有的 Ximena、Baltasar（之前补问梗概时模型不知道新名字，另起了一套）。
+    t.replies.push({ ...episodeTwoOutput(), story: ['Ximena在墨西哥城的卧室里下定决心，第二天Baltasar在教室点名。'] }, {
+      story: ['Diego在墨西哥城的卧室里下定决心，第二天Señor Ruiz在教室点名。'],
+      episode_hook: 'Señor Ruiz宣布了一个意外消息。',
+    });
+    const ready = await localize(t, ep2);
+    assert.equal(ready.body.data.status, 'ready', JSON.stringify(ready.body.data));
+    const repairAsk = t.prompts[2];
+    assert.equal(repairAsk.user.need_story, true);
+    assert.deepEqual(repairAsk.user.character_names, [{ id: 'c1', name: 'Diego' }, { id: 'c2', name: 'Señor Ruiz' }]);
+    assert.match(repairAsk.system, /never invent other names/);
+    const culture = JSON.parse(t.db.prepare('SELECT culture_map_json FROM redraw_versions WHERE id = ?').get(ready.body.data.version_id).culture_map_json);
+    assert.deepEqual(culture.story, ['Diego在墨西哥城的卧室里下定决心，第二天Señor Ruiz在教室点名。']);
+    assert.equal(creditLedger.getTenantAccount(t.db, TENANT).spent, 20, 'the repair is not charged');
+
+    // 汉字不多、人名很多的梗概：人名不算外文，不补问。
+    const ep3 = seedEpisode(t, { ...episodeTwoFacts(), v1_facts_hash: '3'.repeat(64) }, '2026-09-29T03:00:00.000Z');
+    t.replies.push({
+      ...episodeTwoOutput(),
+      story: ['Diego对Señor Ruiz点头，Señor Ruiz看着Diego，Diego和Señor Ruiz、Mateo走出教室。'],
+    });
+    const calls = t.prompts.length;
+    const third = await localize(t, ep3);
+    assert.equal(third.body.data.status, 'ready', JSON.stringify(third.body.data));
+    assert.equal(t.prompts.length, calls + 1, 'no repair for a Chinese story with many names');
+    const appended = await t.call(ep2, { action: 'import', localization: MX, target_drama_id: dramaId });
+    assert.equal(appended.statusCode, 200, JSON.stringify(appended.body));
+    const script = t.db.prepare('SELECT script_content FROM episodes WHERE drama_id = ? AND episode_number = 2').get(dramaId).script_content;
+    assert.doesNotMatch(script, /Ximena|Baltasar/);
+  } finally {
+    cleanup(t);
+  }
+});
+
+test('追加的集不给前几集已标过定音的老角色再标定音（还没生成音色也一样），新角色照常标', async () => {
+  const t = setup();
+  try {
+    const { dramaId } = await importFirstEpisode(t);
+    const first = metadataOf(t.db, dramaId).redraw_series.episodes[0];
+    const diego = t.db.prepare("SELECT id FROM characters WHERE drama_id = ? AND name = 'Diego'").get(dramaId).id;
+    assert.deepEqual(first.voice_casting.map(({ name, factory_character_id }) => [name, factory_character_id]).slice(0, 1), [['Diego', diego]]);
+    // 旧记录（R74 之前）没有工厂角色 id：按名字也能认出来。
+    const legacy = metadataOf(t.db, dramaId);
+    legacy.redraw_series.episodes[0].voice_casting = legacy.redraw_series.episodes[0].voice_casting
+      .map(({ factory_character_id: _drop, ...item }) => item);
+    t.db.prepare('UPDATE dramas SET metadata = ? WHERE id = ?').run(JSON.stringify(legacy), dramaId);
+
+    const ep2 = seedEpisode(t, episodeTwoFacts(), '2026-09-29T02:00:00.000Z');
+    t.replies.push(episodeTwoOutput());
+    await localize(t, ep2);
+    const appended = await t.call(ep2, { action: 'import', localization: MX, target_drama_id: dramaId });
+    assert.equal(appended.statusCode, 200, JSON.stringify(appended.body));
+    assert.deepEqual(appended.body.data.voice_casting, [{ character_id: 'c2', name: 'Señor Ruiz', shot_number: 2 }],
+      'Diego is cast in episode 1 even without a voice yet');
+    const titles = t.db.prepare(`SELECT s.title FROM storyboards s JOIN episodes e ON e.id = s.episode_id
+      WHERE e.drama_id = ? AND e.episode_number = 2 ORDER BY s.storyboard_number`).all(dramaId).map((row) => row.title);
+    assert.doesNotMatch(titles[0], /定音/);
+    assert.match(titles[1], /Señor Ruiz 定音/);
+    const recorded = metadataOf(t.db, dramaId).redraw_series.episodes[1];
+    assert.equal(recorded.voice_casting[0].factory_character_id,
+      t.db.prepare("SELECT id FROM characters WHERE drama_id = ? AND name = 'Señor Ruiz'").get(dramaId).id);
+  } finally {
+    cleanup(t);
+  }
+});
+
+test('整部导入计划：按集号列出各集的转绘状态、价格和已在项目里的集，没分析的集标出来', async () => {
+  const t = setup();
+  try {
+    const { ep1, dramaId } = await importFirstEpisode(t);
+    const ep2 = seedEpisode(t, episodeTwoFacts(), '2026-09-29T02:00:00.000Z');
+    // 第 3 集刚上传、还没分析。
+    const now = '2026-09-29T03:00:00.000Z';
+    const assetId = Number(t.db.prepare(`INSERT INTO assets (name, type, url, local_path, created_at, updated_at)
+      VALUES ('ep3.mp4', 'video', '/static/ep3.mp4', 'redraw-sources/ep3.mp4', ?, ?)`).run(now, now).lastInsertRowid);
+    const ep3 = Number(t.db.prepare(`INSERT INTO redraw_works (project_id, tenant_id, user_id, title, source_asset_id, source_fingerprint,
+      duration_ms, current_version, current_step, status, created_at, updated_at) VALUES (?, ?, ?, 'ep3.mp4', ?, ?, 20000, 1, 1, 'draft', ?, ?)`)
+      .run(t.projectId, TENANT, USER, assetId, `${'3'.repeat(40)}${String(assetId).padStart(24, '0')}`, now, now).lastInsertRowid);
+    const plan = await t.call(ep2, { action: 'series', localization: MX });
+    assert.equal(plan.statusCode, 200, JSON.stringify(plan.body));
+    const data = plan.body.data;
+    assert.equal(data.target, 'es-MX');
+    assert.deepEqual(data.episodes.map(({ work_id, episode, analysis_ready, status, credits }) => [work_id, episode, analysis_ready, status, credits]), [
+      [ep1, 1, true, 'ready', 10],
+      [ep2, 2, true, 'none', 10],
+      [ep3, 3, false, 'unavailable', null],
+    ]);
+    assert.ok(data.episodes[2].error);
+    assert.equal(data.credits_needed, 10);
+    assert.deepEqual(data.series_targets.map(({ drama_id, work_episodes }) => ({ drama_id, work_episodes })),
+      [{ drama_id: dramaId, work_episodes: { [ep1]: 1 } }]);
+    assert.equal(creditLedger.getTenantAccount(t.db, TENANT).spent, 10, 'the plan is free');
+  } finally {
+    cleanup(t);
+  }
+});

@@ -43,6 +43,16 @@ function earlierWorks(db, work) {
     .map((row) => Number(row.id));
 }
 
+/** 同一转绘项目的全部作品，按集号（上传时间，其次 id）排列；整部导入按这个顺序逐集处理。 */
+function projectWorks(db, work) {
+  if (!work?.project_id) return work?.id ? [{ id: Number(work.id), title: work.title || null }] : [];
+  return db.prepare(`
+    SELECT id, title FROM redraw_works
+    WHERE project_id = ? AND tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+    ORDER BY created_at ASC, id ASC
+  `).all(work.project_id, work.tenant_id, work.user_id);
+}
+
 /**
  * @returns {{ cast: Array<{name, appearance}>, episodes: number[] }} episodes 是提供了角色的前几集作品 id
  */
@@ -68,6 +78,7 @@ function seriesKnownCast(db, work, storageRoot, { log } = {}) {
 module.exports = {
   MAX_SERIES_CAST,
   earlierWorks,
+  projectWorks,
   mergeKnownCast,
   seriesKnownCast,
 };

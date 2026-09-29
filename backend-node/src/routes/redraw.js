@@ -3767,6 +3767,15 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
         series_targets: seriesTargets(),
       });
     }
+    // 整部导入：同一部剧按集号排好的各集在该目标国家下的转绘状态与价格（只读，不扣费），前端据此逐集生成并追加。
+    if (action === 'series') {
+      return response.success(res, {
+        target: target.key,
+        label: target.label,
+        ...redrawFactoryLocalizationService.seriesPlan(db, { ...ctx, storageRoot }),
+        series_targets: seriesTargets(),
+      });
+    }
     if (action === 'start') {
       const { completion, ...started } = redrawFactoryLocalizationService.startLocalization(db, log, {
         ...ctx,

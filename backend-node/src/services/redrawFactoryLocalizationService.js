@@ -315,6 +315,27 @@ function foreignWords(value, known) {
   return (outside.match(LATIN_WORD) || []).filter((word) => !known.has(word.toLowerCase()));
 }
 
+// 梗概里允许出现的人名：本集角色的新名字、沿用的锁定名字和前几集用过的名字。
+function storyNameList(parsed, series = {}) {
+  return [
+    ...list(parsed?.characters).map((character) => text(character?.name)),
+    ...Object.values(series.locked || {}).map((value) => text(value?.name)),
+    ...list(series.taken).map(text),
+  ].filter(Boolean);
+}
+
+// 梗概同样用简体中文写：引号外的拉丁字母单词只能是角色名字。模型另起了剧中没有的名字（例如补问时没对上新名字）也算。
+function storyForeignWords(parsed, series = {}) {
+  const known = knownNameWords(parsed, series);
+  return [...new Set(list(parsed?.story).flatMap((line) => foreignWords(line, known)))];
+}
+
+// 补问梗概时告诉模型每个角色已经定好的新名字，否则模型会另起一套名字，梗概和角色对不上。
+function storyCharacterNames(parsed) {
+  return list(parsed?.characters).filter((item) => item && text(item.id) && text(item.name))
+    .map((item) => ({ id: text(item.id), name: text(item.name) }));
+}
+
 function foreignTextItems(compact, parsed, series) {
   const known = knownNameWords(parsed, series);
   const byId = (items) => new Map(list(items).filter((item) => item && text(item.id)).map((item) => [text(item.id), item]));
@@ -497,24 +518,37 @@ const SUBTITLE_WORDS = /字幕|subtitle|caption/i;
 const HAN_GLOBAL = /[一-鿿]/g;
 const LATIN_OR_CYRILLIC_GLOBAL = /[A-Za-zÀ-ɏЀ-ӿ]/g;
 
+// 汉字和拉丁字母各有多少：先去掉允许夹带的人名（长的先去），人名再多也不算外文。
+function scriptCounts(value, names = []) {
+  let rest = text(value);
+  for (const name of [...new Set(list(names).map(text).filter(Boolean))].sort((a, b) => b.length - a.length)) {
+    rest = rest.split(name).join(' ');
+  }
+  return {
+    han: (rest.match(HAN_GLOBAL) || []).length,
+    letters: (rest.match(LATIN_OR_CYRILLIC_GLOBAL) || []).length,
+  };
+}
+
 // 梗概和简介在工厂里和形象、地点描述放在一起，统一用简体中文；夹带目标语言人名不算，汉字要占多数。
-function isMostlyChinese(value) {
-  const han = (text(value).match(HAN_GLOBAL) || []).length;
-  const letters = (text(value).match(LATIN_OR_CYRILLIC_GLOBAL) || []).length;
+function isMostlyChinese(value, names = []) {
+  const { han, letters } = scriptCounts(value, names);
   return han > 0 && han >= letters;
 }
 
-// 本地化剧情梗概的问题：缺失、不是中文、带原名或提到字幕都要重问。
-function storyProblem(compact, parsed) {
+// 本地化剧情梗概的问题：缺失、不是中文、带原名、带剧中没有的人名或提到字幕都要重问。
+function storyProblem(compact, parsed, series = {}) {
   if (!compact.story.length) return false;
   const story = list(parsed?.story).map(text).filter(Boolean);
   if (!story.length) return true;
   const names = oldNames(compact);
-  return !isMostlyChinese(story.join('')) || story.some((line) => SUBTITLE_WORDS.test(line) || names.some((name) => line.includes(name)));
+  return !isMostlyChinese(story.join(''), storyNameList(parsed, series))
+    || storyForeignWords(parsed, series).length > 0
+    || story.some((line) => SUBTITLE_WORDS.test(line) || names.some((name) => line.includes(name)));
 }
 
 // 模型偶尔漏掉个别条目（例如"同学们"这类群体角色没给名字）：只把缺的条目再问一次，不重新收费。
-function missingItems(target, compact, parsed) {
+function missingItems(target, compact, parsed, series = {}) {
   const badHan = (value) => !target.allows_han && HAN.test(value);
   const characters = new Map(list(parsed?.characters).filter((item) => item && text(item.id)).map((item) => [text(item.id), item]));
   const lines = new Map(list(parsed?.lines).filter((item) => item && text(item.key)).map((item) => [text(item.key), text(item.text)]));
@@ -523,12 +557,13 @@ function missingItems(target, compact, parsed) {
     return !text(out?.name) || badHan(text(out?.name)) || !text(out?.appearance);
   });
   const missingLines = compact.subtitles.filter((line) => !lines.get(line.key) || badHan(lines.get(line.key)));
-  const story = storyProblem(compact, parsed);
+  const story = storyProblem(compact, parsed, series);
   return {
     characters: missingCharacters,
     subtitles: missingLines,
     setting: !text(parsed?.setting),
     story,
+    ...(story ? { story_names: storyCharacterNames(parsed) } : {}),
     count: missingCharacters.length + missingLines.length + (text(parsed?.setting) ? 0 : 1) + (story ? 1 : 0),
   };
 }
@@ -537,9 +572,12 @@ function buildRepairPrompt(target, compact, missing) {
   const world = missing.world || {};
   const base = buildPrompt(target, compact, {}, missing.names_in_use || [], world);
   const foreign = list(missing.scenes).length + list(missing.props).length;
+  const characterNames = list(missing.character_names).length ? missing.character_names : list(missing.story_names);
   return {
     system: `${base.system}\nYour previous answer left out or broke the items below. Return the same JSON shape containing only these items, completed.${foreign
       ? '\nThe scenes and props below contained English words or names of people who are not characters: rewrite their location, time, visual and name in Simplified Chinese, refer to people only by the names in character_names, and keep sign wording inside quotation marks.'
+      : ''}${missing.story && characterNames.length
+      ? '\nRetell the story in Simplified Chinese and refer to every person only by the name given for their id in character_names (all_characters lists the same ids with the original names); never invent other names.'
       : ''}`,
     user: JSON.stringify({
       characters: missing.characters,
@@ -548,7 +586,7 @@ function buildRepairPrompt(target, compact, missing) {
       ...(list(missing.names_in_use).length ? { names_in_use: missing.names_in_use } : {}),
       ...(list(missing.scenes).length ? { scenes: missing.scenes } : {}),
       ...(list(missing.props).length ? { props: missing.props } : {}),
-      ...(list(missing.character_names).length ? { character_names: missing.character_names } : {}),
+      ...(characterNames.length ? { character_names: characterNames } : {}),
       ...(text(world.setting) ? { series_setting: text(world.setting) } : {}),
       ...(list(world.story).length ? { previous_story: list(world.story) } : {}),
       ...(list(world.places).length ? { known_places: list(world.places) } : {}),
@@ -645,10 +683,16 @@ function validateOutput(target, compact, parsed, series = {}) {
   if (!setting) throw codedError('REDRAW_FACTORY_LOCALIZATION_INVALID', '缺少目标国家设定');
   const story = list(parsed?.story).map(text).filter(Boolean);
   if (compact.story.length && !story.length) throw codedError('REDRAW_FACTORY_LOCALIZATION_INVALID', '缺少目标国家的剧情梗概');
-  if (story.length && !isMostlyChinese(story.join(''))) throw codedError('REDRAW_FACTORY_LOCALIZATION_INVALID', '剧情梗概没有用简体中文写');
+  const allowedNames = [...Object.values(nameMap), ...storyNameList({}, series)];
+  if (story.length && !isMostlyChinese(story.join(''), allowedNames)) {
+    // 日志里留下计数和开头一小段，便于判断是整段写成了外文还是夹带了太多外文。
+    throw codedError('REDRAW_FACTORY_LOCALIZATION_INVALID', '剧情梗概没有用简体中文写', {
+      detail: { ...scriptCounts(story.join(''), allowedNames), sample: story.join('').slice(0, 120) },
+    });
+  }
   const leaked = oldNames(compact).find((name) => story.some((line) => line.includes(name)));
   if (leaked) throw codedError('REDRAW_FACTORY_LOCALIZATION_INVALID', `剧情梗概里还有原片人名「${leaked}」`);
-  const episodeHook = isMostlyChinese(parsed?.episode_hook) ? text(parsed.episode_hook) : '';
+  const episodeHook = isMostlyChinese(parsed?.episode_hook, allowedNames) ? text(parsed.episode_hook) : '';
   return {
     nameMap,
     textMap,
@@ -708,7 +752,7 @@ async function runLocalization(db, log, ctx, deps) {
     const series = { locked, taken: list(lock.names) };
     let parsed = applySeriesWorld(applyLockedCharacters(await ask(buildPrompt(target, compact, locked, series.taken, world)), locked), world);
     const missing = withForeignText(
-      withNameConflicts(missingItems(target, compact, parsed), target, compact, parsed, series), compact, parsed, series,
+      withNameConflicts(missingItems(target, compact, parsed, series), target, compact, parsed, series), compact, parsed, series,
     );
     if (missing.count) {
       log?.warn?.('redraw factory localization repairing missing items', {
@@ -719,9 +763,11 @@ async function runLocalization(db, log, ctx, deps) {
       const merged = mergeOutputs(parsed, await ask(buildRepairPrompt(target, compact, { ...missing, world })));
       parsed = applySeriesWorld(applyLockedCharacters(renameConflictedCharacters(parsed, merged, list(missing.renamed_ids), locked), locked), world);
       const leftover = foreignTextItems(compact, parsed, series);
-      if (leftover.scenes.length || leftover.props.length) {
+      const storyWords = storyForeignWords(parsed, series);
+      if (leftover.scenes.length || leftover.props.length || storyWords.length) {
         log?.warn?.('redraw factory localization still has foreign text after repair', {
           task_id: taskId, scenes: leftover.scenes.map((scene) => scene.id), props: leftover.props.map((prop) => prop.id),
+          story_words: storyWords.slice(0, 10),
         });
       }
     }
@@ -740,7 +786,9 @@ async function runLocalization(db, log, ctx, deps) {
     log?.info?.('redraw factory localization completed', { task_id: taskId, work_id: work.id, target: target.key, version_id: versionId });
     return versionId;
   } catch (error) {
-    log?.warn?.('redraw factory localization failed', { task_id: taskId, work_id: work.id, message: error.message });
+    log?.warn?.('redraw factory localization failed', {
+      task_id: taskId, work_id: work.id, message: error.message, ...(error.detail ? { detail: error.detail } : {}),
+    });
     failTask(db, task, error.message || '转绘本地化失败');
     return null;
   }
@@ -807,6 +855,32 @@ function startLocalization(db, log, { owner, work, sourceVersion, sourceFacts, t
   return { target: target.key, label: target.label, credits: current.credits, status: 'localizing', task_id: created.taskId, completion };
 }
 
+/**
+ * 整部导入的计划（只读，不扣费）：同一转绘项目（同一部剧）按集号排好的各集，每集在所选目标国家下的转绘状态和价格。
+ * 还没分析完、读不到分析结果的集标出原因，前端据此提示先分析。credits_needed 是还要新生成的各集价格之和。
+ */
+function seriesPlan(db, { owner, work, target, canReadArtifact, storageRoot }) {
+  const { loadRedrawSource } = require('./redrawFactoryImportService');
+  const root = storageRoot || defaultStorageRoot();
+  const episodes = seriesCast.projectWorks(db, work).map((row, index) => {
+    const base = { work_id: Number(row.id), episode: index + 1, title: text(row.title) || null };
+    try {
+      const source = loadRedrawSource(db, owner, row.id, root);
+      const status = localizationStatus(db, { owner, work: source.work, sourceVersion: source.sourceVersion, target, canReadArtifact });
+      return {
+        ...base, analysis_ready: true, status: status.status, credits: status.credits,
+        ...(status.error ? { error: status.error } : {}),
+      };
+    } catch (error) {
+      return { ...base, analysis_ready: false, status: 'unavailable', credits: null, error: error.message || '还没完成样片分析' };
+    }
+  });
+  const creditsNeeded = episodes
+    .filter((item) => item.analysis_ready && ['none', 'failed'].includes(item.status))
+    .reduce((sum, item) => sum + (Number(item.credits) || 0), 0);
+  return { episodes, credits_needed: creditsNeeded };
+}
+
 module.exports = {
   KIND,
   seriesLocalizationLock,
@@ -818,6 +892,7 @@ module.exports = {
   resolveTarget,
   localizationStatus,
   startLocalization,
+  seriesPlan,
   buildPrompt,
   compactFacts,
   validateOutput,

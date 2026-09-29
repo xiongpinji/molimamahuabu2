@@ -361,6 +361,7 @@ function seriesFromImport(db, owner, drama, metadata, { storageRoot = null, with
     characters: {},
     episodes: episode ? [{
       work_id: Number(work.id), episode_id: Number(episode.id), episode_number: Number(episode.episode_number), import_key: text(imported.import_key),
+      voice_casting: Array.isArray(imported.voice_casting) ? imported.voice_casting : [],
     }] : [],
   };
   if (!withCharacters) return series;
@@ -402,13 +403,30 @@ function seriesCharacterRow(db, dramaId, series, key) {
   return activeCharacterRow(db, dramaId, series?.characters?.[key]?.character_id);
 }
 
-/** 本集里已经在前几集定过音的老角色（源角色 id），这些角色本集不再标定音镜头。 */
-function voicedSourceCharacterIds(db, dramaId, series, sourceFacts) {
+/**
+ * 本集里不用再标定音镜头的老角色（源角色 id）：已经有音色的，或前几集（工厂里还在的集）已经给他标过定音镜头的——
+ * 音色会从前一集的定音镜头提取，本集再标会让人以为要从本集定音。前几集的记录按工厂角色 id 认人，旧记录按名字认。
+ */
+function castSourceCharacterIds(db, dramaId, series, sourceFacts) {
+  const castIds = new Set();
+  const castNames = new Set();
+  for (const entry of Array.isArray(series?.episodes) ? series.episodes : []) {
+    if (!liveSeriesEpisode(db, dramaId, series, entry?.work_id)) continue;
+    for (const item of Array.isArray(entry.voice_casting) ? entry.voice_casting : []) {
+      if (Number(item?.factory_character_id) > 0) castIds.add(Number(item.factory_character_id));
+      if (normalizedName(item?.name)) castNames.add(normalizedName(item.name));
+    }
+  }
   const ids = [];
   for (const character of Array.isArray(sourceFacts?.characters) ? sourceFacts.characters : []) {
-    const row = seriesCharacterRow(db, dramaId, series, seriesKeyOf(character));
-    const asset = parseJson(row?.seedance2_voice_asset, null);
-    if (String(asset?.status || '').toLowerCase() === 'active' && text(asset?.url)) ids.push(text(character.id));
+    const key = seriesKeyOf(character);
+    const row = seriesCharacterRow(db, dramaId, series, key);
+    if (!row) continue;
+    const asset = parseJson(row.seedance2_voice_asset, null);
+    const voiced = String(asset?.status || '').toLowerCase() === 'active' && Boolean(text(asset?.url));
+    const castEarlier = castIds.has(Number(row.id))
+      || [row.name, series?.characters?.[key]?.name].some((name) => normalizedName(name) && castNames.has(normalizedName(name)));
+    if (voiced || castEarlier) ids.push(text(character.id));
   }
   return ids;
 }
@@ -589,7 +607,11 @@ function recordSeriesEpisode(db, dramaId, {
     episode_id: Number(episodeId),
     episode_number: Number(episodeNumber),
     import_key: importKey,
-    voice_casting: productionPackage.voice_casting || [],
+    // 记下工厂角色 id：后面的集按 id 认出"前几集已标过定音"的人，改名也不影响。
+    voice_casting: (productionPackage.voice_casting || []).map((item) => ({
+      ...item,
+      factory_character_id: Number(characterIdByKey.get(item.character_id)) || null,
+    })),
   });
   db.prepare('UPDATE dramas SET metadata = ?, updated_at = ? WHERE id = ?')
     .run(JSON.stringify({ ...metadata, redraw_series: series }), new Date().toISOString(), dramaId);
@@ -775,7 +797,7 @@ async function appendRedrawWorkToSeries(db, logger, { owner, source, importKey, 
     title: text(first.drama.title),
     characterImages: characterImagesOf(db, owner, source.localizedVersion),
     propIds,
-    voicedCharacterIds: voicedSourceCharacterIds(db, dramaId, first.series, source.sourceFacts),
+    voicedCharacterIds: castSourceCharacterIds(db, dramaId, first.series, source.sourceFacts),
   });
 
   const stagingDir = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-factory-append-'));
@@ -830,7 +852,7 @@ async function appendRedrawWorkToSeries(db, logger, { owner, source, importKey, 
 
 /**
  * 同一转绘项目（同一部剧）完全转绘导入过的工厂项目，供"追加到已有项目"选择（新的在前）。
- * this_work_episode：本作品已经是其中第几集（没导入过为 null）。
+ * this_work_episode：本作品已经是其中第几集（没导入过为 null）；work_episodes：各作品在其中是第几集（整部导入跳过已在的集）。
  */
 function listSeriesTargets(db, owner, work) {
   if (!work?.project_id) return [];
@@ -854,6 +876,11 @@ function listSeriesTargets(db, owner, work) {
     const metadata = parseJson(row.metadata, {}) || {};
     const series = seriesOf(metadata) || seriesFromImport(db, owner, row, metadata) || {};
     const entry = liveSeriesEpisode(db, Number(row.id), series, work.id);
+    const workEpisodes = {};
+    for (const item of Array.isArray(series.episodes) ? series.episodes : []) {
+      const live = liveSeriesEpisode(db, Number(row.id), series, item?.work_id);
+      if (live) workEpisodes[String(Number(item.work_id))] = live.episode_number;
+    }
     return {
       drama_id: Number(row.id),
       title: row.title,
@@ -861,6 +888,7 @@ function listSeriesTargets(db, owner, work) {
       market: series.market || null,
       episodes: Number(liveEpisodes.get(Number(row.id))?.n || 0),
       this_work_episode: entry ? entry.episode_number : null,
+      work_episodes: workEpisodes,
     };
   }).filter((item) => item.locale || item.market);
 }
