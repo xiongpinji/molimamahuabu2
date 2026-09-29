@@ -206,6 +206,22 @@ test('the localized plot must exist and must not keep any old name, including th
   assert.equal(out.cultureMap.episode_hook, undefined, 'a hook that keeps an old name is dropped');
 });
 
+test('role and group labels become capitalized names; scripts without letter case are left as they are', () => {
+  const compact = localization.compactFacts(factsV2());
+  const out = localization.validateOutput(TARGET, compact, modelOutput({
+    characters: [{ id: 'c1', name: 'mamá', appearance: 'a' }, { id: 'c2', name: 'compañeros', appearance: 'b' }],
+  }));
+  assert.deepEqual([out.nameMap.c1, out.nameMap.c2], ['Mamá', 'Compañeros']);
+  const japanese = localization.validateOutput(localization.describeTarget('ja', 'JP'), compact, modelOutput({
+    characters: [{ id: 'c1', name: 'お母さん', appearance: 'a' }, { id: 'c2', name: '蓮', appearance: 'b' }],
+    lines: [{ key: 'shot-1:txt1', text: 'お前誰だよ' }, { key: 'shot-2:txt3', text: 'ワールドカップが元手だ' }],
+  }));
+  assert.deepEqual([japanese.nameMap.c1, japanese.nameMap.c2], ['お母さん', '蓮']);
+  const { system } = localization.buildPrompt(TARGET, compact);
+  assert.match(system, /capitalize them the way a name is written/);
+  assert.match(system, /never a word-by-word translation of the source wording/);
+});
+
 test('a plot that keeps an old name or talks about subtitles is asked for once more without charging again', async () => {
   const calls = [];
   const { db, storageRoot, call, settle } = setup(async (_db, _log, _type, user, system) => {
@@ -246,7 +262,7 @@ test('a localization made before the plot was localized is not ready and can be 
     const ready = await call({ action: 'status', localization: { locale: 'es', market: 'MX' } });
     assert.equal(ready.body.data.status, 'ready');
     const snapshot = JSON.parse(db.prepare('SELECT localization_model_snapshot_json FROM redraw_versions WHERE id = ?').get(ready.body.data.version_id).localization_model_snapshot_json);
-    assert.equal(snapshot.schema, 2);
+    assert.equal(snapshot.schema, 3);
   } finally {
     db.close();
     fs.rmSync(storageRoot, { recursive: true, force: true });

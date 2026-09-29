@@ -20,8 +20,8 @@ const capabilityService = require('./redrawCapabilityService');
 
 const KIND = 'factory_localization@1';
 // 本地化结果的内容版本：结果里多了必须有的内容就加 1，旧版本不再算"已生成"，用户可以重新生成（重新收费）。
-// 2：增加目标国家的剧情梗概（剧集剧本正文）。
-const OUTPUT_SCHEMA = 2;
+// 2：增加目标国家的剧情梗概（剧集剧本正文）；3：角色称呼按名字首字母大写，场景地点用自然的中文说法。
+const OUTPUT_SCHEMA = 3;
 const TASK_TYPE = 'redraw_factory_localization';
 const STALE_TASK_MS = 20 * 60 * 1000;
 // 文本模型走流式输出：这是「多久没有新输出就算卡住」的时限，不是总时长。
@@ -207,8 +207,8 @@ function buildPrompt(target, compact) {
     `Every person becomes a person from ${target.country_en}, every line is spoken in ${target.language_en} as used in ${target.country_en}, and every place and prop belongs to ${target.country_en}.`,
     'Keep the plot, relationships, ages, body builds, emotions, actions and the role clothing plays in the story (for example a shared school uniform) exactly; change names, ethnicity and looks, language, and cultural details.',
     'Return this JSON shape: {"characters":[{"id":"","name":"","role":"","appearance":""}],"scenes":[{"id":"","location":"","time":"","visual":""}],"props":[{"id":"","name":""}],"lines":[{"key":"","text":""}],"screen_texts":[{"key":"","text":""}],"story":[""],"episode_hook":"","setting":""}',
-    `characters: exactly one entry for EVERY supplied id, including groups and crowds, never skip one. name is a natural first name common in ${target.country_en} written as locals write it; for unnamed roles (mother, father, an athlete on TV) use a short natural ${target.language_en} role label, and for a group of people use a short plural ${target.language_en} label (for example the equivalent of "classmates"). appearance describes a person from ${target.country_en}: apparent age, build, skin tone, face, hair, and ${target.country_en}-style clothing that keeps the same story role; write appearance in Simplified Chinese and never mention the old name. role is a short Simplified Chinese description of the person's place in the story using the new names.`,
-    `scenes: one entry for every supplied id; move the place to ${target.country_en}: location is a short Simplified Chinese place name, time is the time of day in Simplified Chinese, visual describes ${target.country_en} architecture, signage in ${target.language_en}, street details, lighting and palette in Simplified Chinese; no Chinese characters on signs.`,
+    `characters: exactly one entry for EVERY supplied id, including groups and crowds, never skip one. name is a natural first name common in ${target.country_en} written as locals write it; for unnamed roles (mother, father, an athlete on TV) use a short natural ${target.language_en} role label, and for a group of people use a short plural ${target.language_en} label (for example the equivalent of "classmates"); these labels are used as the character's name, so capitalize them the way a name is written (for example "Mamá", "Compañeros"). appearance describes a person from ${target.country_en}: apparent age, build, skin tone, face, hair, and ${target.country_en}-style clothing that keeps the same story role; write appearance in Simplified Chinese and never mention the old name. role is a short Simplified Chinese description of the person's place in the story using the new names.`,
+    `scenes: one entry for every supplied id; move the place to ${target.country_en}: location is a short, natural Simplified Chinese place name that a native Chinese screenwriter would write (for example "中学小卖部门口", "老街区铁门外", "家中餐厅"), never a word-by-word translation of the source wording (not "学校门面入口"), time is the time of day in Simplified Chinese, visual describes ${target.country_en} architecture, signage in ${target.language_en}, street details, lighting and palette in Simplified Chinese; no Chinese characters on signs.`,
     'props: one entry for every supplied id; Simplified Chinese name of the equivalent local object.',
     `lines: one entry for every supplied subtitle key; translate the line into natural spoken ${target.language_en} as used in ${target.country_en}, same meaning, tone and length, replacing any old character names with the new names. screen_texts: same for on-screen text keys.`,
     `story: the supplied story retold as the plot of the ${target.country_en} drama, one Simplified Chinese paragraph per supplied story entry, same events in the same order, using only the new names and the new places; never use any old name (source_name or display_name) and never mention subtitles, captions or on-screen text, tell what the characters say or intend instead. episode_hook: the supplied episode_hook retold the same way in one Simplified Chinese sentence.`,
@@ -290,6 +290,14 @@ function mergeOutputs(first, repair) {
   return merged;
 }
 
+// 称呼（mamá、compañeros）当作角色名用，首字母按目标语言大写；没有大小写的文字（中文、日文）不变。
+function capitalizeName(name, locale) {
+  const first = name.charAt(0);
+  let upper = first;
+  try { upper = first.toLocaleUpperCase(locale || undefined); } catch (_) { upper = first.toUpperCase(); }
+  return upper === first ? name : `${upper}${name.slice(1)}`;
+}
+
 function validateOutput(target, compact, parsed) {
   const byId = (items) => new Map(list(items).filter((item) => item && text(item.id)).map((item) => [text(item.id), item]));
   const byKey = (items) => new Map(list(items).filter((item) => item && text(item.key)).map((item) => [text(item.key), text(item.text)]));
@@ -304,7 +312,7 @@ function validateOutput(target, compact, parsed) {
   const cultureCharacters = {};
   for (const character of compact.characters) {
     const out = characters.get(character.id);
-    const name = text(out?.name);
+    const name = capitalizeName(text(out?.name), target.locale);
     const appearance = text(out?.appearance);
     if (!name || badHan(name)) throw codedError('REDRAW_FACTORY_LOCALIZATION_INVALID', `角色 ${character.id} 缺少目标语言名字`);
     if (!appearance) throw codedError('REDRAW_FACTORY_LOCALIZATION_INVALID', `角色 ${character.id} 缺少目标国家形象`);
