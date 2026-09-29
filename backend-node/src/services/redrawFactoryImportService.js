@@ -20,9 +20,9 @@ const { buildRedrawFactoryPackage } = require('./redrawFactoryPackageAdapter');
 const { stageReferenceClips, registerStagedReferenceClips } = require('./redrawStoryboardReferenceClipService');
 
 const IMPORT_SCHEMA_VERSION = 'redraw-factory-import@1';
-// 完全转绘生产包的版本：提示词写法变了（带目标语言台词、去掉字幕描述、不提交原片参考），
-// 同一版本号的旧导入不再复用，重新导入会建新项目。
-const FULL_LOCALIZATION_PACKAGE_VERSION = 2;
+// 完全转绘生产包的版本：生产包内容一变就加 1，旧版本号的导入不再复用，重新导入会建新项目。
+// 2：带目标语言台词、去掉字幕描述、不提交原片参考；3：分镜地点与时间改用本地化场景。
+const FULL_LOCALIZATION_PACKAGE_VERSION = 3;
 
 function codedError(code, message) {
   return Object.assign(new Error(message), { code });
