@@ -8,6 +8,7 @@ const { applyDeepSeekChatOptions } = require('./deepseekConfig');
 const { randomUUID } = require('crypto');
 const https = require('https');
 const http = require('http');
+const { StringDecoder } = require('string_decoder');
 const crypto = require('crypto');
 
 function extractTextResponseContent(payload) {
@@ -271,6 +272,8 @@ function postJSONStream(url, headers, body, silenceTimeoutMs = 60000, onProgress
 
       let accumulated = '';
       let sseBuffer = '';
+      // 按流解码：一个多字节字符（中文、带重音的字母）可能被拆在两个数据块里，逐块 toString 会变成乱码。
+      const decoder = new StringDecoder('utf8');
       let firstToken = true;
       let usage = null;
       let reasoningFallback = '';
@@ -354,7 +357,7 @@ function postJSONStream(url, headers, body, silenceTimeoutMs = 60000, onProgress
 
       res.on('data', (chunk) => {
         resetSilenceTimer();
-        sseBuffer += chunk.toString('utf-8');
+        sseBuffer += decoder.write(chunk);
         // 按行解析 SSE
         const lines = sseBuffer.split('\n');
         sseBuffer = lines.pop(); // 保留不完整的最后一行
@@ -363,6 +366,7 @@ function postJSONStream(url, headers, body, silenceTimeoutMs = 60000, onProgress
 
       res.on('end', () => {
         clearTimeout(silenceTimer);
+        sseBuffer += decoder.end();
         if (sseBuffer.trim()) processLine(sseBuffer);
         if (upstreamError) {
           reject(upstreamError);
@@ -1468,6 +1472,7 @@ module.exports = {
   EXTRACT_PROMPTS,
   isRefusalResponse,
   postJSONWithTimeout,
+  postJSONStream,
   extractTextResponseContent,
   buildResponsesBody,
 };

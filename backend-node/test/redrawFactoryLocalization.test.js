@@ -549,3 +549,43 @@ test('a running localization is reported by status and a second click does not s
     fs.rmSync(storageRoot, { recursive: true, force: true });
   }
 });
+
+test('English words or unknown person names in scenes and props are asked for once more; quoted signs and character names are fine', async () => {
+  const calls = [];
+  const { db, storageRoot, call, settle } = setup(async (_db, _log, _type, user, system) => {
+    calls.push({ user: JSON.parse(user), system });
+    if (calls.length === 1) {
+      return JSON.stringify(modelOutput({
+        scenes: [
+          { id: 's1', location: '街角小卖部门口', visual: '墨西哥城街角的彩色小卖部，招牌写着“Abarrotes Doña Lupe”，Diego常在门口停留' },
+          { id: 's2', location: '卧室', visual: '墨西哥普通家庭卧室 surrounded by 旧书架' },
+        ],
+        props: [{ id: 'p1', name: 'Rogelio手中的一枚比索硬币' }],
+      }));
+    }
+    return JSON.stringify({
+      scenes: [{ id: 's2', location: '卧室', visual: '墨西哥普通家庭卧室，四周是旧书架' }],
+      props: [{ id: 'p1', name: 'Diego手中的一枚比索硬币' }],
+    });
+  });
+  try {
+    await call({ action: 'start', localization: { locale: 'es', market: 'MX' }, expected_credits: 10 });
+    await settle();
+    assert.equal(calls.length, 2);
+    assert.match(calls[0].system, /put any sign or on-screen wording inside quotation marks/);
+    assert.deepEqual(calls[1].user.scenes.map((scene) => scene.id), ['s2'], 'a quoted sign and a character name are not flagged');
+    assert.deepEqual(calls[1].user.props.map((prop) => prop.id), ['p1']);
+    assert.deepEqual(calls[1].user.character_names.map((item) => item.name), ['Diego', 'Mateo']);
+    assert.match(calls[1].system, /contained English words or names of people who are not characters/);
+    const status = await call({ action: 'status', localization: { locale: 'es', market: 'MX' } });
+    assert.equal(status.body.data.status, 'ready');
+    assert.equal(creditLedger.getTenantAccount(db, TENANT).spent, 10, 'the repair call is not charged');
+    const culture = JSON.parse(db.prepare('SELECT culture_map_json FROM redraw_versions WHERE id = ?').get(status.body.data.version_id).culture_map_json);
+    assert.equal(culture.scenes.s2.visual, '墨西哥普通家庭卧室，四周是旧书架');
+    assert.equal(culture.scenes.s1.visual, '墨西哥城街角的彩色小卖部，招牌写着“Abarrotes Doña Lupe”，Diego常在门口停留');
+    assert.equal(culture.props.p1.name, 'Diego手中的一枚比索硬币');
+  } finally {
+    db.close();
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  }
+});

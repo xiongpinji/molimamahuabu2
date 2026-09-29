@@ -206,43 +206,78 @@ function defaultStorageRoot() {
   return require('path').isAbsolute(raw) ? raw : require('path').join(process.cwd(), raw);
 }
 
+// 前几集可作锁定来源的完全转绘版本：与当前分析版本对应、同一目标、已完成；不限结果版本号（锁定只用名字、形象和设定）。
+function seriesVersion(db, owner, work, sourceVersion, target) {
+  return db.prepare(`
+    SELECT * FROM redraw_versions
+    WHERE work_id = ? AND tenant_id = ? AND user_id = ? AND locale = ? AND market = ?
+      AND facts_hash = ? AND status = 'asset_review' AND deleted_at IS NULL
+      AND localization_model_snapshot_json LIKE ?
+    ORDER BY id DESC LIMIT 1
+  `).get(work.id, owner.tenantId, owner.userId, target.locale, target.market, sourceVersion.facts_hash, `%"${KIND}"%`);
+}
+
+const MAX_WORLD_STORY_EPISODES = 5;
+const MAX_WORLD_STORY_CHARS = 600;
+const MAX_WORLD_PLACES = 30;
+
+function emptySeriesLock() {
+  return { byName: new Map(), episodes: [], names: [], world: { setting: '', story: [], places: [] } };
+}
+
 /**
  * 整部剧：同一转绘项目里前几集已完成的同目标完全转绘版本，把每个角色（按原名）的本地化名字、形象、身份锁定下来。
  * 本集遇到同一个人就沿用，不让模型重新起名、重画形象。读不到的前几集跳过，不影响本集。
  * 同时收集前几集用过的全部新名字（names），本集的新角色不能再用，否则工厂里会被当成同一个人、音色也会串。
- * @returns {{ byName: Map<string, {name, appearance, role}>, episodes: number[], names: string[] }}
+ * 世界设定（world）：第 1 集的设定句、前几集的本地化剧情梗概和已出现的地点，本集沿用同一个世界、同名地点。
+ * @returns {{ byName: Map<string, {name, appearance, role}>, episodes: number[], names: string[],
+ *   world: { setting: string, story: string[], places: Array<{location, time, visual}> } }}
  */
 function seriesLocalizationLock(db, owner, work, target, { storageRoot, log } = {}) {
-  const byName = new Map();
-  const episodes = [];
-  const names = new Set();
-  if (!work?.project_id) return { byName, episodes, names: [] };
+  const lock = emptySeriesLock();
+  if (!work?.project_id) return lock;
   const { loadRedrawSource } = require('./redrawFactoryImportService');
   const root = storageRoot || defaultStorageRoot();
+  const names = new Set();
+  const places = new Set();
   for (const workId of seriesCast.earlierWorks(db, work)) {
     try {
       // 只认前几集当前分析结果对应的转绘版本；重新分析过的集，旧版本的角色编号已对不上。
       const source = loadRedrawSource(db, owner, workId, root);
-      const version = readyVersion(db, owner, source.work, source.sourceVersion, target);
+      const version = seriesVersion(db, owner, source.work, source.sourceVersion, target);
       if (!version) continue;
       const nameMap = parseJson(version.name_map_json, {});
-      const culture = parseJson(version.culture_map_json, {})?.characters || {};
+      const culture = parseJson(version.culture_map_json, {}) || {};
+      const cultureCharacters = culture.characters || {};
       let used = false;
       for (const character of list(source.sourceFacts.characters)) {
         const id = text(character?.id);
-        const locked = { name: text(nameMap[id]), appearance: text(culture[id]?.appearance), role: text(culture[id]?.role) };
+        const locked = { name: text(nameMap[id]), appearance: text(cultureCharacters[id]?.appearance), role: text(cultureCharacters[id]?.role) };
         if (!locked.name) continue;
         names.add(locked.name);
         for (const key of [character.source_name, character.display_name].map(text).filter(Boolean)) {
-          if (!byName.has(key)) { byName.set(key, locked); used = true; }
+          if (!lock.byName.has(key)) { lock.byName.set(key, locked); used = true; }
         }
       }
-      if (used) episodes.push(workId);
+      if (used) lock.episodes.push(workId);
+      // 设定以最早一集为准；梗概按集保留；地点按"地点 + 时间"去重。
+      if (!lock.world.setting && text(culture.setting)) lock.world.setting = text(culture.setting);
+      const story = list(culture.story).map(text).filter(Boolean).join('');
+      if (story) lock.world.story.push(story.slice(0, MAX_WORLD_STORY_CHARS));
+      for (const scene of Object.values(culture.scenes || {})) {
+        const location = text(scene?.location);
+        const key = `${location}|${text(scene?.time)}`;
+        if (!location || places.has(key) || lock.world.places.length >= MAX_WORLD_PLACES) continue;
+        places.add(key);
+        lock.world.places.push({ location, time: text(scene?.time), visual: text(scene?.visual).slice(0, 160) });
+      }
     } catch (error) {
       log?.info?.('[整部剧] 前一集的转绘结果读不到，跳过锁定', { work_id: workId, code: error?.code || null });
     }
   }
-  return { byName, episodes, names: [...names] };
+  lock.names = [...names];
+  lock.world.story = lock.world.story.slice(-MAX_WORLD_STORY_EPISODES);
+  return lock;
 }
 
 // 读取锁定失败（例如配置或文件异常）不能挡住本集转绘：记日志，按单集转绘处理。
@@ -251,8 +286,66 @@ function safeSeriesLock(db, owner, work, target, options = {}) {
     return seriesLocalizationLock(db, owner, work, target, options);
   } catch (error) {
     options.log?.warn?.('[整部剧] 读取前几集转绘结果失败，本集按单集转绘', { work_id: work?.id, code: error?.code || null, message: error?.message });
-    return { byName: new Map(), episodes: [], names: [] };
+    return emptySeriesLock();
   }
+}
+
+// 整部剧：设定句直接用第 1 集的，保证每个镜头提示词里的"故事发生在……"各集一致。
+function applySeriesWorld(parsed, world) {
+  const setting = text(world?.setting);
+  return setting ? { ...(parsed || {}), setting } : parsed;
+}
+
+// 场景和道具要用简体中文写：引号外出现的拉丁字母单词，只允许是角色名字（本集新名字、沿用的名字、前几集用过的名字）。
+// 引号里的是招牌、标语等画面文字，可以是目标语言。单个字母（T恤、U盘）不算。
+const QUOTED_TEXT = /“[^”]*”|"[^"]*"|「[^」]*」|『[^』]*』|‘[^’]*’/g;
+const LATIN_WORD = /[A-Za-zÀ-ÖØ-öø-ɏ]{2,}/g;
+
+function knownNameWords(parsed, series = {}) {
+  const names = [
+    ...list(parsed?.characters).map((character) => text(character?.name)),
+    ...Object.values(series.locked || {}).map((value) => text(value?.name)),
+    ...list(series.taken).map(text),
+  ];
+  return new Set(names.flatMap((name) => name.split(/[\s'’-]+/)).map((word) => word.toLowerCase()).filter(Boolean));
+}
+
+function foreignWords(value, known) {
+  const outside = text(value).replace(QUOTED_TEXT, ' ');
+  return (outside.match(LATIN_WORD) || []).filter((word) => !known.has(word.toLowerCase()));
+}
+
+function foreignTextItems(compact, parsed, series) {
+  const known = knownNameWords(parsed, series);
+  const byId = (items) => new Map(list(items).filter((item) => item && text(item.id)).map((item) => [text(item.id), item]));
+  const scenes = byId(parsed?.scenes);
+  const props = byId(parsed?.props);
+  return {
+    scenes: compact.scenes.filter((scene) => {
+      const out = scenes.get(scene.id);
+      return Boolean(out) && [out.location, out.time, out.visual].some((value) => foreignWords(value, known).length);
+    }),
+    props: compact.props.filter((prop) => {
+      const out = props.get(prop.id);
+      return Boolean(out) && foreignWords(out.name, known).length > 0;
+    }),
+  };
+}
+
+// 场景、道具里夹了英文或剧中没有的人名：并入"要补问"的条目，一起再问一次（不重新收费）。
+function withForeignText(missing, compact, parsed, series) {
+  const foreign = foreignTextItems(compact, parsed, series);
+  const count = foreign.scenes.length + foreign.props.length;
+  if (!count) return missing;
+  const names = list(parsed?.characters).filter((item) => item && text(item.id) && text(item.name))
+    .map((item) => ({ id: text(item.id), name: text(item.name) }));
+  return {
+    ...missing,
+    scenes: foreign.scenes,
+    props: foreign.props,
+    character_names: names,
+    count: missing.count + count,
+  };
 }
 
 function normalizedName(value) {
@@ -351,7 +444,7 @@ function renameConflictedCharacters(before, after, ids, locked) {
   return renameTextFields(after, renames);
 }
 
-function buildPrompt(target, compact, locked = {}, taken = []) {
+function buildPrompt(target, compact, locked = {}, taken = [], world = {}) {
   const system = [
     'Return strict JSON only.',
     `You are fully re-localizing a short drama for ${target.country_en}. The finished drama must look and sound as if it were made in ${target.country_en} for ${target.country_en} viewers.`,
@@ -361,6 +454,7 @@ function buildPrompt(target, compact, locked = {}, taken = []) {
     `characters: exactly one entry for EVERY supplied id, including groups and crowds, never skip one. name is a natural first name common in ${target.country_en} written as locals write it; for unnamed roles (mother, father, an athlete on TV) use a short natural ${target.language_en} role label, and for a group of people use a short plural ${target.language_en} label (for example the equivalent of "classmates"); these labels are used as the character's name, so capitalize them the way a name is written (for example "Mamá", "Compañeros"). appearance describes a person from ${target.country_en}: apparent age, build, skin tone, face, hair, and ${target.country_en}-style clothing that keeps the same story role; write appearance in Simplified Chinese and never mention the old name. role is a short Simplified Chinese description of the person's place in the story using the new names.`,
     `scenes: one entry for every supplied id; move the place to ${target.country_en}: location is a short, natural Simplified Chinese place name that a native Chinese screenwriter would write (for example "中学小卖部门口", "老街区铁门外", "家中餐厅"), never a word-by-word translation of the source wording (not "学校门面入口"), time is the time of day in Simplified Chinese, visual describes ${target.country_en} architecture, signage in ${target.language_en}, street details, lighting and palette in Simplified Chinese; no Chinese characters on signs.`,
     'props: one entry for every supplied id; Simplified Chinese name of the equivalent local object.',
+    'In scenes and props, refer to people only by their new names from characters (or locked_characters), and put any sign or on-screen wording inside quotation marks; everything else is Simplified Chinese.',
     `lines: one entry for every supplied subtitle key; translate the line into natural spoken ${target.language_en} as used in ${target.country_en}, same meaning, tone and length, replacing any old character names with the new names. screen_texts: same for on-screen text keys.`,
     `story: the supplied story retold as the plot of the ${target.country_en} drama, written in Simplified Chinese (not in ${target.language_en}; only the new names keep their own spelling), one paragraph per supplied story entry, same events in the same order, using only the new names and the new places; never use any old name (source_name or display_name) and never mention subtitles, captions or on-screen text, tell what the characters say or intend instead. episode_hook: the supplied episode_hook retold the same way in one Simplified Chinese sentence.`,
     `setting: one Simplified Chinese sentence stating the story takes place in ${target.country_en} and all people are from ${target.country_en}.`,
@@ -374,9 +468,22 @@ function buildPrompt(target, compact, locked = {}, taken = []) {
   if (namesInUse.length) {
     system.push('names_in_use are the names of people in earlier episodes of the same series: every character that is not in locked_characters is a different person and must get a name that is not in names_in_use.');
   }
+  const seriesSetting = text(world.setting);
+  const previousStory = list(world.story).map(text).filter(Boolean);
+  const knownPlaces = list(world.places).filter((place) => text(place?.location));
+  if (seriesSetting || previousStory.length || knownPlaces.length) {
+    system.push('This episode continues a series: series_setting and previous_story describe the world and the plot of earlier episodes. Keep this episode in the same world, with the same institutions, organizations, families and recurring places, and never move it to a different kind of place.');
+  }
+  if (seriesSetting) system.push('Return exactly series_setting as setting.');
+  if (knownPlaces.length) {
+    system.push('known_places are places already shown in earlier episodes: when a scene of this episode happens in one of them, return exactly the same location and time and a matching visual.');
+  }
   const series = {
     ...(lockedList.length ? { locked_characters: lockedList } : {}),
     ...(namesInUse.length ? { names_in_use: namesInUse } : {}),
+    ...(seriesSetting ? { series_setting: seriesSetting } : {}),
+    ...(previousStory.length ? { previous_story: previousStory } : {}),
+    ...(knownPlaces.length ? { known_places: knownPlaces } : {}),
   };
   return { system: system.join('\n'), user: JSON.stringify({ ...compact, ...series }) };
 }
@@ -427,14 +534,24 @@ function missingItems(target, compact, parsed) {
 }
 
 function buildRepairPrompt(target, compact, missing) {
-  const base = buildPrompt(target, compact, {}, missing.names_in_use || []);
+  const world = missing.world || {};
+  const base = buildPrompt(target, compact, {}, missing.names_in_use || [], world);
+  const foreign = list(missing.scenes).length + list(missing.props).length;
   return {
-    system: `${base.system}\nYour previous answer left out or broke the items below. Return the same JSON shape containing only these items, completed.`,
+    system: `${base.system}\nYour previous answer left out or broke the items below. Return the same JSON shape containing only these items, completed.${foreign
+      ? '\nThe scenes and props below contained English words or names of people who are not characters: rewrite their location, time, visual and name in Simplified Chinese, refer to people only by the names in character_names, and keep sign wording inside quotation marks.'
+      : ''}`,
     user: JSON.stringify({
       characters: missing.characters,
       subtitles: missing.subtitles,
       need_setting: missing.setting,
       ...(list(missing.names_in_use).length ? { names_in_use: missing.names_in_use } : {}),
+      ...(list(missing.scenes).length ? { scenes: missing.scenes } : {}),
+      ...(list(missing.props).length ? { props: missing.props } : {}),
+      ...(list(missing.character_names).length ? { character_names: missing.character_names } : {}),
+      ...(text(world.setting) ? { series_setting: text(world.setting) } : {}),
+      ...(list(world.story).length ? { previous_story: list(world.story) } : {}),
+      ...(list(world.places).length ? { known_places: list(world.places) } : {}),
       // 重写梗概需要知道原名与新名字的对应，所以把全部角色和原梗概一起给。
       ...(missing.story ? {
         need_story: true,
@@ -453,8 +570,14 @@ function mergeOutputs(first, repair) {
   for (const item of list(repair?.characters)) if (item && text(item.id)) characters.set(text(item.id), item);
   const lines = byId(first?.lines, 'key');
   for (const item of list(repair?.lines)) if (item && text(item.key)) lines.set(text(item.key), item);
+  const scenes = byId(first?.scenes, 'id');
+  for (const item of list(repair?.scenes)) if (item && text(item.id)) scenes.set(text(item.id), { ...(scenes.get(text(item.id)) || {}), ...item });
+  const props = byId(first?.props, 'id');
+  for (const item of list(repair?.props)) if (item && text(item.id)) props.set(text(item.id), { ...(props.get(text(item.id)) || {}), ...item });
   merged.characters = [...characters.values()];
   merged.lines = [...lines.values()];
+  merged.scenes = [...scenes.values()];
+  merged.props = [...props.values()];
   if (!text(merged.setting) && text(repair?.setting)) merged.setting = repair.setting;
   if (list(repair?.story).map(text).some(Boolean)) {
     merged.story = repair.story;
@@ -564,7 +687,7 @@ function insertVersion(db, owner, work, sourceVersion, target, model, output, ta
 
 async function runLocalization(db, log, ctx, deps) {
   const { owner, work, sourceVersion, sourceFacts, target, model, taskId, reservationId } = ctx;
-  const lock = ctx.seriesLock || { byName: new Map(), episodes: [], names: [] };
+  const lock = ctx.seriesLock || emptySeriesLock();
   const task = { id: taskId, credit_reservation_id: reservationId };
   try {
     taskService.updateTaskStatus(db, taskId, 'processing', 30, '正在生成目标国家的名字、形象与台词');
@@ -581,19 +704,33 @@ async function runLocalization(db, log, ctx, deps) {
       }
     };
     const locked = lockedCharacters(compact, lock);
+    const world = lock.world || {};
     const series = { locked, taken: list(lock.names) };
-    let parsed = applyLockedCharacters(await ask(buildPrompt(target, compact, locked, series.taken)), locked);
-    const missing = withNameConflicts(missingItems(target, compact, parsed), target, compact, parsed, series);
+    let parsed = applySeriesWorld(applyLockedCharacters(await ask(buildPrompt(target, compact, locked, series.taken, world)), locked), world);
+    const missing = withForeignText(
+      withNameConflicts(missingItems(target, compact, parsed), target, compact, parsed, series), compact, parsed, series,
+    );
     if (missing.count) {
       log?.warn?.('redraw factory localization repairing missing items', {
         task_id: taskId, characters: missing.characters.map((c) => c.id), lines: missing.subtitles.length, setting: missing.setting,
+        scenes: list(missing.scenes).map((scene) => scene.id), props: list(missing.props).map((prop) => prop.id),
       });
       taskService.updateTaskStatus(db, taskId, 'processing', 70, '正在补全遗漏的名字、形象或台词');
-      const merged = mergeOutputs(parsed, await ask(buildRepairPrompt(target, compact, missing)));
-      parsed = applyLockedCharacters(renameConflictedCharacters(parsed, merged, list(missing.renamed_ids), locked), locked);
+      const merged = mergeOutputs(parsed, await ask(buildRepairPrompt(target, compact, { ...missing, world })));
+      parsed = applySeriesWorld(applyLockedCharacters(renameConflictedCharacters(parsed, merged, list(missing.renamed_ids), locked), locked), world);
+      const leftover = foreignTextItems(compact, parsed, series);
+      if (leftover.scenes.length || leftover.props.length) {
+        log?.warn?.('redraw factory localization still has foreign text after repair', {
+          task_id: taskId, scenes: leftover.scenes.map((scene) => scene.id), props: leftover.props.map((prop) => prop.id),
+        });
+      }
     }
     const output = validateOutput(target, compact, parsed, series);
-    output.seriesLock = { episodes: lock.episodes, locked_character_ids: Object.keys(locked) };
+    output.seriesLock = {
+      episodes: lock.episodes,
+      locked_character_ids: Object.keys(locked),
+      world: { setting: Boolean(text(world.setting)), story_episodes: list(world.story).length, places: list(world.places).length },
+    };
     const versionId = db.transaction(() => {
       const id = insertVersion(db, owner, work, sourceVersion, target, model, output, taskId, reservationId);
       taskService.updateTaskResult(db, taskId, { version_id: id, target: target.key });

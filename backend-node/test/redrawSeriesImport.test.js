@@ -456,3 +456,26 @@ test('追加的集复制新角色图时不覆盖项目里已有的同名文件',
     cleanup(t);
   }
 });
+
+test('第 2 集沿用第 1 集的设定句，并带上前几集的梗概和已出现的地点', async () => {
+  const t = setup();
+  try {
+    await importFirstEpisode(t);
+    const ep1Setting = episodeOneOutput().setting;
+    const ep2 = seedEpisode(t, episodeTwoFacts(), '2026-09-29T02:00:00.000Z');
+    t.replies.push({ ...episodeTwoOutput(), setting: '故事发生在瓜达拉哈拉的一所剑术学院，所有人物都是墨西哥人。' });
+    const ready = await localize(t, ep2);
+    assert.equal(ready.body.data.status, 'ready', JSON.stringify(ready.body.data));
+    const ask = t.prompts[1];
+    assert.equal(ask.user.series_setting, ep1Setting);
+    assert.match(ask.user.previous_story[0], /Diego在墨西哥城街角小卖部被Mateo嘲笑/);
+    assert.deepEqual(ask.user.known_places.map((place) => place.location).sort(), ['卧室', '街角小卖部门口']);
+    assert.match(ask.system, /Keep this episode in the same world/);
+    assert.match(ask.system, /Return exactly series_setting as setting/);
+    const row = t.db.prepare('SELECT culture_map_json, localization_model_snapshot_json FROM redraw_versions WHERE id = ?').get(ready.body.data.version_id);
+    assert.equal(JSON.parse(row.culture_map_json).setting, ep1Setting, 'the setting line stays the same across the series');
+    assert.deepEqual(JSON.parse(row.localization_model_snapshot_json).series_lock.world, { setting: true, story_episodes: 1, places: 2 });
+  } finally {
+    cleanup(t);
+  }
+});
