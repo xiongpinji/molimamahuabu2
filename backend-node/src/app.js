@@ -22,7 +22,6 @@ function startBackgroundServices(options) {
   const providerCanary = options.providerCanary
     || require('./services/providerCanarySchedulerService');
   const providerPricing = options.providerPricing;
-  const redrawVoiceAutoBind = options.redrawVoiceAutoBind;
   const env = options.env || process.env;
   providerReconciliation.startProviderReconciliation(options.db, options.log, {
     intervalMs: Number(env.PROVIDER_RECONCILIATION_INTERVAL_MS) || 60_000,
@@ -40,13 +39,6 @@ function startBackgroundServices(options) {
       intervalMs: Number(env.PROVIDER_PRICING_SYNC_INTERVAL_MS) || 6 * 60 * 60 * 1000,
     });
   }
-  if (redrawVoiceAutoBind?.startRedrawVoiceAutoBind) {
-    // 样片转绘项目：定音镜头生成后自动提取并沿用角色音色；设为 0 关闭。
-    const voiceIntervalMs = env.REDRAW_VOICE_AUTO_BIND_INTERVAL_MS == null || env.REDRAW_VOICE_AUTO_BIND_INTERVAL_MS === ''
-      ? redrawVoiceAutoBind.DEFAULT_INTERVAL_MS
-      : Number(env.REDRAW_VOICE_AUTO_BIND_INTERVAL_MS);
-    redrawVoiceAutoBind.startRedrawVoiceAutoBind(options.db, options.log, { intervalMs: voiceIntervalMs, cfg: options.config });
-  }
   return {
     stop() {
       const stopped = {
@@ -55,9 +47,6 @@ function startBackgroundServices(options) {
       };
       if (providerPricing?.stopProviderPricingSync) {
         stopped.pricing = providerPricing.stopProviderPricingSync();
-      }
-      if (redrawVoiceAutoBind?.stopRedrawVoiceAutoBind) {
-        stopped.redrawVoice = redrawVoiceAutoBind.stopRedrawVoiceAutoBind();
       }
       return stopped;
     },
@@ -178,8 +167,6 @@ function createApp() {
     storageRoot,
     healthUrl: `http://${healthUrlHost}:${config.server.port}/health`,
     providerPricing: require('./services/providerPricingSyncSchedulerService'),
-    redrawVoiceAutoBind: require('./services/redrawVoiceAutoBindService'),
-    config,
   });
 
   const app = configureTrustedProxy(express());
