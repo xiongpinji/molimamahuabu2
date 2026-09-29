@@ -22,8 +22,8 @@ const { stageReferenceClips, registerStagedReferenceClips } = require('./redrawS
 const IMPORT_SCHEMA_VERSION = 'redraw-factory-import@1';
 // 完全转绘生产包的版本：生产包内容一变就加 1，旧版本号的导入不再复用，重新导入会建新项目。
 // 2：带目标语言台词、去掉字幕描述、不提交原片参考；3：分镜地点与时间改用本地化场景；4：剧集剧本用本地化剧情梗概；
-// 5：台词补全说话人、标出定音镜头并开启首次对白音色自动沿用。
-const FULL_LOCALIZATION_PACKAGE_VERSION = 5;
+// 5：台词补全说话人、标出定音镜头并开启首次对白音色自动沿用；6：说话人只按原文完全相同的画面内对白补，不再按单一说话人推断。
+const FULL_LOCALIZATION_PACKAGE_VERSION = 6;
 
 function codedError(code, message) {
   return Object.assign(new Error(message), { code });

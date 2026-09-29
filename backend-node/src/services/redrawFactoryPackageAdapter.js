@@ -255,15 +255,14 @@ function primarySceneId(facts, shot) {
   return best;
 }
 
-// 字幕没标说话人时，用同镜头的对白条目补：对白条目只保留画面里的说话人（画外音已在分析时丢弃），
-// 所以先按原文对上，其次镜头里只有一个说话人时归给他；都不满足就不标，绝不猜画外音。
+// 字幕没标说话人时，只用原文完全相同的画面内对白条目补（画外音条目已在分析时丢弃）。
+// 不能因为"镜头里只有一个人说话"就把其它字幕都归给他：同镜头的画外台词（例如别人喊他的名字）会被错归，
+// 定音镜头就会混进别人的声音。对不上的字幕不标说话人，该镜头也不会当定音镜头。
 function regionSpeakerId(shot, region) {
   if (text(region?.speaker_id)) return text(region.speaker_id);
-  const turns = list(shot.dialogue).filter((turn) => text(turn?.speaker_id));
-  const same = turns.find((turn) => text(turn.source_text) && text(turn.source_text) === text(region?.source_text));
-  if (same) return text(same.speaker_id);
-  const speakers = [...new Set(turns.map((turn) => text(turn.speaker_id)))];
-  return speakers.length === 1 ? speakers[0] : '';
+  const same = list(shot.dialogue).find((turn) => text(turn?.speaker_id)
+    && text(turn.source_text) && text(turn.source_text) === text(region?.source_text));
+  return same ? text(same.speaker_id) : '';
 }
 
 function shotTextRegions(shot, localization, names) {
