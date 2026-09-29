@@ -331,8 +331,9 @@ function mapShot(facts, shot, {
   };
 }
 
-function groupShotsByScene(facts, mapped) {
+function groupShotsByScene(mapped, scenes) {
   // 连续且主场景相同的镜头合并为同一场；只用 scene_id 引用，不设 scene_number，避免引用键串场。
+  // 地点与时间取已本地化的场景（完全转绘时是目标国家的地点），分镜上显示的地点才和场景一致。
   const groups = [];
   for (const { shot, sceneId } of mapped) {
     const last = groups[groups.length - 1];
@@ -340,10 +341,11 @@ function groupShotsByScene(facts, mapped) {
       last.shots.push(shot);
       continue;
     }
-    const scene = list(facts.scenes).find((item) => text(item.id) === sceneId);
+    const scene = scenes.find((item) => item.scene_id === sceneId);
     groups.push({
       scene_id: sceneId || `shot-group-${groups.length + 1}`,
-      location: text(scene?.location) || undefined,
+      // 场景没有地点时 mapScenes 会用编号兜底，分镜上不显示编号。
+      location: (scene && scene.location !== scene.scene_id ? text(scene.location) : '') || undefined,
       time: text(scene?.time) || undefined,
       shots: [shot],
     });
@@ -471,6 +473,7 @@ function buildRedrawFactoryPackage({
     });
   const characters = mapCharacters(facts, names, glossary, characterImages, culture)
     .map((character) => (style.negative ? { ...character, negative_prompt: style.negative } : character));
+  const scenes = mapScenes(facts, style, glossary, names, culture);
   const story = list(facts.story).map((line) => localizeText(line, names, glossary)).filter(Boolean);
   return {
     source: { title, locked_facts: list(facts.locked_facts).map((line) => localizeText(line, names, glossary)) },
@@ -480,13 +483,13 @@ function buildRedrawFactoryPackage({
       target_duration_seconds: Math.round(Number(facts.duration_ms || 0) / 1000),
     },
     characters,
-    scenes: mapScenes(facts, style, glossary, names, culture),
+    scenes,
     props: mapProps(facts, style, glossary, names, culture).filter((prop) => selectedPropIds.has(prop.prop_id)),
     episodes: [{
       episode_number: 1,
       title: title || '第 1 集',
       description: localizeText(facts.episode_hook, names, glossary) || null,
-      scenes: groupShotsByScene(facts, mappedShots),
+      scenes: groupShotsByScene(mappedShots, scenes),
     }],
     continuity_rules: [...list(facts.causal_chain), ...list(facts.reversals)].map((line) => localizeText(line, names, glossary)),
   };

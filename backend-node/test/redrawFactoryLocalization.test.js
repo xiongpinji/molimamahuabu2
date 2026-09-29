@@ -94,6 +94,11 @@ test('adapter turns a full localization into target-country names, looks, places
   assert.equal(pkg.scenes[0].location, '街角小卖部门口');
   assert.match(pkg.scenes[0].prompt, /故事发生在墨西哥城，所有人物都是墨西哥人。 街角小卖部门口，白天。 墨西哥城街角/);
   assert.equal(pkg.props[0].name, '一枚比索硬币');
+  assert.deepEqual(
+    pkg.episodes[0].scenes.map((group) => group.location),
+    ['街角小卖部门口', '卧室'],
+    'storyboard groups show the localized place, not the source one',
+  );
   const [first, second] = pkg.episodes[0].scenes.flatMap((group) => group.shots);
   assert.equal(first.dialogue, 'Diego：¿Y tú quién eres?');
   assert.match(first.description, /画面文字：「Abarrotes」/);
