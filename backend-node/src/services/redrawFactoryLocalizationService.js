@@ -17,6 +17,7 @@ const creditLedger = require('./creditLedgerService');
 const modelPrice = require('./modelPriceService');
 const taskService = require('./taskService');
 const capabilityService = require('./redrawCapabilityService');
+const seriesCast = require('./redrawSeriesCastService');
 
 const KIND = 'factory_localization@1';
 // 本地化结果的内容版本：结果里多了必须有的内容就加 1，旧版本不再算"已生成"，用户可以重新生成（重新收费）。
@@ -200,7 +201,157 @@ function compactFacts(facts) {
   };
 }
 
-function buildPrompt(target, compact) {
+function defaultStorageRoot() {
+  const raw = require('../config').loadConfig()?.storage?.local_path || './data/storage';
+  return require('path').isAbsolute(raw) ? raw : require('path').join(process.cwd(), raw);
+}
+
+/**
+ * 整部剧：同一转绘项目里前几集已完成的同目标完全转绘版本，把每个角色（按原名）的本地化名字、形象、身份锁定下来。
+ * 本集遇到同一个人就沿用，不让模型重新起名、重画形象。读不到的前几集跳过，不影响本集。
+ * 同时收集前几集用过的全部新名字（names），本集的新角色不能再用，否则工厂里会被当成同一个人、音色也会串。
+ * @returns {{ byName: Map<string, {name, appearance, role}>, episodes: number[], names: string[] }}
+ */
+function seriesLocalizationLock(db, owner, work, target, { storageRoot, log } = {}) {
+  const byName = new Map();
+  const episodes = [];
+  const names = new Set();
+  if (!work?.project_id) return { byName, episodes, names: [] };
+  const { loadRedrawSource } = require('./redrawFactoryImportService');
+  const root = storageRoot || defaultStorageRoot();
+  for (const workId of seriesCast.earlierWorks(db, work)) {
+    try {
+      // 只认前几集当前分析结果对应的转绘版本；重新分析过的集，旧版本的角色编号已对不上。
+      const source = loadRedrawSource(db, owner, workId, root);
+      const version = readyVersion(db, owner, source.work, source.sourceVersion, target);
+      if (!version) continue;
+      const nameMap = parseJson(version.name_map_json, {});
+      const culture = parseJson(version.culture_map_json, {})?.characters || {};
+      let used = false;
+      for (const character of list(source.sourceFacts.characters)) {
+        const id = text(character?.id);
+        const locked = { name: text(nameMap[id]), appearance: text(culture[id]?.appearance), role: text(culture[id]?.role) };
+        if (!locked.name) continue;
+        names.add(locked.name);
+        for (const key of [character.source_name, character.display_name].map(text).filter(Boolean)) {
+          if (!byName.has(key)) { byName.set(key, locked); used = true; }
+        }
+      }
+      if (used) episodes.push(workId);
+    } catch (error) {
+      log?.info?.('[整部剧] 前一集的转绘结果读不到，跳过锁定', { work_id: workId, code: error?.code || null });
+    }
+  }
+  return { byName, episodes, names: [...names] };
+}
+
+// 读取锁定失败（例如配置或文件异常）不能挡住本集转绘：记日志，按单集转绘处理。
+function safeSeriesLock(db, owner, work, target, options = {}) {
+  try {
+    return seriesLocalizationLock(db, owner, work, target, options);
+  } catch (error) {
+    options.log?.warn?.('[整部剧] 读取前几集转绘结果失败，本集按单集转绘', { work_id: work?.id, code: error?.code || null, message: error?.message });
+    return { byName: new Map(), episodes: [], names: [] };
+  }
+}
+
+function normalizedName(value) {
+  return text(value).toLowerCase().replace(/[\s　]+/g, '');
+}
+
+// 整部剧：不在锁定名单里的角色是新的人，名字不能和前几集的任何人相同。
+function nameConflicts(compact, names, { locked = {}, taken = [] } = {}) {
+  const used = new Set(list(taken).map(normalizedName).filter(Boolean));
+  if (!used.size) return [];
+  return compact.characters
+    .filter((character) => !locked[character.id])
+    .map((character) => ({ id: character.id, name: text(names[character.id]) }))
+    .filter((item) => item.name && used.has(normalizedName(item.name)));
+}
+
+// 重名的新角色并入"要补问"的条目，一起再问一次（不重新收费）。
+function withNameConflicts(missing, target, compact, parsed, series) {
+  const taken = list(series?.taken).map(text).filter(Boolean);
+  if (!taken.length) return missing;
+  const names = Object.fromEntries(list(parsed?.characters).filter((item) => item && text(item.id))
+    .map((item) => [text(item.id), capitalizeName(text(item.name), target.locale)]));
+  const listed = new Set(missing.characters.map((character) => character.id));
+  const extra = nameConflicts(compact, names, series)
+    .map((item) => compact.characters.find((character) => character.id === item.id))
+    .filter((character) => character && !listed.has(character.id));
+  return {
+    ...missing,
+    characters: [...missing.characters, ...extra],
+    count: missing.count + extra.length,
+    names_in_use: taken,
+    renamed_ids: nameConflicts(compact, names, series).map((item) => item.id),
+  };
+}
+
+/** 本集角色里能在前几集找到的，给出锁定的名字、形象、身份（按本集角色 id）。 */
+function lockedCharacters(compact, lock) {
+  const locked = {};
+  for (const character of compact.characters) {
+    const hit = [character.source_name, character.display_name].map(text).filter(Boolean).map((key) => lock.byName.get(key)).find(Boolean);
+    if (hit) locked[character.id] = hit;
+  }
+  return locked;
+}
+
+// 名字前后不能紧挨拉丁字母（避免把 Ana 换进 Anabel）；中文紧挨名字不影响。
+const NAME_EDGE = 'A-Za-zÀ-ÖØ-öø-ɏ';
+
+function renameAll(value, renames) {
+  if (typeof value !== 'string' || !renames.size) return value;
+  const names = [...renames.keys()].sort((a, b) => b.length - a.length)
+    .map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const pattern = new RegExp(`(?<![${NAME_EDGE}])(${names.join('|')})(?![${NAME_EDGE}])`, 'g');
+  // 一次替换全部名字，两个角色被模型互换了名字也不会连锁换错。
+  return value.replace(pattern, (match) => renames.get(match) || match);
+}
+
+// 台词、屏幕文字、梗概和钩子里的旧名字换成新名字。
+function renameTextFields(parsed, renames) {
+  if (!renames.size) return parsed;
+  const out = { ...parsed };
+  const renameTexts = (items) => list(items).map((item) => (item && typeof item.text === 'string' ? { ...item, text: renameAll(item.text, renames) } : item));
+  if (Array.isArray(out.lines)) out.lines = renameTexts(out.lines);
+  if (Array.isArray(out.screen_texts)) out.screen_texts = renameTexts(out.screen_texts);
+  if (Array.isArray(out.story)) out.story = out.story.map((line) => renameAll(line, renames));
+  if (typeof out.episode_hook === 'string') out.episode_hook = renameAll(out.episode_hook, renames);
+  return out;
+}
+
+// 锁定的角色直接用前几集的结果覆盖模型输出，保证整部剧同一个人名字、形象不变；
+// 模型给他起了别的名字时，台词、屏幕文字、梗概和钩子里的那个名字也一并换回锁定的名字。
+function applyLockedCharacters(parsed, locked) {
+  if (!Object.keys(locked).length) return parsed;
+  const byId = new Map(list(parsed?.characters).filter((item) => item && text(item.id)).map((item) => [text(item.id), item]));
+  const renames = new Map();
+  for (const [id, value] of Object.entries(locked)) {
+    const previous = text(byId.get(id)?.name);
+    if (previous && previous !== value.name) renames.set(previous, value.name);
+    byId.set(id, { ...(byId.get(id) || {}), id, name: value.name, appearance: value.appearance || byId.get(id)?.appearance, role: value.role || byId.get(id)?.role });
+  }
+  return renameTextFields({ ...(parsed || {}), characters: [...byId.values()] }, renames);
+}
+
+// 因和前几集重名而补问改了名的新角色：第一次回答里的台词、梗概还用着旧名字，一并换成新名字。
+// 旧名字恰好也是本集锁定角色的名字时分不清指的是谁，不换。
+function renameConflictedCharacters(before, after, ids, locked) {
+  const lockedNames = new Set(Object.values(locked).map((value) => value.name));
+  const oldNames = new Map(list(before?.characters).filter((item) => item && text(item.id)).map((item) => [text(item.id), text(item.name)]));
+  const renames = new Map();
+  for (const item of list(after?.characters)) {
+    const id = text(item?.id);
+    const previous = oldNames.get(id);
+    const next = text(item?.name);
+    if (ids.includes(id) && previous && next && previous !== next && !lockedNames.has(previous)) renames.set(previous, next);
+  }
+  return renameTextFields(after, renames);
+}
+
+function buildPrompt(target, compact, locked = {}, taken = []) {
   const system = [
     'Return strict JSON only.',
     `You are fully re-localizing a short drama for ${target.country_en}. The finished drama must look and sound as if it were made in ${target.country_en} for ${target.country_en} viewers.`,
@@ -214,8 +365,20 @@ function buildPrompt(target, compact) {
     `story: the supplied story retold as the plot of the ${target.country_en} drama, written in Simplified Chinese (not in ${target.language_en}; only the new names keep their own spelling), one paragraph per supplied story entry, same events in the same order, using only the new names and the new places; never use any old name (source_name or display_name) and never mention subtitles, captions or on-screen text, tell what the characters say or intend instead. episode_hook: the supplied episode_hook retold the same way in one Simplified Chinese sentence.`,
     `setting: one Simplified Chinese sentence stating the story takes place in ${target.country_en} and all people are from ${target.country_en}.`,
     'Do not add, drop or rename ids or keys.',
-  ].join('\n');
-  return { system, user: JSON.stringify(compact) };
+  ];
+  const lockedList = Object.entries(locked).map(([id, value]) => ({ id, ...value }));
+  const namesInUse = list(taken).map(text).filter(Boolean);
+  if (lockedList.length) {
+    system.push('locked_characters appeared in earlier episodes of the same series: return each of them with exactly the given name, appearance and role, and use these names in lines, screen_texts, story and episode_hook.');
+  }
+  if (namesInUse.length) {
+    system.push('names_in_use are the names of people in earlier episodes of the same series: every character that is not in locked_characters is a different person and must get a name that is not in names_in_use.');
+  }
+  const series = {
+    ...(lockedList.length ? { locked_characters: lockedList } : {}),
+    ...(namesInUse.length ? { names_in_use: namesInUse } : {}),
+  };
+  return { system: system.join('\n'), user: JSON.stringify({ ...compact, ...series }) };
 }
 
 // 原片人名（中文名与拼音名），剧情梗概里出现就说明没换干净。
@@ -264,13 +427,14 @@ function missingItems(target, compact, parsed) {
 }
 
 function buildRepairPrompt(target, compact, missing) {
-  const base = buildPrompt(target, compact);
+  const base = buildPrompt(target, compact, {}, missing.names_in_use || []);
   return {
     system: `${base.system}\nYour previous answer left out or broke the items below. Return the same JSON shape containing only these items, completed.`,
     user: JSON.stringify({
       characters: missing.characters,
       subtitles: missing.subtitles,
       need_setting: missing.setting,
+      ...(list(missing.names_in_use).length ? { names_in_use: missing.names_in_use } : {}),
       // 重写梗概需要知道原名与新名字的对应，所以把全部角色和原梗概一起给。
       ...(missing.story ? {
         need_story: true,
@@ -307,7 +471,7 @@ function capitalizeName(name, locale) {
   return upper === first ? name : `${upper}${name.slice(1)}`;
 }
 
-function validateOutput(target, compact, parsed) {
+function validateOutput(target, compact, parsed, series = {}) {
   const byId = (items) => new Map(list(items).filter((item) => item && text(item.id)).map((item) => [text(item.id), item]));
   const byKey = (items) => new Map(list(items).filter((item) => item && text(item.key)).map((item) => [text(item.key), text(item.text)]));
   const characters = byId(parsed?.characters);
@@ -327,6 +491,10 @@ function validateOutput(target, compact, parsed) {
     if (!appearance) throw codedError('REDRAW_FACTORY_LOCALIZATION_INVALID', `角色 ${character.id} 缺少目标国家形象`);
     nameMap[character.id] = name;
     cultureCharacters[character.id] = { appearance, ...(text(out?.role) ? { role: text(out.role) } : {}) };
+  }
+  const conflict = nameConflicts(compact, nameMap, series)[0];
+  if (conflict) {
+    throw codedError('REDRAW_FACTORY_LOCALIZATION_INVALID', `角色 ${conflict.id} 的名字「${conflict.name}」已被本剧前几集的其他角色使用`);
   }
   const textMap = {};
   for (const line of compact.subtitles) {
@@ -385,7 +553,10 @@ function insertVersion(db, owner, work, sourceVersion, target, model, output, ta
   `).run(
     work.id, owner.tenantId, owner.userId, next, target.locale, target.market,
     JSON.stringify(output.nameMap), JSON.stringify(output.textMap), JSON.stringify(output.cultureMap),
-    JSON.stringify({ kind: KIND, schema: OUTPUT_SCHEMA, model, target: target.key, source_version_id: Number(sourceVersion.id) }),
+    JSON.stringify({
+      kind: KIND, schema: OUTPUT_SCHEMA, model, target: target.key, source_version_id: Number(sourceVersion.id),
+      ...(output.seriesLock?.locked_character_ids?.length ? { series_lock: output.seriesLock } : {}),
+    }),
     taskId, reservationId, sourceVersion.facts_hash, now, now,
   );
   return Number(result.lastInsertRowid);
@@ -393,6 +564,7 @@ function insertVersion(db, owner, work, sourceVersion, target, model, output, ta
 
 async function runLocalization(db, log, ctx, deps) {
   const { owner, work, sourceVersion, sourceFacts, target, model, taskId, reservationId } = ctx;
+  const lock = ctx.seriesLock || { byName: new Map(), episodes: [], names: [] };
   const task = { id: taskId, credit_reservation_id: reservationId };
   try {
     taskService.updateTaskStatus(db, taskId, 'processing', 30, '正在生成目标国家的名字、形象与台词');
@@ -408,16 +580,20 @@ async function runLocalization(db, log, ctx, deps) {
         throw codedError('REDRAW_FACTORY_LOCALIZATION_INVALID', `本地化结果不是合法 JSON：${error.message}`);
       }
     };
-    let parsed = await ask(buildPrompt(target, compact));
-    const missing = missingItems(target, compact, parsed);
+    const locked = lockedCharacters(compact, lock);
+    const series = { locked, taken: list(lock.names) };
+    let parsed = applyLockedCharacters(await ask(buildPrompt(target, compact, locked, series.taken)), locked);
+    const missing = withNameConflicts(missingItems(target, compact, parsed), target, compact, parsed, series);
     if (missing.count) {
       log?.warn?.('redraw factory localization repairing missing items', {
         task_id: taskId, characters: missing.characters.map((c) => c.id), lines: missing.subtitles.length, setting: missing.setting,
       });
       taskService.updateTaskStatus(db, taskId, 'processing', 70, '正在补全遗漏的名字、形象或台词');
-      parsed = mergeOutputs(parsed, await ask(buildRepairPrompt(target, compact, missing)));
+      const merged = mergeOutputs(parsed, await ask(buildRepairPrompt(target, compact, missing)));
+      parsed = applyLockedCharacters(renameConflictedCharacters(parsed, merged, list(missing.renamed_ids), locked), locked);
     }
-    const output = validateOutput(target, compact, parsed);
+    const output = validateOutput(target, compact, parsed, series);
+    output.seriesLock = { episodes: lock.episodes, locked_character_ids: Object.keys(locked) };
     const versionId = db.transaction(() => {
       const id = insertVersion(db, owner, work, sourceVersion, target, model, output, taskId, reservationId);
       taskService.updateTaskResult(db, taskId, { version_id: id, target: target.key });
@@ -433,6 +609,15 @@ async function runLocalization(db, log, ctx, deps) {
   }
 }
 
+// 整部剧：本版本沿用了前几集哪些角色（名字），没有沿用时不返回。
+function seriesLockSummary(version) {
+  const lock = parseJson(version?.localization_model_snapshot_json, {})?.series_lock;
+  const ids = list(lock?.locked_character_ids).map(text).filter(Boolean);
+  if (!ids.length) return {};
+  const names = parseJson(version.name_map_json, {});
+  return { series_lock: { characters: ids.map((id) => text(names[id])).filter(Boolean) } };
+}
+
 /**
  * 查询状态或发起一次完全转绘本地化。
  * @returns {{status:'ready'|'localizing'|'failed'|'none', credits, target, version_id?, task_id?, error?}}
@@ -441,7 +626,7 @@ function localizationStatus(db, { owner, work, sourceVersion, target, canReadArt
   const priced = quote(db, canReadArtifact, target);
   const base = { target: target.key, label: target.label, credits: priced.credits };
   const ready = readyVersion(db, owner, work, sourceVersion, target);
-  if (ready) return { ...base, status: 'ready', version_id: Number(ready.id) };
+  if (ready) return { ...base, status: 'ready', version_id: Number(ready.id), ...seriesLockSummary(ready) };
   const task = settleStaleTask(db, latestTask(db, owner, work, target));
   if (task && ['pending', 'processing'].includes(task.status)) return { ...base, status: 'localizing', task_id: task.id };
   if (task && task.status === 'failed') return { ...base, status: 'failed', task_id: task.id, error: task.error || task.message || null };
@@ -455,6 +640,8 @@ function startLocalization(db, log, { owner, work, sourceVersion, sourceFacts, t
     throw codedError('REDRAW_FACTORY_LOCALIZATION_QUOTE_CHANGED', '转绘本地化报价已变化，请重新确认', { quote: current.credits });
   }
   const { model } = quote(db, canReadArtifact, target);
+  // 整部剧：前几集同目标的转绘结果锁定本集老角色的名字、形象、身份。先于预扣积分读取，读不到就按单集处理。
+  const seriesLock = deps.seriesLock || safeSeriesLock(db, owner, work, target, { storageRoot: deps.storageRoot, log });
   const created = db.transaction(() => {
     creditLedger.ensureSchema(db);
     const reservation = creditLedger.reserve(db, {
@@ -476,7 +663,7 @@ function startLocalization(db, log, { owner, work, sourceVersion, sourceFacts, t
         JSON.stringify({ target: target.key, locale: target.locale, market: target.market }), now, task.id);
     return { taskId: task.id, reservationId: reservation.id };
   })();
-  const ctx = { owner, work, sourceVersion, sourceFacts, target, model, ...created };
+  const ctx = { owner, work, sourceVersion, sourceFacts, target, model, seriesLock, ...created };
   const schedule = deps.schedule || ((job) => new Promise((resolve) => setImmediate(() => resolve(job()))));
   const completion = schedule(() => runLocalization(db, log, ctx, deps));
   taskService.trackInFlightTask(created.taskId, completion);
@@ -485,6 +672,10 @@ function startLocalization(db, log, { owner, work, sourceVersion, sourceFacts, t
 
 module.exports = {
   KIND,
+  seriesLocalizationLock,
+  lockedCharacters,
+  applyLockedCharacters,
+  nameConflicts,
   COUNTRIES_BY_LANGUAGE,
   listTargets,
   resolveTarget,

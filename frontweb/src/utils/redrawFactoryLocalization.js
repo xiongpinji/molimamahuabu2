@@ -34,3 +34,36 @@ export function localizationBody(targets, key, action, extra = {}) {
   if (!target) return null
   return { action, localization: { locale: target.locale, market: target.market }, ...extra }
 }
+
+// 整部剧：同一转绘项目按同一目标国家导入过的短剧工厂项目，本集可以追加进去作为下一集。
+// 默认追加到最近一个还没有本集的项目；都已含本集（例如本集就是第 1 集）时默认新建。
+export function defaultSeriesTarget(targets) {
+  const rows = Array.isArray(targets) ? targets : []
+  return rows.find((item) => item && !item.this_work_episode)?.drama_id || 0
+}
+
+export function seriesTargetLabel(item) {
+  const title = String(item?.title || '').trim() || `项目 #${item?.drama_id}`
+  if (item?.this_work_episode) return `《${title}》（本集已是第 ${item.this_work_episode} 集）`
+  return `追加到《${title}》作为第 ${(Number(item?.episodes) || 0) + 1} 集`
+}
+
+export function seriesLockText(state) {
+  const names = Array.isArray(state?.series_lock?.characters) ? state.series_lock.characters.filter(Boolean) : []
+  return names.length ? `沿用前几集的角色：${names.join('、')}（名字、形象不变）。` : ''
+}
+
+export function importSuccessMessage(result, label = '') {
+  if (result?.appended) {
+    const reused = Array.isArray(result.reused_character_names) ? result.reused_character_names.filter(Boolean) : []
+    const fresh = Array.isArray(result.new_character_names) ? result.new_character_names.filter(Boolean) : []
+    const parts = [`已追加为第 ${result.episode_number} 集`]
+    if (reused.length) parts.push(`沿用角色 ${reused.join('、')}`)
+    if (fresh.length) parts.push(`新角色 ${fresh.join('、')}`)
+    return parts.join('，')
+  }
+  if (result?.created === false) {
+    return result?.episode_number ? `本集已是该项目第 ${result.episode_number} 集，打开短剧工厂项目` : '已导入过，打开现有短剧工厂项目'
+  }
+  return `已按${label || '目标国家'}导入短剧工厂`
+}

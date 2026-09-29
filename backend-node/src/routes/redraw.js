@@ -3740,6 +3740,7 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
 
   // 完全转绘：按目标语言 + 目标国家把名字、形象、台词、场景全部本地化后再导入工厂。
   // 复用导入路由，用 action 区分：targets 列出可选目标、status 查询、start 付费发起、import 导入。
+  // 整部剧：status 同时列出同一转绘项目按同一目标国家导入过的工厂项目；import 带 target_drama_id 时追加为该项目的下一集。
   async function factoryLocalization(req, res, currentOwner, work) {
     const body = req.body || {};
     const action = String(body.action || '').trim();
@@ -3758,15 +3759,24 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
       db, canReadArtifact, body.localization?.locale, body.localization?.market,
     );
     const ctx = { owner: currentOwner, work: source.work, sourceVersion: source.sourceVersion, target, canReadArtifact };
+    const seriesTargets = () => redrawFactoryImportService.listSeriesTargets(db, currentOwner, source.work)
+      .filter((item) => item.locale === target.locale && item.market === target.market);
     if (action === 'status') {
-      return response.success(res, redrawFactoryLocalizationService.localizationStatus(db, ctx));
+      return response.success(res, {
+        ...redrawFactoryLocalizationService.localizationStatus(db, ctx),
+        series_targets: seriesTargets(),
+      });
     }
     if (action === 'start') {
       const { completion, ...started } = redrawFactoryLocalizationService.startLocalization(db, log, {
         ...ctx,
         sourceFacts: source.sourceFacts,
         expectedCredits: body.expected_credits,
-      }, { schedule: options.factoryLocalizationSchedule, generateText: options.factoryLocalizationGenerateText });
+      }, {
+        schedule: options.factoryLocalizationSchedule,
+        generateText: options.factoryLocalizationGenerateText,
+        storageRoot: storageRoot,
+      });
       return started.status === 'ready' ? response.success(res, started) : response.accepted(res, started);
     }
     if (action === 'import') {
@@ -3774,12 +3784,18 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
       if (status.status !== 'ready') {
         return response.error(res, 409, 'REDRAW_FACTORY_LOCALIZATION_NOT_READY', '转绘本地化还没完成，请先生成目标国家版本');
       }
+      const rawTarget = body.target_drama_id;
+      const targetDramaId = rawTarget == null || rawTarget === '' || Number(rawTarget) === 0 ? null : Number(rawTarget);
+      if (targetDramaId !== null && !(Number.isSafeInteger(targetDramaId) && targetDramaId > 0)) {
+        return response.error(res, 400, 'REDRAW_FACTORY_IMPORT_INVALID', '追加的目标项目无效');
+      }
       const result = await redrawFactoryImportService.importRedrawWorkToFactory(db, log, {
         workId: work.id,
         tenantId: currentOwner.tenantId,
         userId: currentOwner.userId,
         storageRoot,
         localizedVersionId: status.version_id,
+        targetDramaId,
       });
       return response.success(res, { ...result, localization: { target: status.target, label: status.label } });
     }
@@ -3808,7 +3824,8 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
       return response.success(res, result);
     } catch (error) {
       if (['REDRAW_FACTORY_ANALYSIS_REQUIRED', 'REDRAW_FACTORY_FACTS_INVALID',
-        'REDRAW_FACTORY_LOCALIZATION_QUOTE_CHANGED', 'REDRAW_FACTORY_LOCALIZATION_NOT_READY'].includes(error?.code)) {
+        'REDRAW_FACTORY_LOCALIZATION_QUOTE_CHANGED', 'REDRAW_FACTORY_LOCALIZATION_NOT_READY',
+        'REDRAW_SERIES_TARGET_INVALID', 'REDRAW_SERIES_NAME_CONFLICT', 'REDRAW_SERIES_EPISODE_EXISTS'].includes(error?.code)) {
         return response.error(res, 409, error.code, error.message, error.quote != null ? { quote: error.quote } : undefined);
       }
       return sendRedrawError(res, error, '导入短剧工厂失败', log, { workId });

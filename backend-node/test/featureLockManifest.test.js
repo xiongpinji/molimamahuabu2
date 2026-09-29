@@ -615,9 +615,33 @@ const REDRAW_FACTORY_IMPORT_UNLOCK_BY_FEATURE = {
   [REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_FEATURE_ID]: redrawFactoryImportUnlock(['backend-node/test/redrawEpisodeFacts.test.js']),
 };
 
-// 2026-09-28 的批准叠加在各锁最上层：先断言它，再把上一条批准还原为"当前"，供原有逐层断言继续校验。
+// 2026-09-29 整部剧导入（跨集本地化锁定与追加导入）只改到 routes/redraw.js，批准叠加在它所在两个锁的最上层。
+const REDRAW_SERIES_IMPORT_UNLOCK = {
+  reason: '2026-09-29 整部剧转绘：跨集本地化锁定与追加导入获批',
+  approvedBy: 'product-owner 2026-09-29 redraw-series-import',
+  impactTests: [
+    'backend-node/test/redrawSeriesImport.test.js',
+    'backend-node/test/redrawFactoryImport.test.js',
+    'backend-node/test/redrawFactoryLocalization.test.js',
+    'backend-node/test/redrawRoutes.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
+const REDRAW_SERIES_IMPORT_FEATURE_IDS = [REDRAW_COVERAGE_HTTP_ROUTE_FEATURE_ID, REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_FEATURE_ID];
+
+function peelRedrawSeriesImport(manifest) {
+  manifest.features = manifest.features.map((feature) => {
+    if (!REDRAW_SERIES_IMPORT_FEATURE_IDS.includes(feature.featureId)) return feature;
+    assert.deepEqual(feature.unlock, REDRAW_SERIES_IMPORT_UNLOCK, `${feature.featureId} 缺少整部剧导入批准`);
+    return { ...feature, unlock: feature.unlockHistory.at(-1), unlockHistory: feature.unlockHistory.slice(0, -1) };
+  });
+  return manifest;
+}
+
+// 2026-09-28 的批准叠加在各锁最上层（整部剧导入那一层先剥掉）：先断言它，再把上一条批准还原为"当前"，供原有逐层断言继续校验。
 function loadManifestBeforeRedrawFactoryImport() {
-  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const manifest = peelRedrawSeriesImport(JSON.parse(fs.readFileSync(manifestPath, 'utf8')));
   manifest.features = manifest.features.map((feature) => {
     const expected = REDRAW_FACTORY_IMPORT_UNLOCK_BY_FEATURE[feature.featureId];
     if (!expected) return feature;
@@ -630,6 +654,20 @@ function loadManifestBeforeRedrawFactoryImport() {
   });
   return manifest;
 }
+
+test('整部剧导入批准只叠加在 routes/redraw.js 所在的两个锁上，转绘导入工厂批准留作上一层', () => {
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const withSeries = manifest.features
+    .filter((feature) => feature.unlock?.approvedBy === REDRAW_SERIES_IMPORT_UNLOCK.approvedBy)
+    .map((feature) => feature.featureId)
+    .sort();
+  assert.deepEqual(withSeries, [...REDRAW_SERIES_IMPORT_FEATURE_IDS].sort());
+  for (const featureId of REDRAW_SERIES_IMPORT_FEATURE_IDS) {
+    const feature = manifest.features.find((item) => item.featureId === featureId);
+    assert.ok(feature.protectedPaths.includes('backend-node/src/routes/redraw.js'));
+    assert.deepEqual(feature.unlockHistory.at(-1), REDRAW_FACTORY_IMPORT_UNLOCK_BY_FEATURE[featureId]);
+  }
+});
 
 const NEWAPI_SHARED_ROUTE_REGISTRATION_UNLOCK = {
   reason: '2026-09-03 NewAPI 中转站成本同步管理路由注册获批',

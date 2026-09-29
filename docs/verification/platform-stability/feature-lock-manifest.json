@@ -2260,14 +2260,26 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-09-28 一键转绘导入短剧工厂与样片分析超时修复获批",
+          "approvedBy": "product-owner 2026-09-28 redraw-import-to-factory",
+          "impactTests": [
+            "backend-node/test/redrawEpisodeFacts.test.js",
+            "backend-node/test/redrawFactoryImport.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-28 一键转绘导入短剧工厂与样片分析超时修复获批",
-        "approvedBy": "product-owner 2026-09-28 redraw-import-to-factory",
+        "reason": "2026-09-29 整部剧转绘：跨集本地化锁定与追加导入获批",
+        "approvedBy": "product-owner 2026-09-29 redraw-series-import",
         "impactTests": [
-          "backend-node/test/redrawEpisodeFacts.test.js",
+          "backend-node/test/redrawSeriesImport.test.js",
           "backend-node/test/redrawFactoryImport.test.js",
+          "backend-node/test/redrawFactoryLocalization.test.js",
           "backend-node/test/redrawRoutes.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"
@@ -2442,14 +2454,26 @@
             "backend-node/test/featureLockManifest.test.js",
             "backend-node/test/incrementalReleaseScope.test.js"
           ]
+        },
+        {
+          "reason": "2026-09-28 一键转绘导入短剧工厂与样片分析超时修复获批",
+          "approvedBy": "product-owner 2026-09-28 redraw-import-to-factory",
+          "impactTests": [
+            "backend-node/test/redrawEpisodeFacts.test.js",
+            "backend-node/test/redrawFactoryImport.test.js",
+            "backend-node/test/redrawRoutes.test.js",
+            "backend-node/test/featureLockManifest.test.js",
+            "backend-node/test/incrementalReleaseScope.test.js"
+          ]
         }
       ],
       "unlock": {
-        "reason": "2026-09-28 一键转绘导入短剧工厂与样片分析超时修复获批",
-        "approvedBy": "product-owner 2026-09-28 redraw-import-to-factory",
+        "reason": "2026-09-29 整部剧转绘：跨集本地化锁定与追加导入获批",
+        "approvedBy": "product-owner 2026-09-29 redraw-series-import",
         "impactTests": [
-          "backend-node/test/redrawEpisodeFacts.test.js",
+          "backend-node/test/redrawSeriesImport.test.js",
           "backend-node/test/redrawFactoryImport.test.js",
+          "backend-node/test/redrawFactoryLocalization.test.js",
           "backend-node/test/redrawRoutes.test.js",
           "backend-node/test/featureLockManifest.test.js",
           "backend-node/test/incrementalReleaseScope.test.js"

@@ -125,9 +125,21 @@
       </div>
       <div v-if="fullLocalizationTargets.length" class="billing-row factory-localization-row">
         <strong>完全转绘：{{ localizationStatusText(fullLocalizationState, selectedFullLocalizationLabel) }}</strong>
+        <span v-if="seriesLockText(fullLocalizationState)" class="factory-series-lock">{{ seriesLockText(fullLocalizationState) }}</span>
         <div class="factory-localization-actions">
           <el-select v-model="fullLocalizationKey" placeholder="选择目标语言与国家" :disabled="fullLocalizationBusy">
             <el-option v-for="item in fullLocalizationTargets" :key="item.key" :label="item.label" :value="item.key" />
+          </el-select>
+          <el-select
+            v-if="seriesTargets.length"
+            v-model="seriesTargetId"
+            class="factory-series-select"
+            placeholder="导入到"
+            :disabled="fullLocalizationBusy"
+            @change="seriesTargetTouched = true"
+          >
+            <el-option :value="0" label="新建短剧工厂项目" />
+            <el-option v-for="item in seriesTargets" :key="item.drama_id" :label="seriesTargetLabel(item)" :value="item.drama_id" />
           </el-select>
           <strong
             v-if="fullLocalizationState.credits != null && fullLocalizationState.status !== 'ready'"
@@ -217,9 +229,13 @@ import { redrawAPI } from '@/api/redraw'
 import StylePresetPicker from '@/components/redraw/StylePresetPicker.vue'
 import {
   defaultLocalizationTarget,
+  defaultSeriesTarget,
+  importSuccessMessage,
   localizationActionLabel,
   localizationBody,
   localizationStatusText,
+  seriesLockText,
+  seriesTargetLabel,
 } from '@/utils/redrawFactoryLocalization'
 import {
   analysisQuoteCredits,
@@ -437,6 +453,18 @@ let fullLocalizationTimer = null
 let fullLocalizationPolls = 0
 const selectedFullLocalizationLabel = computed(() => fullLocalizationTargets.value
   .find((item) => item.key === fullLocalizationKey.value)?.label || '')
+// 整部剧：同一部剧按同一目标国家导入过的短剧工厂项目，本集可追加为下一集（来自 status 的 series_targets）。
+const seriesTargets = ref([])
+const seriesTargetId = ref(0)
+const seriesTargetTouched = ref(false)
+
+function applySeriesTargets(state) {
+  if (!Array.isArray(state?.series_targets)) return
+  seriesTargets.value = state.series_targets
+  const keep = seriesTargetTouched.value
+    && (seriesTargetId.value === 0 || state.series_targets.some((item) => item.drama_id === seriesTargetId.value))
+  if (!keep) seriesTargetId.value = defaultSeriesTarget(state.series_targets)
+}
 
 function stopFullLocalizationPolling() {
   if (fullLocalizationTimer) clearTimeout(fullLocalizationTimer)
@@ -459,13 +487,15 @@ async function refreshFullLocalizationStatus() {
   const body = localizationBody(fullLocalizationTargets.value, fullLocalizationKey.value, 'status')
   if (!workState.value?.id || !body) return null
   fullLocalizationState.value = await redrawAPI.factoryLocalization(workState.value.id, body)
+  applySeriesTargets(fullLocalizationState.value)
   return fullLocalizationState.value
 }
 
 async function importFullLocalization() {
-  const body = localizationBody(fullLocalizationTargets.value, fullLocalizationKey.value, 'import')
+  const extra = seriesTargetId.value ? { target_drama_id: seriesTargetId.value } : {}
+  const body = localizationBody(fullLocalizationTargets.value, fullLocalizationKey.value, 'import', extra)
   const result = await redrawAPI.factoryLocalization(workState.value.id, body)
-  ElMessage.success(result?.created === false ? '已导入过，打开现有短剧工厂项目' : `已按${selectedFullLocalizationLabel.value}导入短剧工厂`)
+  ElMessage.success(importSuccessMessage(result, selectedFullLocalizationLabel.value))
   if (result?.drama_id) await router.push(`/film/${result.drama_id}`)
 }
 
@@ -522,6 +552,9 @@ async function runFullLocalization() {
 
 watch(fullLocalizationKey, async () => {
   stopFullLocalizationPolling()
+  seriesTargets.value = []
+  seriesTargetId.value = 0
+  seriesTargetTouched.value = false
   try {
     const state = await refreshFullLocalizationStatus()
     if (state?.status === 'localizing') {
@@ -797,6 +830,16 @@ onUnmounted(() => {
 
 .factory-localization-actions .el-select {
   width: 200px;
+}
+
+.factory-localization-actions .factory-series-select {
+  width: 280px;
+  max-width: 100%;
+}
+
+.factory-series-lock {
+  color: #f4d58d;
+  font-size: 13px;
 }
 
 .section-heading > div {

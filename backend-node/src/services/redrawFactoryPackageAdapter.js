@@ -195,6 +195,8 @@ function mapCharacters(facts, names, glossary, characterImages = {}, culture = c
     const image = characterImages[id] || {};
     return {
       character_id: id,
+      // 整部剧里认人的键：原名（没有原名用显示名）。各集按它对上工厂里的同一个角色。
+      series_key: text(character.source_name) || text(character.display_name) || id,
       name: names.get(id),
       role: (localizedRole ? replaceCharacterIds(localizedRole, names) : localizeText(character.relationship, names, glossary)) || null,
       description: (localizedRole
@@ -459,6 +461,7 @@ function buildRedrawFactoryPackage({
   title = '',
   characterImages = {},
   propIds = null,
+  voicedCharacterIds = [],
 } = {}) {
   const facts = sourceFacts || {};
   if (facts.schema_version !== '2.0' || !Array.isArray(facts.shots) || facts.shots.length === 0) {
@@ -497,7 +500,7 @@ function buildRedrawFactoryPackage({
     });
   const characters = mapCharacters(facts, names, glossary, characterImages, culture)
     .map((character) => (style.negative ? { ...character, negative_prompt: style.negative } : character));
-  const voiceCasting = markVoiceCastingShots(mappedShots.map((item) => item.shot), characters);
+  const voiceCasting = markVoiceCastingShots(mappedShots.map((item) => item.shot), characters, voicedCharacterIds);
   const scenes = mapScenes(facts, style, glossary, names, culture);
   // 完全转绘的剧情梗概已是目标国家版本（新名字、新地点），只解析角色编号；否则用原梗概按名词表替换名字。
   const story = culture.story.length
@@ -528,10 +531,11 @@ function buildRedrawFactoryPackage({
 
 // 定音镜头：每个说话角色第一次单独说话的镜头。先生成这些镜头，后台会从中提取该角色的音色，
 // 之后他再出场的镜头自动带上同一段声音。标题里写明，方便在工厂里先挑出来生成。
-function markVoiceCastingShots(shots, characters) {
+function markVoiceCastingShots(shots, characters, voicedCharacterIds = []) {
   const byId = new Map(characters.map((character) => [character.character_id, character.name]));
   const casting = [];
-  const cast = new Set();
+  // 整部剧追加的集：已经有音色的老角色不再定音。
+  const cast = new Set([...voicedCharacterIds].map(text));
   for (const shot of shots) {
     const id = shot.solo_speaker_id;
     if (!id || cast.has(id) || !byId.has(id)) continue;
