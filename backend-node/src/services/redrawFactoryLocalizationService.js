@@ -20,8 +20,8 @@ const capabilityService = require('./redrawCapabilityService');
 
 const KIND = 'factory_localization@1';
 // 本地化结果的内容版本：结果里多了必须有的内容就加 1，旧版本不再算"已生成"，用户可以重新生成（重新收费）。
-// 2：增加目标国家的剧情梗概（剧集剧本正文）；3：角色称呼按名字首字母大写，场景地点用自然的中文说法。
-const OUTPUT_SCHEMA = 3;
+// 2：增加目标国家的剧情梗概（剧集剧本正文）；3：角色称呼按名字首字母大写，场景地点用自然的中文说法；4：剧情梗概必须是简体中文。
+const OUTPUT_SCHEMA = 4;
 const TASK_TYPE = 'redraw_factory_localization';
 const STALE_TASK_MS = 20 * 60 * 1000;
 // 文本模型走流式输出：这是「多久没有新输出就算卡住」的时限，不是总时长。
@@ -211,7 +211,7 @@ function buildPrompt(target, compact) {
     `scenes: one entry for every supplied id; move the place to ${target.country_en}: location is a short, natural Simplified Chinese place name that a native Chinese screenwriter would write (for example "中学小卖部门口", "老街区铁门外", "家中餐厅"), never a word-by-word translation of the source wording (not "学校门面入口"), time is the time of day in Simplified Chinese, visual describes ${target.country_en} architecture, signage in ${target.language_en}, street details, lighting and palette in Simplified Chinese; no Chinese characters on signs.`,
     'props: one entry for every supplied id; Simplified Chinese name of the equivalent local object.',
     `lines: one entry for every supplied subtitle key; translate the line into natural spoken ${target.language_en} as used in ${target.country_en}, same meaning, tone and length, replacing any old character names with the new names. screen_texts: same for on-screen text keys.`,
-    `story: the supplied story retold as the plot of the ${target.country_en} drama, one Simplified Chinese paragraph per supplied story entry, same events in the same order, using only the new names and the new places; never use any old name (source_name or display_name) and never mention subtitles, captions or on-screen text, tell what the characters say or intend instead. episode_hook: the supplied episode_hook retold the same way in one Simplified Chinese sentence.`,
+    `story: the supplied story retold as the plot of the ${target.country_en} drama, written in Simplified Chinese (not in ${target.language_en}; only the new names keep their own spelling), one paragraph per supplied story entry, same events in the same order, using only the new names and the new places; never use any old name (source_name or display_name) and never mention subtitles, captions or on-screen text, tell what the characters say or intend instead. episode_hook: the supplied episode_hook retold the same way in one Simplified Chinese sentence.`,
     `setting: one Simplified Chinese sentence stating the story takes place in ${target.country_en} and all people are from ${target.country_en}.`,
     'Do not add, drop or rename ids or keys.',
   ].join('\n');
@@ -224,14 +224,23 @@ function oldNames(compact) {
 }
 
 const SUBTITLE_WORDS = /字幕|subtitle|caption/i;
+const HAN_GLOBAL = /[一-鿿]/g;
+const LATIN_OR_CYRILLIC_GLOBAL = /[A-Za-zÀ-ɏЀ-ӿ]/g;
 
-// 本地化剧情梗概的问题：缺失、带原名或提到字幕都要重问。
+// 梗概和简介在工厂里和形象、地点描述放在一起，统一用简体中文；夹带目标语言人名不算，汉字要占多数。
+function isMostlyChinese(value) {
+  const han = (text(value).match(HAN_GLOBAL) || []).length;
+  const letters = (text(value).match(LATIN_OR_CYRILLIC_GLOBAL) || []).length;
+  return han > 0 && han >= letters;
+}
+
+// 本地化剧情梗概的问题：缺失、不是中文、带原名或提到字幕都要重问。
 function storyProblem(compact, parsed) {
   if (!compact.story.length) return false;
   const story = list(parsed?.story).map(text).filter(Boolean);
   if (!story.length) return true;
   const names = oldNames(compact);
-  return story.some((line) => SUBTITLE_WORDS.test(line) || names.some((name) => line.includes(name)));
+  return !isMostlyChinese(story.join('')) || story.some((line) => SUBTITLE_WORDS.test(line) || names.some((name) => line.includes(name)));
 }
 
 // 模型偶尔漏掉个别条目（例如"同学们"这类群体角色没给名字）：只把缺的条目再问一次，不重新收费。
@@ -345,9 +354,10 @@ function validateOutput(target, compact, parsed) {
   if (!setting) throw codedError('REDRAW_FACTORY_LOCALIZATION_INVALID', '缺少目标国家设定');
   const story = list(parsed?.story).map(text).filter(Boolean);
   if (compact.story.length && !story.length) throw codedError('REDRAW_FACTORY_LOCALIZATION_INVALID', '缺少目标国家的剧情梗概');
+  if (story.length && !isMostlyChinese(story.join(''))) throw codedError('REDRAW_FACTORY_LOCALIZATION_INVALID', '剧情梗概没有用简体中文写');
   const leaked = oldNames(compact).find((name) => story.some((line) => line.includes(name)));
   if (leaked) throw codedError('REDRAW_FACTORY_LOCALIZATION_INVALID', `剧情梗概里还有原片人名「${leaked}」`);
-  const episodeHook = text(parsed?.episode_hook);
+  const episodeHook = isMostlyChinese(parsed?.episode_hook) ? text(parsed.episode_hook) : '';
   return {
     nameMap,
     textMap,

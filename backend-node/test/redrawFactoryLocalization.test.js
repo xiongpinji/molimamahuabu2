@@ -194,7 +194,7 @@ test('the localized plot must exist and must not keep any old name, including th
   assert.equal(compact.episode_hook, '他决定把世界杯当作起步资金。');
   assert.throws(() => localization.validateOutput(TARGET, compact, modelOutput({ story: [] })), /剧情梗概/);
   assert.throws(
-    () => localization.validateOutput(TARGET, compact, modelOutput({ story: ['同学认出了 Lin Jiang。'] })),
+    () => localization.validateOutput(TARGET, compact, modelOutput({ story: ['同学们在小卖部门口认出了 Lin Jiang。'] })),
     /原片人名「Lin Jiang」/,
   );
   assert.throws(
@@ -220,6 +220,38 @@ test('role and group labels become capitalized names; scripts without letter cas
   const { system } = localization.buildPrompt(TARGET, compact);
   assert.match(system, /capitalize them the way a name is written/);
   assert.match(system, /never a word-by-word translation of the source wording/);
+});
+
+test('the plot and episode hook must be written in Chinese; a plot in the target language is asked for again, then fails and refunds', async () => {
+  const compact = localization.compactFacts(factsV2());
+  const spanish = 'En la entrada del pequeño comercio, Diego enfrenta a otro estudiante y lo señala.';
+  assert.throws(() => localization.validateOutput(TARGET, compact, modelOutput({ story: [spanish] })), /剧情梗概没有用简体中文写/);
+  const mixed = localization.validateOutput(TARGET, compact, modelOutput({
+    story: ['Diego和Mateo在墨西哥城的中学小卖部门口起了争执，Compañeros围过来看热闹。'],
+    episode_hook: 'Diego decide que el Mundial será su capital inicial.',
+  }));
+  assert.equal(mixed.cultureMap.story.length, 1, 'Chinese text with target-language names is accepted');
+  assert.equal(mixed.cultureMap.episode_hook, undefined, 'a hook in the target language is dropped');
+  assert.match(localization.buildPrompt(TARGET, compact).system, /written in Simplified Chinese \(not in Spanish/);
+
+  const calls = [];
+  const { db, storageRoot, call, settle } = setup(async (_db, _log, _type, user) => {
+    calls.push(user);
+    return JSON.stringify(calls.length === 1 ? modelOutput({ story: [spanish] }) : { story: [spanish] });
+  });
+  try {
+    await call({ action: 'start', localization: { locale: 'es', market: 'MX' }, expected_credits: 10 });
+    await settle();
+    assert.equal(calls.length, 2, 'a Spanish plot is asked for once more');
+    assert.equal(JSON.parse(calls[1]).need_story, true);
+    const status = await call({ action: 'status', localization: { locale: 'es', market: 'MX' } });
+    assert.equal(status.body.data.status, 'failed');
+    assert.match(status.body.data.error, /剧情梗概没有用简体中文写/);
+    assert.deepEqual([creditLedger.getTenantAccount(db, TENANT).available, creditLedger.getTenantAccount(db, TENANT).held], [1000, 0]);
+  } finally {
+    db.close();
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  }
 });
 
 test('a plot that keeps an old name or talks about subtitles is asked for once more without charging again', async () => {
@@ -262,7 +294,7 @@ test('a localization made before the plot was localized is not ready and can be 
     const ready = await call({ action: 'status', localization: { locale: 'es', market: 'MX' } });
     assert.equal(ready.body.data.status, 'ready');
     const snapshot = JSON.parse(db.prepare('SELECT localization_model_snapshot_json FROM redraw_versions WHERE id = ?').get(ready.body.data.version_id).localization_model_snapshot_json);
-    assert.equal(snapshot.schema, 3);
+    assert.equal(snapshot.schema, 4);
   } finally {
     db.close();
     fs.rmSync(storageRoot, { recursive: true, force: true });
