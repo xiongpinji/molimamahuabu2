@@ -310,8 +310,8 @@ test('route lists targets, quotes, charges once, imports a Mexican Spanish proje
     const metadata = JSON.parse(db.prepare('SELECT metadata FROM dramas WHERE id = ?').get(dramaId).metadata);
     assert.deepEqual([metadata.redraw_import.locale, metadata.redraw_import.market], ['es', 'MX']);
     assert.equal(metadata.video_use_storyboard_reference_video, false, 'source clips carry the original actors and subtitles');
-    assert.equal(metadata.redraw_import.full_localization_package, 2);
-    assert.match(metadata.redraw_import.import_key, /:package:2$/);
+    assert.equal(metadata.redraw_import.full_localization_package, 3);
+    assert.match(metadata.redraw_import.import_key, /:package:3$/);
 
     const plain = await call({});
     assert.equal(plain.statusCode, 200);
