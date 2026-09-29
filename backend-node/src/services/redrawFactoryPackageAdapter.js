@@ -172,6 +172,8 @@ function cultureOf(localization) {
     scenes: culture.scenes && typeof culture.scenes === 'object' ? culture.scenes : {},
     props: culture.props && typeof culture.props === 'object' ? culture.props : {},
     setting: text(culture.setting),
+    story: list(culture.story).map(text).filter(Boolean),
+    episodeHook: text(culture.episode_hook),
   };
 }
 
@@ -474,7 +476,10 @@ function buildRedrawFactoryPackage({
   const characters = mapCharacters(facts, names, glossary, characterImages, culture)
     .map((character) => (style.negative ? { ...character, negative_prompt: style.negative } : character));
   const scenes = mapScenes(facts, style, glossary, names, culture);
-  const story = list(facts.story).map((line) => localizeText(line, names, glossary)).filter(Boolean);
+  // 完全转绘的剧情梗概已是目标国家版本（新名字、新地点），只解析角色编号；否则用原梗概按名词表替换名字。
+  const story = culture.story.length
+    ? culture.story.map((line) => replaceCharacterIds(line, names))
+    : list(facts.story).map((line) => localizeText(line, names, glossary)).filter(Boolean);
   return {
     source: { title, locked_facts: list(facts.locked_facts).map((line) => localizeText(line, names, glossary)) },
     normalized_script: {
@@ -488,7 +493,9 @@ function buildRedrawFactoryPackage({
     episodes: [{
       episode_number: 1,
       title: title || '第 1 集',
-      description: localizeText(facts.episode_hook, names, glossary) || null,
+      description: (culture.episodeHook
+        ? replaceCharacterIds(culture.episodeHook, names)
+        : localizeText(facts.episode_hook, names, glossary)) || null,
       scenes: groupShotsByScene(mappedShots, scenes),
     }],
     continuity_rules: [...list(facts.causal_chain), ...list(facts.reversals)].map((line) => localizeText(line, names, glossary)),

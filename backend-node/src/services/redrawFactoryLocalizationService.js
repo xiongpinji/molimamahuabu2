@@ -19,6 +19,9 @@ const taskService = require('./taskService');
 const capabilityService = require('./redrawCapabilityService');
 
 const KIND = 'factory_localization@1';
+// 本地化结果的内容版本：结果里多了必须有的内容就加 1，旧版本不再算"已生成"，用户可以重新生成（重新收费）。
+// 2：增加目标国家的剧情梗概（剧集剧本正文）。
+const OUTPUT_SCHEMA = 2;
 const TASK_TYPE = 'redraw_factory_localization';
 const STALE_TASK_MS = 20 * 60 * 1000;
 // 文本模型走流式输出：这是「多久没有新输出就算卡住」的时限，不是总时长。
@@ -124,9 +127,10 @@ function readyVersion(db, owner, work, sourceVersion, target) {
     SELECT * FROM redraw_versions
     WHERE work_id = ? AND tenant_id = ? AND user_id = ? AND locale = ? AND market = ?
       AND facts_hash = ? AND status = 'asset_review' AND deleted_at IS NULL
-      AND localization_model_snapshot_json LIKE ?
+      AND localization_model_snapshot_json LIKE ? AND localization_model_snapshot_json LIKE ?
     ORDER BY id DESC LIMIT 1
-  `).get(work.id, owner.tenantId, owner.userId, target.locale, target.market, sourceVersion.facts_hash, `%"${KIND}"%`);
+  `).get(work.id, owner.tenantId, owner.userId, target.locale, target.market, sourceVersion.facts_hash,
+    `%"${KIND}"%`, `%"schema":${OUTPUT_SCHEMA}%`);
 }
 
 function latestTask(db, owner, work, target) {
@@ -182,12 +186,15 @@ function compactFacts(facts) {
     characters: list(facts.characters).map((c) => ({
       id: text(c?.id),
       source_name: text(c?.source_name) || text(c?.display_name),
+      // 分析给的拼音名（如 "Lu Feiyu"），剧情梗概里常用它指代人物，也要换掉。
+      ...(text(c?.display_name) && text(c?.display_name) !== text(c?.source_name) ? { display_name: text(c.display_name) } : {}),
       relationship: text(c?.relationship),
       appearance: text(c?.appearance),
     })),
     scenes: list(facts.scenes).map((s) => ({ id: text(s?.id), location: text(s?.location), time: text(s?.time), visual: text(s?.visual) })),
     props: list(facts.props).map((p) => ({ id: text(p?.id), name: text(p?.name) })),
     story: list(facts.story).map(text).filter(Boolean),
+    episode_hook: text(facts.episode_hook),
     subtitles,
     screen_texts: screenTexts,
   };
@@ -199,15 +206,32 @@ function buildPrompt(target, compact) {
     `You are fully re-localizing a short drama for ${target.country_en}. The finished drama must look and sound as if it were made in ${target.country_en} for ${target.country_en} viewers.`,
     `Every person becomes a person from ${target.country_en}, every line is spoken in ${target.language_en} as used in ${target.country_en}, and every place and prop belongs to ${target.country_en}.`,
     'Keep the plot, relationships, ages, body builds, emotions, actions and the role clothing plays in the story (for example a shared school uniform) exactly; change names, ethnicity and looks, language, and cultural details.',
-    'Return this JSON shape: {"characters":[{"id":"","name":"","role":"","appearance":""}],"scenes":[{"id":"","location":"","time":"","visual":""}],"props":[{"id":"","name":""}],"lines":[{"key":"","text":""}],"screen_texts":[{"key":"","text":""}],"setting":""}',
+    'Return this JSON shape: {"characters":[{"id":"","name":"","role":"","appearance":""}],"scenes":[{"id":"","location":"","time":"","visual":""}],"props":[{"id":"","name":""}],"lines":[{"key":"","text":""}],"screen_texts":[{"key":"","text":""}],"story":[""],"episode_hook":"","setting":""}',
     `characters: exactly one entry for EVERY supplied id, including groups and crowds, never skip one. name is a natural first name common in ${target.country_en} written as locals write it; for unnamed roles (mother, father, an athlete on TV) use a short natural ${target.language_en} role label, and for a group of people use a short plural ${target.language_en} label (for example the equivalent of "classmates"). appearance describes a person from ${target.country_en}: apparent age, build, skin tone, face, hair, and ${target.country_en}-style clothing that keeps the same story role; write appearance in Simplified Chinese and never mention the old name. role is a short Simplified Chinese description of the person's place in the story using the new names.`,
     `scenes: one entry for every supplied id; move the place to ${target.country_en}: location is a short Simplified Chinese place name, time is the time of day in Simplified Chinese, visual describes ${target.country_en} architecture, signage in ${target.language_en}, street details, lighting and palette in Simplified Chinese; no Chinese characters on signs.`,
     'props: one entry for every supplied id; Simplified Chinese name of the equivalent local object.',
     `lines: one entry for every supplied subtitle key; translate the line into natural spoken ${target.language_en} as used in ${target.country_en}, same meaning, tone and length, replacing any old character names with the new names. screen_texts: same for on-screen text keys.`,
+    `story: the supplied story retold as the plot of the ${target.country_en} drama, one Simplified Chinese paragraph per supplied story entry, same events in the same order, using only the new names and the new places; never use any old name (source_name or display_name) and never mention subtitles, captions or on-screen text, tell what the characters say or intend instead. episode_hook: the supplied episode_hook retold the same way in one Simplified Chinese sentence.`,
     `setting: one Simplified Chinese sentence stating the story takes place in ${target.country_en} and all people are from ${target.country_en}.`,
     'Do not add, drop or rename ids or keys.',
   ].join('\n');
   return { system, user: JSON.stringify(compact) };
+}
+
+// 原片人名（中文名与拼音名），剧情梗概里出现就说明没换干净。
+function oldNames(compact) {
+  return [...new Set(compact.characters.flatMap((c) => [c.source_name, c.display_name]).map(text).filter((name) => name.length >= 2))];
+}
+
+const SUBTITLE_WORDS = /字幕|subtitle|caption/i;
+
+// 本地化剧情梗概的问题：缺失、带原名或提到字幕都要重问。
+function storyProblem(compact, parsed) {
+  if (!compact.story.length) return false;
+  const story = list(parsed?.story).map(text).filter(Boolean);
+  if (!story.length) return true;
+  const names = oldNames(compact);
+  return story.some((line) => SUBTITLE_WORDS.test(line) || names.some((name) => line.includes(name)));
 }
 
 // 模型偶尔漏掉个别条目（例如"同学们"这类群体角色没给名字）：只把缺的条目再问一次，不重新收费。
@@ -220,11 +244,13 @@ function missingItems(target, compact, parsed) {
     return !text(out?.name) || badHan(text(out?.name)) || !text(out?.appearance);
   });
   const missingLines = compact.subtitles.filter((line) => !lines.get(line.key) || badHan(lines.get(line.key)));
+  const story = storyProblem(compact, parsed);
   return {
     characters: missingCharacters,
     subtitles: missingLines,
     setting: !text(parsed?.setting),
-    count: missingCharacters.length + missingLines.length + (text(parsed?.setting) ? 0 : 1),
+    story,
+    count: missingCharacters.length + missingLines.length + (text(parsed?.setting) ? 0 : 1) + (story ? 1 : 0),
   };
 }
 
@@ -236,6 +262,13 @@ function buildRepairPrompt(target, compact, missing) {
       characters: missing.characters,
       subtitles: missing.subtitles,
       need_setting: missing.setting,
+      // 重写梗概需要知道原名与新名字的对应，所以把全部角色和原梗概一起给。
+      ...(missing.story ? {
+        need_story: true,
+        all_characters: compact.characters,
+        story: compact.story,
+        episode_hook: compact.episode_hook,
+      } : {}),
     }),
   };
 }
@@ -250,6 +283,10 @@ function mergeOutputs(first, repair) {
   merged.characters = [...characters.values()];
   merged.lines = [...lines.values()];
   if (!text(merged.setting) && text(repair?.setting)) merged.setting = repair.setting;
+  if (list(repair?.story).map(text).some(Boolean)) {
+    merged.story = repair.story;
+    if (text(repair?.episode_hook)) merged.episode_hook = repair.episode_hook;
+  }
   return merged;
 }
 
@@ -298,10 +335,24 @@ function validateOutput(target, compact, parsed) {
   }
   const setting = text(parsed?.setting);
   if (!setting) throw codedError('REDRAW_FACTORY_LOCALIZATION_INVALID', '缺少目标国家设定');
+  const story = list(parsed?.story).map(text).filter(Boolean);
+  if (compact.story.length && !story.length) throw codedError('REDRAW_FACTORY_LOCALIZATION_INVALID', '缺少目标国家的剧情梗概');
+  const leaked = oldNames(compact).find((name) => story.some((line) => line.includes(name)));
+  if (leaked) throw codedError('REDRAW_FACTORY_LOCALIZATION_INVALID', `剧情梗概里还有原片人名「${leaked}」`);
+  const episodeHook = text(parsed?.episode_hook);
   return {
     nameMap,
     textMap,
-    cultureMap: { kind: KIND, target: target.key, setting, characters: cultureCharacters, scenes: cultureScenes, props: cultureProps },
+    cultureMap: {
+      kind: KIND,
+      target: target.key,
+      setting,
+      characters: cultureCharacters,
+      scenes: cultureScenes,
+      props: cultureProps,
+      story,
+      ...(episodeHook && !oldNames(compact).some((name) => episodeHook.includes(name)) ? { episode_hook: episodeHook } : {}),
+    },
   };
 }
 
@@ -316,7 +367,7 @@ function insertVersion(db, owner, work, sourceVersion, target, model, output, ta
   `).run(
     work.id, owner.tenantId, owner.userId, next, target.locale, target.market,
     JSON.stringify(output.nameMap), JSON.stringify(output.textMap), JSON.stringify(output.cultureMap),
-    JSON.stringify({ kind: KIND, model, target: target.key, source_version_id: Number(sourceVersion.id) }),
+    JSON.stringify({ kind: KIND, schema: OUTPUT_SCHEMA, model, target: target.key, source_version_id: Number(sourceVersion.id) }),
     taskId, reservationId, sourceVersion.facts_hash, now, now,
   );
   return Number(result.lastInsertRowid);

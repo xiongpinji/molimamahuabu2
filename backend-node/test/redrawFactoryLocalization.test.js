@@ -74,6 +74,8 @@ function modelOutput(overrides = {}) {
       { key: 'shot-2:txt3', text: 'El Mundial será mi capital inicial.' },
     ],
     screen_texts: [{ key: 'shot-1:txt2', text: 'Abarrotes' }],
+    story: ['Diego在墨西哥城街角小卖部被同学嘲笑后，发现口袋里只剩一枚比索硬币。'],
+    episode_hook: 'Diego决定把世界杯当作起步资金。',
     setting: '故事发生在墨西哥城，所有人物都是墨西哥人。',
     ...overrides,
   };
@@ -182,6 +184,73 @@ test('localization output must cover every character and line in the target lang
   }));
   assert.equal(out.nameMap.c1, '大翔', 'kanji names are allowed for Japanese');
   assert.match(localization.buildPrompt(TARGET, compact).system, /Mexico/);
+});
+
+test('the localized plot must exist and must not keep any old name, including the analysed pinyin name', () => {
+  const facts = factsV2();
+  facts.characters[0].display_name = 'Lin Jiang';
+  const compact = localization.compactFacts(facts);
+  assert.equal(compact.characters[0].display_name, 'Lin Jiang');
+  assert.equal(compact.episode_hook, '他决定把世界杯当作起步资金。');
+  assert.throws(() => localization.validateOutput(TARGET, compact, modelOutput({ story: [] })), /剧情梗概/);
+  assert.throws(
+    () => localization.validateOutput(TARGET, compact, modelOutput({ story: ['同学认出了 Lin Jiang。'] })),
+    /原片人名「Lin Jiang」/,
+  );
+  assert.throws(
+    () => localization.validateOutput(TARGET, compact, modelOutput({ story: ['林江被嘲笑。'] })),
+    /原片人名「林江」/,
+  );
+  const out = localization.validateOutput(TARGET, compact, modelOutput({ episode_hook: '林江决定……' }));
+  assert.deepEqual(out.cultureMap.story, ['Diego在墨西哥城街角小卖部被同学嘲笑后，发现口袋里只剩一枚比索硬币。']);
+  assert.equal(out.cultureMap.episode_hook, undefined, 'a hook that keeps an old name is dropped');
+});
+
+test('a plot that keeps an old name or talks about subtitles is asked for once more without charging again', async () => {
+  const calls = [];
+  const { db, storageRoot, call, settle } = setup(async (_db, _log, _type, user, system) => {
+    calls.push({ user, system });
+    if (calls.length === 1) return JSON.stringify(modelOutput({ story: ['字幕显示林江只剩一枚硬币。'] }));
+    return JSON.stringify({ story: ['Diego发现自己只剩一枚比索硬币。'], episode_hook: 'Diego决定把世界杯当作起步资金。' });
+  });
+  try {
+    await call({ action: 'start', localization: { locale: 'es', market: 'MX' }, expected_credits: 10 });
+    await settle();
+    assert.equal(calls.length, 2);
+    const repair = JSON.parse(calls[1].user);
+    assert.equal(repair.need_story, true);
+    assert.deepEqual(repair.all_characters.map((c) => c.id), ['c1', 'c2']);
+    assert.equal((await call({ action: 'status', localization: { locale: 'es', market: 'MX' } })).body.data.status, 'ready');
+    assert.equal(creditLedger.getTenantAccount(db, TENANT).spent, 10, 'the repair call is not charged');
+    const imported = await call({ action: 'import', localization: { locale: 'es', market: 'MX' } });
+    const episode = db.prepare('SELECT script_content FROM episodes WHERE drama_id = ?').get(imported.body.data.drama_id);
+    assert.match(episode.script_content, /^Diego发现自己只剩一枚比索硬币。/);
+  } finally {
+    db.close();
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  }
+});
+
+test('a localization made before the plot was localized is not ready and can be generated again', async () => {
+  const { db, storageRoot, workId, call, settle } = setup(async () => JSON.stringify(modelOutput()));
+  try {
+    const now = new Date().toISOString();
+    db.prepare(`INSERT INTO redraw_versions (work_id, tenant_id, user_id, version, locale, market, localization_level,
+      name_map_json, text_map_json, glossary_json, culture_map_json, localization_model_snapshot_json, facts_hash, status, created_at, updated_at)
+      VALUES (?, ?, ?, 2, 'es', 'MX', 'full', '{}', '{}', '{}', '{}', ?, ?, 'asset_review', ?, ?)`)
+      .run(workId, TENANT, USER, JSON.stringify({ kind: localization.KIND, model: MODEL, target: 'es-MX' }), FACTS_HASH, now, now);
+    const status = await call({ action: 'status', localization: { locale: 'es', market: 'MX' } });
+    assert.deepEqual([status.body.data.status, status.body.data.credits], ['none', 10]);
+    await call({ action: 'start', localization: { locale: 'es', market: 'MX' }, expected_credits: 10 });
+    await settle();
+    const ready = await call({ action: 'status', localization: { locale: 'es', market: 'MX' } });
+    assert.equal(ready.body.data.status, 'ready');
+    const snapshot = JSON.parse(db.prepare('SELECT localization_model_snapshot_json FROM redraw_versions WHERE id = ?').get(ready.body.data.version_id).localization_model_snapshot_json);
+    assert.equal(snapshot.schema, 2);
+  } finally {
+    db.close();
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  }
 });
 
 function createDb() {
@@ -310,8 +379,12 @@ test('route lists targets, quotes, charges once, imports a Mexican Spanish proje
     const metadata = JSON.parse(db.prepare('SELECT metadata FROM dramas WHERE id = ?').get(dramaId).metadata);
     assert.deepEqual([metadata.redraw_import.locale, metadata.redraw_import.market], ['es', 'MX']);
     assert.equal(metadata.video_use_storyboard_reference_video, false, 'source clips carry the original actors and subtitles');
-    assert.equal(metadata.redraw_import.full_localization_package, 3);
-    assert.match(metadata.redraw_import.import_key, /:package:3$/);
+    assert.equal(metadata.redraw_import.full_localization_package, 4);
+    assert.match(metadata.redraw_import.import_key, /:package:4$/);
+    const episode = db.prepare('SELECT script_content, description FROM episodes WHERE drama_id = ?').get(dramaId);
+    assert.match(episode.script_content, /^Diego在墨西哥城街角小卖部被同学嘲笑/, 'the episode script opens with the localized plot');
+    assert.doesNotMatch(episode.script_content, /林江|林哥/);
+    assert.equal(episode.description, 'Diego决定把世界杯当作起步资金。');
 
     const plain = await call({});
     assert.equal(plain.statusCode, 200);
