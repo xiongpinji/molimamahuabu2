@@ -20,6 +20,8 @@
     "audit:licenses": "node scripts/audit-production-licenses.js",
     "audit:image-node-release": "node scripts/audit-image-node-release.js",
     "audit:canvas-credit-contract": "node scripts/audit-canvas-credit-contract.js",
+    "verify:risk-remediation-gate": "node scripts/verify-risk-remediation-gate.js",
+    "verify:user-safe-predeploy-gate": "node scripts/verify-user-safe-predeploy-gate.js",
     "audit:incremental-release": "node scripts/verify-incremental-release-scope.js",
     "audit:canvas-reference-sequence": "node scripts/verify-canvas-reference-sequence-contract.js",
     "audit:feature-lock": "node scripts/verify-feature-lock-manifest.js",

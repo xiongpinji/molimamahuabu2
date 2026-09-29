@@ -26,7 +26,7 @@ const UNCERTAINTY_MARKERS = [
 ];
 const CANCELLATION_MARKERS = ['用户已取消', 'user cancelled', 'user canceled'];
 const GENERATION_TIMEOUT_SAFETY_CODE = 'expired_generation_timeout';
-const GENERATION_TIMEOUT_MESSAGE = '生成超过 30 分钟未完成，系统已自动标记失败并返还冻结积分';
+const GENERATION_TIMEOUT_MESSAGE = '生成超过 10 分钟未完成，系统已自动标记失败并返还冻结积分';
 const READONLY_REQUIRED_SCHEMA = Object.freeze({
   tenant_usage_reservations: ['id', 'tenant_id', 'actor_user_id', 'operation_key', 'model',
     'resource_type', 'resource_id', 'amount', 'status', 'reason', 'created_at', 'updated_at'],
@@ -257,7 +257,7 @@ function hasGenerationEvidence(evidence) {
     evidence.providerRoutes.length
     || evidence.images.length
     || evidence.videos.length
-    || evidence.tasks.some((row) => String(row.type || '').endsWith('_generation')),
+    || evidence.tasks.length,
   );
 }
 
@@ -405,7 +405,7 @@ function refundExpiredGenerationReservation(db, input = {}) {
   const reservationId = String(input.reservationId || '').trim();
   const idempotencyKey = String(input.idempotencyKey || '').trim();
   const reason = String(input.reason || GENERATION_TIMEOUT_MESSAGE).trim();
-  const timeoutMinutes = boundedInt(input.timeoutMinutes, 30, 5, 1440);
+  const timeoutMinutes = boundedInt(input.timeoutMinutes, 10, 5, 1440);
   const now = input.now ? new Date(input.now) : new Date();
   if (!reservationId || idempotencyKey.length < 8 || idempotencyKey.length > 100) {
     throw reconciliationError('INVALID_RECONCILIATION_INPUT', '预扣 ID 或幂等键无效');

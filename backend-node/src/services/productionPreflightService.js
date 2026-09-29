@@ -45,7 +45,8 @@ function configuredModelKeys(db) {
 }
 
 function isTrue(value) {
-  return value === true || value === 1 || String(value || '').trim().toLowerCase() === 'true';
+  const normalized = String(value || '').trim().toLowerCase();
+  return value === true || value === 1 || normalized === 'true' || normalized === '1';
 }
 
 function isHttpsUrl(value) {
@@ -294,6 +295,19 @@ function runProductionPreflight({ config, env = process.env, db, localeRegistry,
       && redrawProviderAssetSecret !== jwtSecret
       && redrawProviderAssetSecret !== adminToken,
     '转绘供应商素材 HMAC 密钥必须独立设置且不少于 32 字符',
+  );
+  const apiKeyMaster = String(env.AI_CONFIG_MASTER_KEY || env.API_KEY_MASTER_KEY || '').trim();
+  const requireEncryptedKeys = isTrue(env.AI_CONFIG_ENCRYPT_AT_REST);
+  addCheck(
+    checks,
+    'ai_config_master_key',
+    !requireEncryptedKeys || (
+      apiKeyMaster.length >= 32
+      && apiKeyMaster !== jwtSecret
+      && apiKeyMaster !== adminToken
+      && apiKeyMaster !== redrawProviderAssetSecret
+    ),
+    '启用 AI_CONFIG_ENCRYPT_AT_REST 时，供应商 API Key 落盘主密钥必须独立设置且不少于 32 字符',
   );
   addCheck(
     checks,

@@ -990,6 +990,18 @@ function saveCanvasLayout(db, log, dramaId, req) {
   return getDrama(db, dramaId);
 }
 
+/** 轻量读取画布 revision，供多端对齐轮询（避免反复拉整份 drama） */
+function getCanvasRevision(db, dramaId, userId, tenantId) {
+  const drama = getDramaById(db, Number(dramaId), userId, tenantId);
+  if (!drama) return null;
+  const meta = storageLayout.parseMetadata(drama.metadata);
+  const stored = Number(meta.canvas_state_revision);
+  return {
+    canvas_state_revision: Number.isSafeInteger(stored) && stored >= 0 ? stored : 0,
+    updated_at: drama.updated_at || null,
+  };
+}
+
 /**
  * 取某分镜的视频地址：优先使用用户手动选定的 storyboard.video_url，否则取最新完成的 video_generations 记录
  */
@@ -1130,6 +1142,7 @@ module.exports = {
   saveEpisodes,
   saveProgress,
   saveCanvasLayout,
+  getCanvasRevision,
   finalizeEpisode,
   downloadEpisodeVideo,
   generateStoryboard,

@@ -180,3 +180,28 @@ test('内部存储目录标签不推进画布 CAS 且原子保留布局', () => 
     db.close();
   }
 });
+
+test('getCanvasRevision 返回轻量 revision 且尊重归属过滤', () => {
+  const db = new Database(':memory:');
+  try {
+    runMigrationsAndEnsure(db);
+    const dramaId = createDrama(db, 'revision 轮询', { canvas_state_revision: 2 });
+    db.prepare('UPDATE dramas SET user_id = ? WHERE id = ?').run(42, dramaId);
+
+    const own = dramaService.getCanvasRevision(db, dramaId, 42, null);
+    assert.deepEqual(own, {
+      canvas_state_revision: 2,
+      updated_at: '2026-08-02T12:00:00.000Z',
+    });
+
+    assert.equal(dramaService.getCanvasRevision(db, dramaId, 99, null), null);
+
+    dramaService.saveCanvasLayout(db, log, dramaId, {
+      base_canvas_revision: 2,
+      canvas_layout: { free_nodes: [{ id: 'n1' }] },
+    });
+    assert.equal(dramaService.getCanvasRevision(db, dramaId, 42, null).canvas_state_revision, 3);
+  } finally {
+    db.close();
+  }
+});

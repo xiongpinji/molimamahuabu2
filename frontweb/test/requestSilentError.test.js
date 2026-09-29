@@ -9,9 +9,13 @@ const assetsApiSource = readFileSync(fileURLToPath(new URL('../src/api/assets.js
 const charactersApiSource = readFileSync(fileURLToPath(new URL('../src/api/characters.js', import.meta.url)), 'utf8')
 const useCharactersSource = readFileSync(fileURLToPath(new URL('../src/composables/filmCreate/useCharacters.js', import.meta.url)), 'utf8')
 
-test('请求层支持静默错误，供素材库多来源探测避免全局错误弹窗', () => {
-  assert.match(requestSource, /suppressUnauthorizedToast/)
-  assert.match(requestSource, /if \(!suppressUnauthorizedToast && !error\.config\?\.silentError\) ElMessage\.error\(msg\)/)
+test('登录页失败路径抑制全局 toast，但本地仍弹出错误提示', () => {
+  const loginSource = readFileSync(fileURLToPath(new URL('../src/views/Login.vue', import.meta.url)), 'utf8')
+  const authSource = readFileSync(fileURLToPath(new URL('../src/api/auth.js', import.meta.url)), 'utf8')
+  assert.match(authSource, /export function login\(data, config = \{\}\)/)
+  assert.match(authSource, /request\.post\('\/auth\/login', data, config\)/)
+  assert.match(loginSource, /await login\(\{ email: email\.value, password: password\.value \}, \{ silentError: true \}\)/)
+  assert.match(loginSource, /ElMessage\.error\(error\?\.message \|\| '操作失败，请稍后重试'\)/)
 })
 
 test('仅静默登录态失效的 401，登录失败仍会弹窗', () => {

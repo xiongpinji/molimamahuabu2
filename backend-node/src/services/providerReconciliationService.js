@@ -9,11 +9,11 @@ const DEFINITE_FAILURES = new Set([
   'transport_not_sent',
   'validation_error',
 ]);
-const UNKNOWN_MESSAGE = '供应商提交结果未知，等待管理员核对，请勿重新提交';
+const UNKNOWN_MESSAGE = '供应商提交结果未知，系统将在约 10 分钟超时后自动退回冻结积分，请勿重新提交';
 const DEFAULT_INTERVAL_MS = 60_000;
 const DEFAULT_SUBMITTING_GRACE_MS = 20 * 60_000;
 const DEFAULT_REVIEW_SLA_MS = 60 * 60_000;
-const DEFAULT_FROZEN_CREDIT_TIMEOUT_MINUTES = 30;
+const DEFAULT_FROZEN_CREDIT_TIMEOUT_MINUTES = 10;
 let reconciliationTimer = null;
 
 function routeRows(db, limit = 100) {

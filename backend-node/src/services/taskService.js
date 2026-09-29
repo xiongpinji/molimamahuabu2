@@ -341,6 +341,15 @@ function failOrphanedAsyncTasksOnStartup(db, log) {
     if (!/no such (table|column)/i.test(String(error.message || ''))) throw error;
   }
   try {
+    // 已有供应商任务号：留给轮询/恢复，不失败也不冻结待人工对账。
+    rows = rows.filter((row) => {
+      if (String(row.status || '') !== 'processing') return true;
+      return !String(row.provider_task_id || '').trim();
+    });
+  } catch (error) {
+    if (!/no such (table|column)/i.test(String(error.message || ''))) throw error;
+  }
+  try {
     const protectedReservations = new Set(db.prepare(`SELECT credit_reservation_id
       FROM generation_route_requests
       WHERE credit_reservation_id IS NOT NULL
@@ -355,8 +364,10 @@ function failOrphanedAsyncTasksOnStartup(db, log) {
     reconcileOrphanedScriptAnalysisProjects(db, log);
     return 0;
   }
-  log.warn('Failing orphaned async tasks after startup', { count: rows.length });
+  log.warn('Reconciling orphaned async tasks after startup', { count: rows.length });
+  let handled = 0;
   for (const row of rows) {
+    // 无供应商任务号的遗留任务：系统直接失败并退款，不依赖人工对账。
     if (row.credit_reservation_id) {
       try {
         creditLedger.settleGeneration(db, row.credit_reservation_id, 'failed', ORPHAN_ASYNC_TASK_MSG);
@@ -370,7 +381,7 @@ function failOrphanedAsyncTasksOnStartup(db, log) {
         db.prepare(
           `UPDATE image_generations
            SET status = 'failed', error_msg = ?, updated_at = ?
-           WHERE task_id = ? AND status IN ('pending', 'processing') AND deleted_at IS NULL`
+           WHERE task_id = ? AND status IN ('pending', 'processing', 'needs_attention') AND deleted_at IS NULL`
         ).run(ORPHAN_ASYNC_TASK_MSG, new Date().toISOString(), row.id);
       } catch (error) {
         log.warn('遗留图片生成记录清理失败', { task_id: row.id, error: error.message });
@@ -384,12 +395,12 @@ function failOrphanedAsyncTasksOnStartup(db, log) {
         db.prepare(
           `UPDATE video_merges
            SET status = 'failed', error_msg = ?, completed_at = ?
-           WHERE task_id = ? AND status IN ('pending', 'processing') AND deleted_at IS NULL`
+           WHERE task_id = ? AND status IN ('pending', 'processing', 'needs_attention') AND deleted_at IS NULL`
         ).run(ORPHAN_ASYNC_TASK_MSG, new Date().toISOString(), row.id);
         if (merge?.episode_id != null) {
           db.prepare(
             `UPDATE episodes SET status = 'failed', updated_at = ?
-             WHERE id = ? AND status = 'processing'`
+             WHERE id = ? AND status IN ('processing', 'needs_attention')`
           ).run(new Date().toISOString(), merge.episode_id);
         }
       } catch (error) {
@@ -402,9 +413,10 @@ function failOrphanedAsyncTasksOnStartup(db, log) {
       resource_id: row.resource_id,
       previous_status: row.status,
     });
+    handled += 1;
   }
   reconcileOrphanedScriptAnalysisProjects(db, log);
-  return rows.length;
+  return handled;
 }
 
 module.exports = {

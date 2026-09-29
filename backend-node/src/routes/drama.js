@@ -245,6 +245,19 @@ function saveCanvasLayout(db, log) {
   };
 }
 
+function getCanvasRevision(db) {
+  return (req, res) => {
+    const payload = dramaService.getCanvasRevision(
+      db,
+      req.params.id,
+      req.user?.id,
+      req.tenant?.id,
+    );
+    if (!payload) return response.notFound(res, '剧本不存在');
+    response.success(res, payload);
+  };
+}
+
 function listProps(db) {
   return (req, res) => {
     const props = propService.listByDramaId(db, req.params.id);
@@ -425,6 +438,7 @@ module.exports = function dramaRoutes(db, cfg, log, generationOptions = {}) {
     saveEpisodes: saveEpisodes(db, log),
     saveProgress: saveProgress(db, log),
     saveCanvasLayout: saveCanvasLayout(db, log),
+    getCanvasRevision: getCanvasRevision(db),
     listProps: listProps(db),
     finalizeEpisode: finalizeEpisode(db, log, cfg),
     downloadEpisodeVideo: downloadEpisodeVideo(db),

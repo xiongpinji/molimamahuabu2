@@ -743,6 +743,8 @@ import {
   resolveCanvasConnectionDrop,
 } from '@/utils/canvasConnectionInteraction'
 import { createCanvasLayoutPersistence } from '@/utils/canvasLayoutPersistence'
+import { isCanvasSyncBlockedByLocalActivity } from '@/utils/canvasRemoteSync'
+import { useCanvasRemoteSync } from '@/composables/useCanvasRemoteSync'
 import {
   mergeGenerationHistory,
   normalizeGenerationHistory,
@@ -848,6 +850,7 @@ const selectedStoryboardIds = ref([])
 const selectedFreeNodeIds = ref([])
 const selectionModifierActive = ref(false)
 const marqueeSelectionActive = ref(false)
+const canvasInteractionBusy = ref(false)
 const pipelineSteps = ref(['image', 'video', 'audio'])
 const workflowRunning = ref(false)
 const workflowProgress = ref('')
@@ -6873,6 +6876,7 @@ provide('run-canvas-edge-target', runCanvasEdgeTarget)
 function onConnectStart(eventOrParams, maybeParams) {
   const params = maybeParams?.nodeId ? maybeParams : eventOrParams
   if (!params?.nodeId) return
+  canvasInteractionBusy.value = true
   connectionDragState.value = {
     sourceNodeId: String(params.nodeId),
     sourceHandle: params.handleId || null,
@@ -6889,6 +6893,7 @@ function connectionDropPoint(event) {
 function onConnectEnd(event) {
   const dragState = connectionDragState.value
   connectionDragState.value = null
+  canvasInteractionBusy.value = false
   if (!dragState?.sourceNodeId || dragState.connected) return
 
   const point = connectionDropPoint(event)
@@ -7213,7 +7218,10 @@ function showCanvasHelp() {
   )
 }
 
+let suppressLayoutSaveCount = 0
+
 function scheduleLayoutSave() {
+  if (suppressLayoutSaveCount > 0) return
   layoutDirty.value = true
   if (saveTimer) clearTimeout(saveTimer)
   saveTimer = setTimeout(() => {
@@ -7222,8 +7230,67 @@ function scheduleLayoutSave() {
   }, 700)
 }
 
+async function withSuppressedLayoutSave(task) {
+  suppressLayoutSaveCount += 1
+  try {
+    return await task()
+  } finally {
+    suppressLayoutSaveCount -= 1
+  }
+}
+
+function isCanvasLayoutLocallyDirty() {
+  return isCanvasSyncBlockedByLocalActivity({
+    dirty: layoutPersistence.dirty || layoutDirty.value,
+    savePending: saveTimer != null,
+    interacting: canvasInteractionBusy.value || marqueeSelectionActive.value,
+    generating: freeCanvasNodeGenerationFlights.size > 0,
+  })
+}
+
+async function applyRemoteCanvasAlignment() {
+  if (isCanvasLayoutLocallyDirty() || layoutSaveBusy.value) return
+  if (saveTimer) {
+    clearTimeout(saveTimer)
+    saveTimer = null
+  }
+  await withSuppressedLayoutSave(async () => {
+    await refreshCanvas(true)
+    layoutDirty.value = false
+  })
+  ElMessage.success('已同步其他端的画布更新')
+}
+
+const canvasRemoteSync = useCanvasRemoteSync({
+  getDramaId: () => dramaId.value,
+  getLocalRevision: () => canvasStateRevision.value,
+  isLocalDirty: isCanvasLayoutLocallyDirty,
+  isSaving: () => layoutSaveBusy.value,
+  isEnabled: () => Boolean(dramaId.value) && canvasAlive,
+  fetchRemoteRevision: (id) => dramaAPI.getCanvasRevision(id),
+  applyRemote: applyRemoteCanvasAlignment,
+  confirmDiscardLocal: async () => {
+    try {
+      await ElMessageBox.confirm(
+        '其他端已更新画布。继续同步将丢弃本端未保存的改动，是否同步？',
+        '画布已在其他端更新',
+        {
+          type: 'warning',
+          confirmButtonText: '同步并丢弃本地改动',
+          cancelButtonText: '暂不同步',
+        },
+      )
+      return true
+    } catch {
+      return false
+    }
+  },
+  intervalMs: 3000,
+})
+
 let draggedGroupSnapshot = null
 function onNodeDragStart(payload) {
+  canvasInteractionBusy.value = true
   syncRenderedNodesToGraph()
   dragHistorySnapshot.value = currentInteractionState()
   alignmentGuide.value = { x: null, y: null }
@@ -7317,6 +7384,7 @@ function onNodeDragStop() {
   alignmentGuide.value = { x: null, y: null }
   if (dragHistorySnapshot.value) commitInteractionHistory(dragHistorySnapshot.value)
   dragHistorySnapshot.value = null
+  canvasInteractionBusy.value = false
   scheduleLayoutSave()
 }
 
@@ -8318,6 +8386,7 @@ watch(() => route.params.id, () => {
   canvasPreferences.value = normalizeCanvasPreferences(DEFAULT_CANVAS_PREFERENCES)
   persistedGenerationHistory.value = []
   freeCanvasVoiceOptionsLoaded = false
+  canvasRemoteSync.resetAck()
   loadDrama()
 }, { immediate: true })
 
@@ -8354,6 +8423,7 @@ onBeforeRouteLeave(async () => {
 onMounted(() => {
   canvasAlive = true
   scheduleVirtualization()
+  canvasRemoteSync.start()
   runQueueTimer = setInterval(() => {
     queueNow.value = Date.now()
   }, 1000)
@@ -8368,6 +8438,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   invalidateVideoToolPolling()
   canvasAlive = false
+  canvasRemoteSync.stop()
   stopAllKeyboardPan()
   if (saveTimer) {
     clearTimeout(saveTimer)

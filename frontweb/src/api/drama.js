@@ -36,6 +36,10 @@ export const dramaAPI = {
     if (baseCanvasRevision !== undefined) body.base_canvas_revision = baseCanvasRevision
     return request.put(`/dramas/${id}/canvas-layout`, body, config)
   },
+  /** 轻量读取画布 revision，供多端对齐轮询 */
+  getCanvasRevision(id, config = {}) {
+    return request.get(`/dramas/${id}/canvas-revision`, { silentError: true, ...config })
+  },
   getStoryboards(episodeId) {
     return request.get(`/episodes/${episodeId}/storyboards`)
   },
