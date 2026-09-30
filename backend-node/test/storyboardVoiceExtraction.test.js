@@ -266,4 +266,36 @@ describe('storyboardVoiceExtractionService', () => {
     assert.equal(plan.ok, false);
     assert.equal(plan.code, 'VOICE_ROLE_SEPARATION_UNAVAILABLE');
   });
+
+  it('does not repeat speech when one role speaks several lines in one segment, and caps the voice length', () => {
+    // #94 第 1 集：Valentina 在 6 秒镜头里连说两句，只切出一段人声，旧逻辑把这段拼了两遍（11.6 秒）。
+    const plan = voiceService.buildRoleExtractionPlan({
+      dialogue: 'Valentina：Hermano, en la vida pasada me protegiste de todo. Valentina：En esta vida me toca protegerte a ti.',
+      targetCharacter: { id: 131, name: 'Valentina' },
+      candidates: [{ id: 131, name: 'Valentina' }, { id: 132, name: 'Santiago' }],
+      speechSegments: [{ start: 0.2, end: 3.1 }],
+    });
+    assert.equal(plan.ok, true);
+    assert.deepEqual(plan.targetSegments, [{ start: 0.2, end: 3.1 }]);
+    assert.ok(Math.abs(plan.durationSeconds - 2.9) < 1e-9);
+
+    const long = voiceService.buildRoleExtractionPlan({
+      dialogue: 'Efraín：Si en tres velas no la rompen... Efraín：Perderán sus poderes.',
+      targetCharacter: { id: 133, name: 'Efraín' },
+      candidates: [{ id: 133, name: 'Efraín' }],
+      speechSegments: [{ start: 0, end: 6.1 }],
+    });
+    assert.equal(long.ok, true);
+    assert.deepEqual(long.targetSegments, [{ start: 0, end: voiceService.MAX_VOICE_REFERENCE_SECONDS }]);
+    assert.ok(long.durationSeconds <= voiceService.MAX_VOICE_REFERENCE_SECONDS);
+    // 三个角色的音色同时作参考也不超过 KM 的 15 秒上限。
+    assert.ok(voiceService.MAX_VOICE_REFERENCE_SECONDS * 3 < 15);
+  });
+
+  it('merges overlapping speech and trims the last piece at the length cap', () => {
+    assert.deepEqual(voiceService.limitVoiceSegments([
+      { start: 0, end: 2 }, { start: 1.5, end: 3 }, { start: 3.5, end: 6 }, { start: 7, end: 9 },
+    ], 4.8), [{ start: 0, end: 3 }, { start: 3.5, end: 5.3 }]);
+    assert.deepEqual(voiceService.limitVoiceSegments([{ start: 0, end: 1 }, { start: 0, end: 1 }]), [{ start: 0, end: 1 }]);
+  });
 });
