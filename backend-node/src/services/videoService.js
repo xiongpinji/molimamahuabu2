@@ -1173,7 +1173,7 @@ function signedWan3SubmissionPayload(payload) {
   };
 }
 
-function findVideoPlatformReference(db, kind, relativePath, publicUrl) {
+function findVideoPlatformReference(db, kind, relativePath, publicUrl, preferDramaId = null) {
   const assets = db.prepare(`SELECT id, drama_id, image_gen_id, metadata FROM assets
     WHERE deleted_at IS NULL AND type = ? AND (local_path = ? OR url = ? OR url = ?)
     ORDER BY id DESC`).all(kind, relativePath, `/static/${relativePath}`, publicUrl);
@@ -1227,6 +1227,22 @@ function findVideoPlatformReference(db, kind, relativePath, publicUrl) {
       drama_id: asset.drama_id,
       ai_generated_image: false,
       metadata: parseJsonObject(asset.metadata),
+    };
+  }
+  if (kind === 'image') {
+    // 道具图：GPT Image 2 等模型生成的道具图只写在道具表（不进素材库和生图记录）。
+    // 未删除道具的图片可以当参考图，按非 AI 生成图处理（不当作虚拟人像）；是否属于当前项目仍由调用方校验。
+    // 素材库复制出的道具可能和别的项目共用同一张图，优先取当前项目的那条。
+    const prop = db.prepare(`SELECT id, drama_id FROM props
+      WHERE deleted_at IS NULL AND (local_path = ? OR image_url = ? OR image_url = ?)
+      ORDER BY CASE WHEN drama_id = ? THEN 0 ELSE 1 END, id DESC LIMIT 1`)
+      .get(relativePath, `/static/${relativePath}`, publicUrl, Number(preferDramaId) || -1);
+    if (prop) return {
+      id: prop.id,
+      source: 'prop',
+      drama_id: prop.drama_id,
+      ai_generated_image: false,
+      metadata: {},
     };
   }
   if (kind === 'video') {
@@ -1290,7 +1306,7 @@ function assertToapisReferencesAllowed(db, references, dramaId, options = {}) {
   };
   for (const item of allRefs) {
     const ref = normalizeToapisReferenceUrl(item.url, context);
-    const row = findVideoPlatformReference(db, item.kind, ref.relativePath, ref.url);
+    const row = findVideoPlatformReference(db, item.kind, ref.relativePath, ref.url, targetDramaId);
     if (!row) throw videoRequestError('VIDEO_REFERENCE_FORBIDDEN', '参考素材不是当前项目可用素材');
     const metadata = row.metadata || {};
     if (!(row.drama_id == null && metadata.system_shared === true) && Number(row.drama_id) !== targetDramaId) {

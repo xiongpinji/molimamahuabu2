@@ -633,6 +633,47 @@ test('ToAPIs allows system_shared platform assets for references', (t) => {
   assert.deepEqual(videoService.getById(db, created.id).reference_image_urls, ['https://molimama.vip/static/projects/shared/assets/shared-ref.png']);
 });
 
+test('ToAPIs accepts prop images that exist only in the props table of the same project', (t) => {
+  const { db, now, drama1, drama2 } = setup(t);
+  const insertProp = db.prepare(`INSERT INTO props (drama_id, name, image_url, local_path, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)`);
+  // GPT Image 2 等模型生成的道具图：image_url 是供应商地址，local_path 是本地副本，不进素材库也没有生图记录。
+  insertProp.run(drama1, '橙光长剑', 'https://cdn.example.com/sword.png', 'projects/0001/props/prop_1_sword.png', now, now);
+  insertProp.run(drama2, '别的项目的道具', null, 'projects/0002/props/prop_2_other.png', now, now);
+  // 素材库复制：两个项目共用同一张图，另一个项目的那条更新。
+  insertProp.run(drama1, '共用道具', null, 'projects/shared/props/shared.png', now, now);
+  insertProp.run(drama2, '共用道具', null, 'projects/shared/props/shared.png', now, now);
+  // 同一分镜已有任务时会直接返回那条任务，每个用例用自己的分镜。
+  for (const number of [2, 3, 4, 5]) {
+    db.prepare(`INSERT INTO storyboards (episode_id, storyboard_number, title, created_at, updated_at) VALUES (1, ?, '分镜', ?, ?)`)
+      .run(number, now, now);
+  }
+  let storyboardId = 0;
+  const body = (url) => ({
+    drama_id: drama1,
+    storyboard_id: (storyboardId += 1),
+    model: 'seedance-2-mini',
+    prompt: '道具参考',
+    duration: 8,
+    reference_image_urls: [url],
+  });
+
+  const created = createVideo(db, body('/static/projects/0001/props/prop_1_sword.png'), { billingEnabled: false, schedule() {} });
+  assert.deepEqual(videoService.getById(db, created.id).reference_image_urls,
+    ['https://molimama.vip/static/projects/0001/props/prop_1_sword.png']);
+  const shared = createVideo(db, body('/static/projects/shared/props/shared.png'), { billingEnabled: false, schedule() {} });
+  assert.deepEqual(videoService.getById(db, shared.id).reference_image_urls,
+    ['https://molimama.vip/static/projects/shared/props/shared.png'], 'the prop of the current project wins');
+
+  const before = sideEffectCounts(db);
+  assert.throws(() => createVideo(db, body('/static/projects/0002/props/prop_2_other.png'), { billingEnabled: false, schedule() {} }),
+    (error) => error.code === 'VIDEO_REFERENCE_FORBIDDEN');
+  db.prepare("UPDATE props SET deleted_at = ? WHERE drama_id = ? AND name = '橙光长剑'").run(now, drama1);
+  assert.throws(() => createVideo(db, body('/static/projects/0001/props/prop_1_sword.png'), { billingEnabled: false, schedule() {} }),
+    (error) => error.code === 'VIDEO_REFERENCE_FORBIDDEN');
+  assert.deepEqual(sideEffectCounts(db), before, 'rejected references leave no task, video or reservation');
+});
+
 test('ToAPIs direct create rejects references over verified limits before side effects', (t) => {
   const { db, drama1 } = setup(t);
   for (const [type, ext] of [['image', 'png'], ['video', 'mp4'], ['audio', 'mp3']]) {

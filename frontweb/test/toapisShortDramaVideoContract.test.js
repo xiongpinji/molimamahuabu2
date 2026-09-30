@@ -79,8 +79,10 @@ test('单条、批量、一键流水线和修复缺失全部通过 buildSbVideoR
   for (const [name, nextName] of paths) {
     const body = functionSource(name, nextName)
     assert.match(body, /buildSbVideoRequestContext\(sb/)
-    assert.match(body, /videosAPI\.create\(requestContext\.payload\)/)
+    // 批量生成经 createSbVideoWithKmRetry 提交同一个 requestContext.payload（KM 429 时原样重提）。
+    assert.match(body, /videosAPI\.create\(requestContext\.payload\)|createSbVideoWithKmRetry\(sb, requestContext\.payload,/)
   }
+  assert.match(functionSource('createSbVideoWithKmRetry', 'videoCatalogPublicConfig'), /videosAPI\.create\(payload\)/)
   assert.doesNotMatch(source, /videosAPI\.create\(\s*\{/)
   const singleBody = functionSource('onGenerateSbVideo', 'onLinkTailFrameToNext')
   const previewBody = functionSource('onPreviewSbVideoRequest', 'onStoryboardVideoModelChange')

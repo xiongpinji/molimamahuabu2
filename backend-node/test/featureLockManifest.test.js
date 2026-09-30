@@ -639,9 +639,30 @@ function peelRedrawSeriesImport(manifest) {
   return manifest;
 }
 
-// 2026-09-28 的批准叠加在各锁最上层（整部剧导入那一层先剥掉）：先断言它，再把上一条批准还原为"当前"，供原有逐层断言继续校验。
+// 2026-09-30 整集出片（R76 移植）只改到 videoService.js 的参考素材白名单，批准叠加在"未知状态计费对账"锁的最上层。
+const WHOLE_EPISODE_PRODUCTION_UNLOCK = {
+  reason: '2026-09-30 整集出片：同项目道具表里的道具图可作视频参考素材获批（R76 移植）',
+  approvedBy: 'product-owner 2026-09-30 redraw-whole-episode-production',
+  impactTests: [
+    'backend-node/test/videoGenerationRequestSnapshot.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
+const WHOLE_EPISODE_PRODUCTION_FEATURE_IDS = ['stability.unknown-state-billing-reconciliation'];
+
+function peelWholeEpisodeProduction(manifest) {
+  manifest.features = manifest.features.map((feature) => {
+    if (!WHOLE_EPISODE_PRODUCTION_FEATURE_IDS.includes(feature.featureId)) return feature;
+    assert.deepEqual(feature.unlock, WHOLE_EPISODE_PRODUCTION_UNLOCK, `${feature.featureId} 缺少整集出片批准`);
+    return { ...feature, unlock: feature.unlockHistory.at(-1), unlockHistory: feature.unlockHistory.slice(0, -1) };
+  });
+  return manifest;
+}
+
+// 2026-09-28 的批准叠加在各锁最上层（整集出片、整部剧导入两层先剥掉）：先断言它，再把上一条批准还原为"当前"，供原有逐层断言继续校验。
 function loadManifestBeforeRedrawFactoryImport() {
-  const manifest = peelRedrawSeriesImport(JSON.parse(fs.readFileSync(manifestPath, 'utf8')));
+  const manifest = peelRedrawSeriesImport(peelWholeEpisodeProduction(JSON.parse(fs.readFileSync(manifestPath, 'utf8'))));
   manifest.features = manifest.features.map((feature) => {
     const expected = REDRAW_FACTORY_IMPORT_UNLOCK_BY_FEATURE[feature.featureId];
     if (!expected) return feature;
@@ -667,6 +688,18 @@ test('整部剧导入批准只叠加在 routes/redraw.js 所在的两个锁上�
     assert.ok(feature.protectedPaths.includes('backend-node/src/routes/redraw.js'));
     assert.deepEqual(feature.unlockHistory.at(-1), REDRAW_FACTORY_IMPORT_UNLOCK_BY_FEATURE[featureId]);
   }
+});
+
+test('整集出片批准只叠加在 videoService.js 所在的未知状态计费对账锁上，上一层仍是原批准', () => {
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const withWholeEpisode = manifest.features
+    .filter((feature) => feature.unlock?.approvedBy === WHOLE_EPISODE_PRODUCTION_UNLOCK.approvedBy)
+    .map((feature) => feature.featureId)
+    .sort();
+  assert.deepEqual(withWholeEpisode, [...WHOLE_EPISODE_PRODUCTION_FEATURE_IDS].sort());
+  const feature = manifest.features.find((item) => item.featureId === 'stability.unknown-state-billing-reconciliation');
+  assert.ok(feature.protectedPaths.includes('backend-node/src/services/videoService.js'));
+  assert.equal(feature.unlockHistory.at(-1).approvedBy, 'product-owner 2026-09-03 newapi-readonly-preflight-compat');
 });
 
 const NEWAPI_SHARED_ROUTE_REGISTRATION_UNLOCK = {
