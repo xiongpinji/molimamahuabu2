@@ -1061,6 +1061,39 @@ function getVideoUrlForStoryboard(db, storyboardId, baseUrl) {
   return sbUrl;
 }
 
+/**
+ * 样片转绘导入的分镜在导入时登记了样片参考片段（assets.metadata.source = redraw_sample_clip），
+ * 其中 source_start_ms / source_end_ms 是原片镜头的起止时间。切换视频模型时前端会把短于模型最短档位的
+ * 分镜时长改成模型档位（如 1 秒改成 4 秒），合成裁剪要对齐原片节奏只能从这里取回原片镜头时长。
+ */
+function redrawSourceShotSeconds(db, dramaId, storyboardIds) {
+  const seconds = new Map();
+  const ids = storyboardIds.map(Number).filter((id) => Number.isInteger(id) && id > 0);
+  if (!ids.length) return seconds;
+  let rows = [];
+  try {
+    rows = db.prepare(
+      `SELECT storyboard_id, metadata FROM assets
+       WHERE drama_id = ? AND category = 'storyboard_reference_video' AND deleted_at IS NULL
+         AND storyboard_id IN (${ids.map(() => '?').join(', ')})
+       ORDER BY id DESC`
+    ).all(Number(dramaId), ...ids);
+  } catch (_) {
+    return seconds;
+  }
+  for (const row of rows) {
+    const id = Number(row.storyboard_id);
+    if (seconds.has(id)) continue;
+    let meta = null;
+    try { meta = JSON.parse(row.metadata || 'null'); } catch (_) { meta = null; }
+    if (meta?.source !== 'redraw_sample_clip') continue;
+    const start = Number(meta.source_start_ms);
+    const end = Number(meta.source_end_ms);
+    if (Number.isFinite(start) && Number.isFinite(end) && end > start) seconds.set(id, Math.round(end - start) / 1000);
+  }
+  return seconds;
+}
+
 function finalizeEpisode(db, log, episodeId, baseUrl, body = {}) {
   const ep = db.prepare('SELECT id, drama_id, episode_number FROM episodes WHERE id = ? AND deleted_at IS NULL').get(episodeId);
   if (!ep) return null;
@@ -1076,6 +1109,10 @@ function finalizeEpisode(db, log, episodeId, baseUrl, body = {}) {
     'SELECT id, storyboard_number, duration FROM storyboards WHERE episode_id = ? AND deleted_at IS NULL ORDER BY storyboard_number ASC'
   ).all(episodeId);
   const videoMergeService = require('./videoMergeService');
+  const trimToSource = dramaMetadata.merge_trim_to_storyboard_duration === true;
+  const sourceSeconds = trimToSource
+    ? redrawSourceShotSeconds(db, ep.drama_id, storyboards.map((sb) => sb.id))
+    : new Map();
   const scenes = [];
   const missingStoryboards = [];
   for (let i = 0; i < storyboards.length; i++) {
@@ -1086,10 +1123,13 @@ function finalizeEpisode(db, log, episodeId, baseUrl, body = {}) {
       missingStoryboards.push(sb.id);
       continue;
     }
+    const storyboardSeconds = Number(sb.duration) || 5;
+    const source = sourceSeconds.get(Number(sb.id));
     scenes.push({
       scene_id: sb.id,
       video_url: videoUrl,
-      duration: Number(sb.duration) || 5,
+      // 转绘项目按原片镜头时长裁剪；用户把分镜改得比原片更短时仍按分镜时长。
+      duration: source ? Math.min(storyboardSeconds, source) : storyboardSeconds,
       order: i,
     });
   }
