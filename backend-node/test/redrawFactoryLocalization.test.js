@@ -589,3 +589,29 @@ test('English words or unknown person names in scenes and props are asked for on
     fs.rmSync(storageRoot, { recursive: true, force: true });
   }
 });
+
+test('prop image prompts show only the object: no owner names, no person-oriented style words, and no people in frame', () => {
+  // #94：道具名"Valentina手中的橙红色发光长剑"加上"真人演员实拍质感"的画风句，生图模型画出了一个拿剑的陌生女人。
+  const output = localization.validateOutput(TARGET, localization.compactFacts(factsV2()),
+    modelOutput({ props: [{ id: 'p1', name: 'Diego手中的一枚比索硬币' }] }));
+  const pkg = buildRedrawFactoryPackage({
+    sourceFacts: factsV2(),
+    localization: { locale: 'es', market: 'MX', name_map: output.nameMap, text_map: output.textMap, glossary: {}, culture_map: output.cultureMap },
+    analysisSettings: { free_style: { positive: '真人写实风格，真人演员实拍质感，电影级光影，自然肤色与服装材质', negative: '' } },
+  });
+  assert.equal(pkg.props[0].name, 'Diego手中的一枚比索硬币', 'the prop name keeps its owner for storyboard links');
+  assert.equal(pkg.props[0].prompt,
+    '写实风格，电影级光影。 一枚比索硬币，作为单独物品放在纯色无缝背景上。 画面中只有这件物品，没有任何人物、手或身体部位，没有文字。');
+  assert.doesNotMatch(pkg.props[0].prompt, /Diego|演员|肤色|服装/);
+});
+
+test('prop object phrase drops the owner clause around a character name', () => {
+  const { propObjectPhrase, propStylePositive } = require('../src/services/redrawFactoryPackageAdapter');
+  const names = ['Valentina', 'Efraín', 'Discípulos'];
+  assert.equal(propObjectPhrase('Valentina手中的橙红色发光长剑', names), '橙红色发光长剑');
+  assert.equal(propObjectPhrase('环绕Valentina的多柄悬空长剑', names), '多柄悬空长剑');
+  assert.equal(propObjectPhrase('Discípulos腰间佩带的长剑与皮剑鞘', names), '长剑与皮剑鞘');
+  assert.equal(propObjectPhrase('Efraín手中的小圆形金属物件', names), '小圆形金属物件');
+  assert.equal(propObjectPhrase('飞刀', names), '飞刀');
+  assert.equal(propStylePositive('日系动漫风格，赛璐璐上色，人物大眼，柔和光影'), '日系动漫风格，赛璐璐上色，柔和光影');
+});

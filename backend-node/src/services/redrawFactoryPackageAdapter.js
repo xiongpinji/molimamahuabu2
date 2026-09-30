@@ -230,6 +230,33 @@ function mapScenes(facts, style, glossary, names, culture = cultureOf(null)) {
   });
 }
 
+// 道具生图只要物品本身：去掉"某角色手中的 / 环绕某角色的"这类归属修饰，否则生图模型会把拿道具的人一起画出来。
+// 道具名称（含归属）仍用于分镜关联和描述，只有生图提示词改用去掉归属的物品短语。
+function propObjectPhrase(name, characterNames = []) {
+  let value = text(name);
+  const people = [...new Set(characterNames.map(text).filter(Boolean))].sort((a, b) => b.length - a.length);
+  for (const person of people) {
+    for (let index = value.indexOf(person); index >= 0; index = value.indexOf(person)) {
+      const de = value.indexOf('的', index + person.length);
+      value = de >= 0 && de - (index + person.length) <= 8
+        ? value.slice(de + 1)
+        : value.slice(0, index) + value.slice(index + person.length);
+    }
+  }
+  value = value.replace(/^[\s的，,、]+/, '').trim();
+  return value || text(name);
+}
+
+// 项目画风里描写人物的短句（真人演员、肤色、服装……）不放进道具图，只保留画风与光影。
+const PERSON_STYLE_WORDS = /真人|演员|人物|人像|角色|肤色|服装|发型|妆容|表情|actor|actress|person|people|portrait|skin|costume/i;
+function propStylePositive(positive) {
+  return text(positive).replace(/真人写实/g, '写实')
+    .split(/[，,。.;；]+/)
+    .map((part) => part.trim())
+    .filter((part) => part && !PERSON_STYLE_WORDS.test(part))
+    .join('，');
+}
+
 function mapProps(facts, style, glossary, names, culture = cultureOf(null)) {
   return list(facts.props).map((prop) => {
     const localizedName = text(culture.props[text(prop.id)]?.name);
@@ -239,7 +266,11 @@ function mapProps(facts, style, glossary, names, culture = cultureOf(null)) {
       name: name || text(prop.id),
       type: null,
       description: name,
-      prompt: joinSentences(style.positive, `${name}，纯色背景上的单独物品。`),
+      prompt: joinSentences(
+        propStylePositive(style.positive),
+        `${propObjectPhrase(name, [...names.values()])}，作为单独物品放在纯色无缝背景上`,
+        '画面中只有这件物品，没有任何人物、手或身体部位，没有文字',
+      ),
     };
   });
 }
@@ -549,4 +580,6 @@ function markVoiceCastingShots(shots, characters, voicedCharacterIds = []) {
 module.exports = {
   buildRedrawFactoryPackage,
   isKeyProp,
+  propObjectPhrase,
+  propStylePositive,
 };
