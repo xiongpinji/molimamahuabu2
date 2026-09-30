@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
 import {
   defaultLocalizationTarget,
   defaultSeriesTarget,
@@ -112,4 +113,12 @@ test('整部剧：显示沿用的老角色和追加结果', () => {
   assert.equal(importSuccessMessage({ created: false, episode_number: 2 }), '本集已是该项目第 2 集，打开短剧工厂项目')
   assert.equal(importSuccessMessage({ created: false }), '已导入过，打开现有短剧工厂项目')
   assert.equal(importSuccessMessage({ created: true }, '西班牙语（墨西哥）'), '已按西班牙语（墨西哥）导入短剧工厂')
+})
+
+test('整部导入进行中锁住单集的导入、目标国家、导入到和生成并导入', () => {
+  const panel = fs.readFileSync(new URL('../src/components/redraw/RedrawSourceStep.vue', import.meta.url), 'utf8')
+  assert.match(panel, /:loading="factoryImporting"\s+:disabled="seriesImporting"/)
+  assert.match(panel, /placeholder="选择目标语言与国家" :disabled="fullLocalizationBusy \|\| seriesImporting"/)
+  assert.match(panel, /placeholder="导入到"\s+:disabled="fullLocalizationBusy \|\| seriesImporting"/)
+  assert.match(panel, /fullLocalizationState\.status === 'localizing' \|\| seriesImporting"\s+@click="runFullLocalization"/)
 })

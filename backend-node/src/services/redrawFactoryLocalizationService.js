@@ -198,7 +198,27 @@ function compactFacts(facts) {
     episode_hook: text(facts.episode_hook),
     subtitles,
     screen_texts: screenTexts,
+    shot_texts: shotTexts(facts),
   };
+}
+
+const MAX_SHOT_TEXTS = 40;
+const MAX_SHOT_TEXT_CHARS = 80;
+
+// 镜头构图与动作的原文（去重、截短）：只给模型找出要换成目标国家说法的文化词，不翻译它们。
+function shotTexts(facts) {
+  const seen = new Set();
+  const lines = [];
+  for (const shot of list(facts.shots)) {
+    for (const value of [shot?.composition, shot?.continuous_action]) {
+      const line = text(value).slice(0, MAX_SHOT_TEXT_CHARS);
+      if (!line || seen.has(line)) continue;
+      seen.add(line);
+      lines.push(line);
+      if (lines.length >= MAX_SHOT_TEXTS) return lines;
+    }
+  }
+  return lines;
 }
 
 function defaultStorageRoot() {
@@ -220,9 +240,11 @@ function seriesVersion(db, owner, work, sourceVersion, target) {
 const MAX_WORLD_STORY_EPISODES = 5;
 const MAX_WORLD_STORY_CHARS = 600;
 const MAX_WORLD_PLACES = 30;
+// 文化词对照（原片的门派、机构、称谓、货币等 → 目标国家的说法），导入时替换镜头描述与提示词里的原词。
+const MAX_CULTURE_TERMS = 30;
 
 function emptySeriesLock() {
-  return { byName: new Map(), episodes: [], names: [], world: { setting: '', story: [], places: [] } };
+  return { byName: new Map(), episodes: [], names: [], world: { setting: '', story: [], places: [], terms: {} } };
 }
 
 /**
@@ -270,6 +292,12 @@ function seriesLocalizationLock(db, owner, work, target, { storageRoot, log } = 
         if (!location || places.has(key) || lock.world.places.length >= MAX_WORLD_PLACES) continue;
         places.add(key);
         lock.world.places.push({ location, time: text(scene?.time), visual: text(scene?.visual).slice(0, 160) });
+      }
+      // 文化词对照以先出现的一集为准，后面的集沿用同一说法。
+      for (const [source, targetTerm] of Object.entries(parseJson(version.glossary_json, {}) || {})) {
+        if (!text(source) || !text(targetTerm) || lock.world.terms[text(source)]) continue;
+        if (Object.keys(lock.world.terms).length >= MAX_CULTURE_TERMS) break;
+        lock.world.terms[text(source)] = text(targetTerm);
       }
     } catch (error) {
       log?.info?.('[整部剧] 前一集的转绘结果读不到，跳过锁定', { work_id: workId, code: error?.code || null });
@@ -471,7 +499,7 @@ function buildPrompt(target, compact, locked = {}, taken = [], world = {}) {
     `You are fully re-localizing a short drama for ${target.country_en}. The finished drama must look and sound as if it were made in ${target.country_en} for ${target.country_en} viewers.`,
     `Every person becomes a person from ${target.country_en}, every line is spoken in ${target.language_en} as used in ${target.country_en}, and every place and prop belongs to ${target.country_en}.`,
     'Keep the plot, relationships, ages, body builds, emotions, actions and the role clothing plays in the story (for example a shared school uniform) exactly; change names, ethnicity and looks, language, and cultural details.',
-    'Return this JSON shape: {"characters":[{"id":"","name":"","role":"","appearance":""}],"scenes":[{"id":"","location":"","time":"","visual":""}],"props":[{"id":"","name":""}],"lines":[{"key":"","text":""}],"screen_texts":[{"key":"","text":""}],"story":[""],"episode_hook":"","setting":""}',
+    'Return this JSON shape: {"characters":[{"id":"","name":"","role":"","appearance":""}],"scenes":[{"id":"","location":"","time":"","visual":""}],"props":[{"id":"","name":""}],"lines":[{"key":"","text":""}],"screen_texts":[{"key":"","text":""}],"story":[""],"episode_hook":"","setting":"","culture_terms":[{"source":"","target":""}]}',
     `characters: exactly one entry for EVERY supplied id, including groups and crowds, never skip one. name is a natural first name common in ${target.country_en} written as locals write it; for unnamed roles (mother, father, an athlete on TV) use a short natural ${target.language_en} role label, and for a group of people use a short plural ${target.language_en} label (for example the equivalent of "classmates"); these labels are used as the character's name, so capitalize them the way a name is written (for example "Mamá", "Compañeros"). appearance describes a person from ${target.country_en}: apparent age, build, skin tone, face, hair, and ${target.country_en}-style clothing that keeps the same story role; write appearance in Simplified Chinese and never mention the old name. role is a short Simplified Chinese description of the person's place in the story using the new names.`,
     `scenes: one entry for every supplied id; move the place to ${target.country_en}: location is a short, natural Simplified Chinese place name that a native Chinese screenwriter would write (for example "中学小卖部门口", "老街区铁门外", "家中餐厅"), never a word-by-word translation of the source wording (not "学校门面入口"), time is the time of day in Simplified Chinese, visual describes ${target.country_en} architecture, signage in ${target.language_en}, street details, lighting and palette in Simplified Chinese; no Chinese characters on signs.`,
     'props: one entry for every supplied id; Simplified Chinese name of the equivalent local object.',
@@ -479,6 +507,7 @@ function buildPrompt(target, compact, locked = {}, taken = [], world = {}) {
     `lines: one entry for every supplied subtitle key; translate the line into natural spoken ${target.language_en} as used in ${target.country_en}, same meaning, tone and length, replacing any old character names with the new names. screen_texts: same for on-screen text keys.`,
     `story: the supplied story retold as the plot of the ${target.country_en} drama, written in Simplified Chinese (not in ${target.language_en}; only the new names keep their own spelling), one paragraph per supplied story entry, same events in the same order, using only the new names and the new places; never use any old name (source_name or display_name) and never mention subtitles, captions or on-screen text, tell what the characters say or intend instead. episode_hook: the supplied episode_hook retold the same way in one Simplified Chinese sentence.`,
     `setting: one Simplified Chinese sentence stating the story takes place in ${target.country_en} and all people are from ${target.country_en}.`,
+    `culture_terms: words or short phrases in the supplied Chinese texts (story, scenes, props, character relationships, shot_texts) that belong to the source culture and must change for the ${target.country_en} version (sects and schools, ranks and titles, institutions, currencies, foods, festivals, typical kinds of places), each with the natural Simplified Chinese wording that fits the ${target.country_en} version and matches the scenes you return, for example {"source":"宗门","target":"修院"}. At most 20 entries; every source must appear verbatim in the supplied texts and have at least two Chinese characters; never list character names; leave out words that need no change. shot_texts are given only for finding culture_terms: do not translate or return them.`,
     'Do not add, drop or rename ids or keys.',
   ];
   const lockedList = Object.entries(locked).map(([id, value]) => ({ id, ...value }));
@@ -499,12 +528,18 @@ function buildPrompt(target, compact, locked = {}, taken = [], world = {}) {
   if (knownPlaces.length) {
     system.push('known_places are places already shown in earlier episodes: when a scene of this episode happens in one of them, return exactly the same location and time and a matching visual.');
   }
+  const knownTerms = Object.entries(world.terms || {}).filter(([source, value]) => text(source) && text(value))
+    .map(([source, value]) => ({ source: text(source), target: text(value) }));
+  if (knownTerms.length) {
+    system.push('known_terms are culture_terms already chosen in earlier episodes: use the same target wording for the same source in scenes, props, story and your culture_terms.');
+  }
   const series = {
     ...(lockedList.length ? { locked_characters: lockedList } : {}),
     ...(namesInUse.length ? { names_in_use: namesInUse } : {}),
     ...(seriesSetting ? { series_setting: seriesSetting } : {}),
     ...(previousStory.length ? { previous_story: previousStory } : {}),
     ...(knownPlaces.length ? { known_places: knownPlaces } : {}),
+    ...(knownTerms.length ? { known_terms: knownTerms } : {}),
   };
   return { system: system.join('\n'), user: JSON.stringify({ ...compact, ...series }) };
 }
@@ -632,6 +667,39 @@ function capitalizeName(name, locale) {
   return upper === first ? name : `${upper}${name.slice(1)}`;
 }
 
+const LATIN_OR_CYRILLIC = /[A-Za-zÀ-ɏЀ-ӿ]/;
+
+/**
+ * 文化词对照：前几集已定的说法优先（known），再收本集模型给的。原词必须在原文里出现、至少两个汉字、不是人名，
+ * 新说法必须是简体中文（不含拉丁/西里尔字母）；不合格的条目直接丢弃，不补问。
+ * @returns {Record<string,string>} 原词 → 目标国家的说法
+ */
+function cultureTerms(compact, parsed, known = {}) {
+  const corpus = [
+    ...list(compact.story), compact.episode_hook,
+    ...list(compact.scenes).flatMap((scene) => [scene.location, scene.time, scene.visual]),
+    ...list(compact.props).map((prop) => prop.name),
+    ...list(compact.characters).map((character) => character.relationship),
+    ...list(compact.shot_texts),
+  ].map(text).filter(Boolean).join('\n');
+  const names = list(compact.characters).flatMap((character) => [character.source_name, character.display_name]).map(text).filter(Boolean);
+  const terms = {};
+  for (const [source, value] of Object.entries(known || {})) {
+    if (text(source) && text(value) && Object.keys(terms).length < MAX_CULTURE_TERMS) terms[text(source)] = text(value);
+  }
+  for (const item of list(parsed?.culture_terms)) {
+    if (Object.keys(terms).length >= MAX_CULTURE_TERMS) break;
+    const source = text(item?.source);
+    const value = text(item?.target);
+    if (!source || !value || source === value || terms[source]) continue;
+    if ((source.match(HAN_GLOBAL) || []).length < 2 || !HAN.test(value) || LATIN_OR_CYRILLIC.test(value)) continue;
+    if (!corpus.includes(source)) continue;
+    if (names.some((name) => name.includes(source) || source.includes(name))) continue;
+    terms[source] = value;
+  }
+  return terms;
+}
+
 function validateOutput(target, compact, parsed, series = {}) {
   const byId = (items) => new Map(list(items).filter((item) => item && text(item.id)).map((item) => [text(item.id), item]));
   const byKey = (items) => new Map(list(items).filter((item) => item && text(item.key)).map((item) => [text(item.key), text(item.text)]));
@@ -706,6 +774,7 @@ function validateOutput(target, compact, parsed, series = {}) {
       story,
       ...(episodeHook && !oldNames(compact).some((name) => episodeHook.includes(name)) ? { episode_hook: episodeHook } : {}),
     },
+    glossary: cultureTerms(compact, parsed, series.terms),
   };
 }
 
@@ -716,10 +785,10 @@ function insertVersion(db, owner, work, sourceVersion, target, model, output, ta
     INSERT INTO redraw_versions (work_id, tenant_id, user_id, version, locale, market, localization_level,
       name_map_json, text_map_json, glossary_json, culture_map_json, localization_model_snapshot_json,
       localization_task_id, localization_credit_reservation_id, facts_hash, status, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, 'full', ?, ?, '{}', ?, ?, ?, ?, ?, 'asset_review', ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, 'full', ?, ?, ?, ?, ?, ?, ?, ?, 'asset_review', ?, ?)
   `).run(
     work.id, owner.tenantId, owner.userId, next, target.locale, target.market,
-    JSON.stringify(output.nameMap), JSON.stringify(output.textMap), JSON.stringify(output.cultureMap),
+    JSON.stringify(output.nameMap), JSON.stringify(output.textMap), JSON.stringify(output.glossary || {}), JSON.stringify(output.cultureMap),
     JSON.stringify({
       kind: KIND, schema: OUTPUT_SCHEMA, model, target: target.key, source_version_id: Number(sourceVersion.id),
       ...(output.seriesLock?.locked_character_ids?.length ? { series_lock: output.seriesLock } : {}),
@@ -749,7 +818,7 @@ async function runLocalization(db, log, ctx, deps) {
     };
     const locked = lockedCharacters(compact, lock);
     const world = lock.world || {};
-    const series = { locked, taken: list(lock.names) };
+    const series = { locked, taken: list(lock.names), terms: world.terms || {} };
     let parsed = applySeriesWorld(applyLockedCharacters(await ask(buildPrompt(target, compact, locked, series.taken, world)), locked), world);
     const missing = withForeignText(
       withNameConflicts(missingItems(target, compact, parsed, series), target, compact, parsed, series), compact, parsed, series,

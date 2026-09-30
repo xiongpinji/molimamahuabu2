@@ -551,6 +551,49 @@ test('追加的集不给前几集已标过定音的老角色再标定音（还�
   }
 });
 
+test('文化词对照：只收原文里出现、非人名、至少两字的中文说法，导入时替换镜头描述，后一集沿用同一说法', async () => {
+  const t = setup();
+  try {
+    const ep1 = seedEpisode(t, episodeOneFacts(), '2026-09-29T01:00:00.000Z');
+    t.replies.push({
+      ...episodeOneOutput(),
+      culture_terms: [
+        { source: '卧室', target: '房间' },
+        { source: '林江', target: '某人' },
+        { source: '不存在的词', target: '别的' },
+        { source: '店铺', target: 'tienda' },
+        { source: '门', target: '门廊' },
+      ],
+    });
+    const ready = await localize(t, ep1);
+    assert.equal(ready.body.data.status, 'ready', JSON.stringify(ready.body.data));
+    const firstAsk = t.prompts[0];
+    assert.match(firstAsk.system, /culture_terms/);
+    assert.ok(firstAsk.user.shot_texts.includes('林哥在卧室里握着硬币'), 'shot texts are given to find culture terms');
+    const version = t.db.prepare('SELECT glossary_json FROM redraw_versions WHERE id = ?').get(ready.body.data.version_id);
+    assert.deepEqual(JSON.parse(version.glossary_json), { 卧室: '房间' });
+
+    const imported = await t.call(ep1, { action: 'import', localization: MX });
+    assert.equal(imported.statusCode, 200, JSON.stringify(imported.body));
+    const dramaId = imported.body.data.drama_id;
+    const boards = t.db.prepare(`SELECT s.description FROM storyboards s JOIN episodes e ON e.id = s.episode_id
+      WHERE e.drama_id = ? ORDER BY s.storyboard_number`).all(dramaId);
+    assert.equal(boards[1].description, 'Mateo在房间里握着硬币。');
+
+    // 第 2 集：前一集的对照作为 known_terms 给模型，模型换了说法也以前一集为准。
+    const ep2 = seedEpisode(t, episodeTwoFacts(), '2026-09-29T02:00:00.000Z');
+    t.replies.push({ ...episodeTwoOutput(), culture_terms: [{ source: '卧室', target: '寝室' }, { source: '教室', target: '课室' }] });
+    const second = await localize(t, ep2);
+    assert.equal(second.body.data.status, 'ready', JSON.stringify(second.body.data));
+    assert.deepEqual(t.prompts[1].user.known_terms, [{ source: '卧室', target: '房间' }]);
+    assert.match(t.prompts[1].system, /known_terms/);
+    const ep2Version = t.db.prepare('SELECT glossary_json FROM redraw_versions WHERE id = ?').get(second.body.data.version_id);
+    assert.deepEqual(JSON.parse(ep2Version.glossary_json), { 卧室: '房间', 教室: '课室' });
+  } finally {
+    cleanup(t);
+  }
+});
+
 test('整部导入计划：按集号列出各集的转绘状态、价格和已在项目里的集，没分析的集标出来', async () => {
   const t = setup();
   try {

@@ -118,6 +118,7 @@
         <el-button
           type="success"
           :loading="factoryImporting"
+          :disabled="seriesImporting"
           @click="importToFactory"
         >
           导入短剧工厂
@@ -132,7 +133,7 @@
         </span>
         <span v-if="seriesProgress" class="factory-series-progress">{{ seriesProgress }}</span>
         <div class="factory-localization-actions">
-          <el-select v-model="fullLocalizationKey" placeholder="选择目标语言与国家" :disabled="fullLocalizationBusy">
+          <el-select v-model="fullLocalizationKey" placeholder="选择目标语言与国家" :disabled="fullLocalizationBusy || seriesImporting">
             <el-option v-for="item in fullLocalizationTargets" :key="item.key" :label="item.label" :value="item.key" />
           </el-select>
           <el-select
@@ -140,7 +141,7 @@
             v-model="seriesTargetId"
             class="factory-series-select"
             placeholder="导入到"
-            :disabled="fullLocalizationBusy"
+            :disabled="fullLocalizationBusy || seriesImporting"
             @change="seriesTargetTouched = true"
           >
             <el-option :value="0" label="新建短剧工厂项目" />
@@ -153,7 +154,7 @@
           <el-button
             type="primary"
             :loading="fullLocalizationBusy"
-            :disabled="!fullLocalizationKey || fullLocalizationState.status === 'localizing'"
+            :disabled="!fullLocalizationKey || fullLocalizationState.status === 'localizing' || seriesImporting"
             @click="runFullLocalization"
           >
             {{ localizationActionLabel(fullLocalizationState) }}
