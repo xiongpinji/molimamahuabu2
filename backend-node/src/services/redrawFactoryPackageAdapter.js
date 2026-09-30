@@ -232,6 +232,9 @@ function mapScenes(facts, style, glossary, names, culture = cultureOf(null)) {
 
 // 道具生图只要物品本身：去掉"某角色手中的 / 环绕某角色的"这类归属修饰，否则生图模型会把拿道具的人一起画出来。
 // 道具名称（含归属）仍用于分镜关联和描述，只有生图提示词改用去掉归属的物品短语。
+// 本地化模型有时把角色名写成中文音译（Martina 写成"马蒂娜"），按名字匹配不到；开头"……手持的 / ……腰间佩带的 /
+// 环绕……的"这类持有、位置短语不看名字一律去掉。引号里的文字不算，没有持有、位置词的修饰（覆盖石台的……）保留。
+const HOLDER_CLAUSE = /^[^的，,、“”"「」]{0,12}?(?:手持|手中|手里|手上|掌中|掌心|指间|怀中|怀里|口中|嘴里|所持|持有|握着|拿着|举着|捧着|抱着|提着|夹着|背着|背上|腰间|腰上|身上|身边|身旁|身侧|身后|身前|胸前|头上|头顶|戴着|挂着|佩带|佩戴|环绕|围绕|周围|周身)[^的，,、“”"「」]{0,8}?的/;
 function propObjectPhrase(name, characterNames = []) {
   let value = text(name);
   const people = [...new Set(characterNames.map(text).filter(Boolean))].sort((a, b) => b.length - a.length);
@@ -244,6 +247,8 @@ function propObjectPhrase(name, characterNames = []) {
     }
   }
   value = value.replace(/^[\s的，,、]+/, '').trim();
+  const withoutHolder = value.replace(HOLDER_CLAUSE, '').trim();
+  if (withoutHolder) value = withoutHolder;
   return value || text(name);
 }
 

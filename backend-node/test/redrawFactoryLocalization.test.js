@@ -615,3 +615,34 @@ test('prop object phrase drops the owner clause around a character name', () => 
   assert.equal(propObjectPhrase('飞刀', names), '飞刀');
   assert.equal(propStylePositive('日系动漫风格，赛璐璐上色，人物大眼，柔和光影'), '日系动漫风格，赛璐璐上色，柔和光影');
 });
+
+test('prop object phrase also drops holding and position clauses when the owner is a Chinese transliteration or a group', () => {
+  // #95（阿根廷版）：角色名是 Martina / Héctor，模型写的道具名却是"马蒂娜手持的发光长剑""埃克托手中的……"，按名字匹配不到。
+  const { propObjectPhrase } = require('../src/services/redrawFactoryPackageAdapter');
+  const names = ['Héctor', 'Martina', 'Tomás'];
+  assert.equal(propObjectPhrase('马蒂娜手持的发光长剑', names), '发光长剑');
+  assert.equal(propObjectPhrase('埃克托手中的小型圆形金属徽章', names), '小型圆形金属徽章');
+  assert.equal(propObjectPhrase('环绕马蒂娜的多柄悬空长剑', names), '多柄悬空长剑');
+  assert.equal(propObjectPhrase('队员们腰间佩带的长剑与剑鞘', names), '长剑与剑鞘');
+  assert.equal(propObjectPhrase('头顶上方悬浮的光环', names), '光环');
+  assert.equal(propObjectPhrase('Martina手中的长剑', names), '长剑');
+  // 没有持有、位置词的修饰保留；引号里的文字不当归属；只有短语没有物品时保留原名。
+  assert.equal(propObjectPhrase('覆盖石台的橙红色网格穹顶', names), '覆盖石台的橙红色网格穹顶');
+  assert.equal(propObjectPhrase('橙红色环形剑阵能量', names), '橙红色环形剑阵能量');
+  assert.equal(propObjectPhrase('手持式对讲机', names), '手持式对讲机');
+  assert.equal(propObjectPhrase('写着“手中”的纸条', names), '写着“手中”的纸条');
+  assert.equal(propObjectPhrase('手中的', names), '手中的');
+});
+
+test('prop image prompt drops a transliterated owner clause as well', () => {
+  const output = localization.validateOutput(TARGET, localization.compactFacts(factsV2()),
+    modelOutput({ props: [{ id: 'p1', name: '迭戈手中的一枚比索硬币' }] }));
+  const pkg = buildRedrawFactoryPackage({
+    sourceFacts: factsV2(),
+    localization: { locale: 'es', market: 'MX', name_map: output.nameMap, text_map: output.textMap, glossary: {}, culture_map: output.cultureMap },
+    analysisSettings: { free_style: { positive: '真人写实风格，真人演员实拍质感，电影级光影', negative: '' } },
+  });
+  assert.equal(pkg.props[0].name, '迭戈手中的一枚比索硬币', 'the prop name keeps its owner for storyboard links');
+  assert.equal(pkg.props[0].prompt,
+    '写实风格，电影级光影。 一枚比索硬币，作为单独物品放在纯色无缝背景上。 画面中只有这件物品，没有任何人物、手或身体部位，没有文字。');
+});
