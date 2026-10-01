@@ -68,11 +68,13 @@ function parseJson(value, fallback) {
 }
 
 // 流式返回偶尔在一段完整的 JSON 之后又接着第二段输出（上游在同一次推送里重发或再生成一次；2026-10-01 英语版
-// 总长 9431、报错位置 4716，越南语版 9670 / 5414）。整体解析失败时取开头第一段完整的 JSON 对象（按括号配对，
-// 跳过字符串里的括号），之后照常走校验与补问；开头那段本身不完整的，仍按“不是合法 JSON”失败并退款。
-function leadingJsonObject(value) {
-  const start = value.search(/\S/);
-  if (start < 0 || value[start] !== '{') return null;
+// 总长 9431、报错位置 4716，越南语版 9670 / 5414）。整体解析失败时从开头起逐段取出完整的 JSON 对象（按括号配对，
+// 跳过字符串里的括号），用答案内容最多的一段（2026-10-01 印尼语第 2 集补问：第一段只有 318 字，后面 4754 字的
+// 第二段才是补全的台词和梗概，只取第一段会把补问结果丢掉，整集失败），之后照常走校验与补问；
+// 开头那段本身不完整的，仍按“不是合法 JSON”失败并退款。
+function leadingJsonObject(value, from = 0) {
+  const start = value.slice(from).search(/\S/) + from;
+  if (start < from || value[start] !== '{') return null;
   let depth = 0;
   let inString = false;
   let escaped = false;
@@ -89,11 +91,32 @@ function leadingJsonObject(value) {
     } else if (char === '}') {
       depth -= 1;
       if (depth === 0) {
-        try { return { value: JSON.parse(value.slice(start, index + 1)), end: index + 1 }; } catch (_) { return null; }
+        try { return { value: JSON.parse(value.slice(start, index + 1)), start, end: index + 1 }; } catch (_) { return null; }
       }
     }
   }
   return null;
+}
+
+// 答案内容有多少：各个结果列表的条目数，加上设定句和钩子；不是对象的算 -1。
+const ANSWER_LISTS = ['characters', 'scenes', 'props', 'lines', 'screen_texts', 'story', 'culture_terms'];
+
+function answerSize(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return -1;
+  return ANSWER_LISTS.reduce((sum, key) => sum + list(value[key]).length, 0)
+    + (text(value.setting) ? 1 : 0) + (text(value.episode_hook) ? 1 : 0);
+}
+
+// 开头一段之后接着的完整 JSON 对象（中间可以隔着 ``` 之类的围栏）；遇到不完整的一段就停。
+function jsonObjects(body) {
+  const objects = [];
+  let found = leadingJsonObject(body);
+  while (found) {
+    objects.push(found);
+    const next = body.indexOf('{', found.end);
+    found = next < 0 ? null : leadingJsonObject(body, next);
+  }
+  return objects;
 }
 
 function parseModelJson(raw, onTrailing) {
@@ -102,13 +125,28 @@ function parseModelJson(raw, onTrailing) {
   try {
     return JSON.parse(body);
   } catch (error) {
-    const first = leadingJsonObject(body);
-    if (!first) throw codedError('REDRAW_FACTORY_LOCALIZATION_INVALID', `本地化结果不是合法 JSON：${error.message}`);
+    const objects = jsonObjects(body);
+    if (!objects.length) throw codedError('REDRAW_FACTORY_LOCALIZATION_INVALID', `本地化结果不是合法 JSON：${error.message}`);
+    // 内容一样多时取长的一段，再一样就取前面的。
+    const used = objects.reduce((best, item) => {
+      const size = answerSize(item.value);
+      const bestSize = answerSize(best.value);
+      if (size !== bestSize) return size > bestSize ? item : best;
+      return item.end - item.start > best.end - best.start ? item : best;
+    });
+    const first = objects[0];
     const trailing = body.slice(first.end).trim();
     if (typeof onTrailing === 'function') {
-      onTrailing({ json_length: first.end, trailing_length: trailing.length, trailing_is_json: /^(?:```|\{)/.test(trailing) });
+      onTrailing({
+        json_length: first.end,
+        trailing_length: trailing.length,
+        trailing_is_json: /^(?:```|\{)/.test(trailing),
+        objects: objects.length,
+        used: objects.indexOf(used) + 1,
+        used_length: used.end - used.start,
+      });
     }
-    return first.value;
+    return used.value;
   }
 }
 
@@ -550,13 +588,14 @@ function buildPrompt(target, compact, locked = {}, taken = [], world = {}) {
     `You are fully re-localizing a short drama for ${target.country_en}. The finished drama must look and sound as if it were made in ${target.country_en} for ${target.country_en} viewers.`,
     `Every person becomes a person from ${target.country_en}, every line is spoken in ${target.language_en} as used in ${target.country_en}, and every place and prop belongs to ${target.country_en}.`,
     'Keep the plot, relationships, ages, body builds, emotions, actions and the role clothing plays in the story (for example a shared school uniform) exactly; change names, ethnicity and looks, language, and cultural details.',
-    'Return this JSON shape: {"characters":[{"id":"","name":"","role":"","appearance":""}],"scenes":[{"id":"","location":"","time":"","visual":""}],"props":[{"id":"","name":""}],"lines":[{"key":"","text":""}],"screen_texts":[{"key":"","text":""}],"story":[""],"episode_hook":"","setting":"","culture_terms":[{"source":"","target":""}],"pinyin_terms":[""]}',
+    'Return this JSON shape: {"characters":[{"id":"","name":"","role":"","appearance":""}],"scenes":[{"id":"","location":"","time":"","visual":""}],"props":[{"id":"","name":""}],"lines":[{"key":"","text":""}],"screen_texts":[{"key":"","text":""}],"story":[""],"episode_hook":"","setting":"","culture_terms":[{"source":"","target":""}],"pinyin_terms":[""],"name_terms":[{"source":"","pinyin":"","transliteration":""}]}',
     `characters: exactly one entry for EVERY supplied id, including groups and crowds, never skip one. name is a natural first name common in ${target.country_en} written as locals write it; for unnamed roles (mother, father, an athlete on TV) use a short natural ${target.language_en} role label, and for a group of people use a short plural ${target.language_en} label (for example the equivalent of "classmates"); these labels are used as the character's name, so capitalize them the way a name is written (for example "Mamá", "Compañeros"). appearance describes a person from ${target.country_en}: apparent age, build, skin tone, face, hair, and ${target.country_en}-style clothing that keeps the same story role; write appearance in Simplified Chinese and never mention the old name. role is a short Simplified Chinese description of the person's place in the story using the new names.`,
     `scenes: one entry for every supplied id; move the place to ${target.country_en}: location is a short, natural Simplified Chinese place name that a native Chinese screenwriter would write (for example "中学小卖部门口", "老街区铁门外", "家中餐厅"), never a word-by-word translation of the source wording (not "学校门面入口"), time is the time of day in Simplified Chinese, visual describes ${target.country_en} architecture, signage in ${target.language_en}, street details, lighting and palette in Simplified Chinese; no Chinese characters on signs.`,
     'props: one entry for every supplied id; Simplified Chinese name of the equivalent local object.',
     'In scenes and props, refer to people only by their new names from characters (or locked_characters), and put any sign or on-screen wording inside quotation marks; everything else is Simplified Chinese.',
-    `lines: one entry for every supplied subtitle key; translate the line into natural spoken ${target.language_en} as used in ${target.country_en}, same meaning, tone and length, replacing any old character names with the new names. Names of sects, schools, organizations, places, titles and techniques from the source become the names of this ${target.country_en} version (or plain ${target.language_en} words) in lines too; never write them in Hanyu Pinyin (for example not "Qingyun Academy"). screen_texts: same for on-screen text keys.`,
+    `lines: one entry for every supplied subtitle key; translate the line into natural spoken ${target.language_en} as used in ${target.country_en}, same meaning, tone and length, replacing any old character names with the new names. A Chinese surname or given name inside a form of address (for example 李长老, 王师兄, 小美) names a person: use that character's new name (or a natural ${target.country_en} form of address built from it), or a natural ${target.country_en} name for someone who is not one of the characters; never keep a Chinese personal name, neither in Hanyu Pinyin nor transliterated into ${target.language_en} (for example not "Elder Li"). Names of sects, schools, organizations, places, titles and techniques from the source become the names of this ${target.country_en} version (or plain ${target.language_en} words) in lines too; never write them in Hanyu Pinyin (for example not "Qingyun Academy"). screen_texts: same for on-screen text keys.`,
     'pinyin_terms: the Hanyu Pinyin without tone marks of every proper noun (sect, school, organization, place, title or technique) that appears in the supplied Chinese texts, both joined and with spaces between syllables (for example "Qingyun", "Qing Yun"); no character names; [] when there are none. This list is only used to check lines.',
+    `name_terms: every Chinese personal name, surname or nickname in the supplied subtitles, including those inside forms of address (for example 李 in 李长老, 王 in 王师兄, 小美): source is the Chinese characters exactly as they appear, pinyin is the Hanyu Pinyin without tone marks written like a name (for example "Li", "Xiaomei"), transliteration is how the name would usually be spelled in ${target.language_en} if it were transliterated instead of replaced (for example Thai "หลี่", Vietnamese "Lý"; the same as pinyin when ${target.language_en} has no own spelling); [] when there are none. This list is only used to check lines.`,
     `story: the supplied story retold as the plot of the ${target.country_en} drama, written in Simplified Chinese (not in ${target.language_en}; only the new names keep their own spelling), one paragraph per supplied story entry, same events in the same order, using only the new names and the new places; never use any old name (source_name or display_name) and never mention subtitles, captions or on-screen text, tell what the characters say or intend instead. episode_hook: the supplied episode_hook retold the same way in one Simplified Chinese sentence.`,
     `setting: one Simplified Chinese sentence stating the story takes place in ${target.country_en} and all people are from ${target.country_en}.`,
     `culture_terms: words or short phrases in the supplied Chinese texts (story, scenes, props, character relationships, shot_texts) that belong to the source culture and must change for the ${target.country_en} version (sects and schools, ranks and titles, institutions, currencies, foods, festivals, typical kinds of places), each with the natural Simplified Chinese wording that fits the ${target.country_en} version and matches the scenes you return, for example {"source":"宗门","target":"修院"}. At most 20 entries; every source must appear verbatim in the supplied texts and have at least two Chinese characters; never list character names; leave out words that need no change. shot_texts are given only for finding culture_terms: do not translate or return them.`,
@@ -665,6 +704,52 @@ function pinyinLines(compact, parsed) {
   return { keys, terms: [...terms] };
 }
 
+// 台词里也不能留原片人名的任何写法（2026-10-01 泰语版第 2 集"李长老这是下死手了"译成 ผู้อาวุโสหลี่：姓"李"被音译成泰文，
+// 拼音检查查不到）。模型在 name_terms 里报出原片台词里的中文人名、姓氏（含"李长老""王师兄"这类称呼里的姓）和它的拼音、
+// 目标语言音译；只查原文这一句里确实有这个名字的台词。拉丁字母的写法按整词命中，而且要首字母大写（拼音 Yang、He 和
+// 印尼语 yang、英语 he 同形，小写的普通词不算）；泰文、假名等没有词间空格的文字按子串命中；允许汉字的目标语言（日语）
+// 原来的汉字也算。和本剧角色名字（本集新名字、沿用的名字、前几集用过的名字）里的词相同、或是名字一部分的写法不算。
+const LATIN_NAME_FORM = /^[\p{Script=Latin}\p{M}]+(?:[\s'’-][\p{Script=Latin}\p{M}]+)*$/u;
+const UPPER_START = /^\p{Lu}/u;
+
+function nameFormMatcher(form) {
+  if (!LATIN_NAME_FORM.test(form)) return (value) => value.includes(form);
+  const pattern = new RegExp(`(?<![\\p{L}\\p{M}])${form.split(/[\s'’-]+/).map(escapeRegExp).join("[\\s'’-]?")}(?![\\p{L}\\p{M}])`, 'giu');
+  return (value) => [...value.matchAll(pattern)].some((match) => UPPER_START.test(match[0]));
+}
+
+function nameTermLines(target, compact, parsed, series = {}) {
+  const names = storyNameList(parsed, series).map((name) => name.normalize('NFC'));
+  const nameWords = knownNameWords(parsed, series);
+  const terms = [];
+  for (const item of list(parsed?.name_terms)) {
+    const source = text(item?.source);
+    if (!HAN.test(source)) continue;
+    const forms = [...new Set([text(item?.pinyin), text(item?.transliteration), ...(target.allows_han ? [source] : [])]
+      .map((form) => form.normalize('NFC')).filter(Boolean))]
+      .filter((form) => HAN.test(form) || (form.match(/\p{L}/gu) || []).length >= 2)
+      .filter((form) => (LATIN_NAME_FORM.test(form)
+        ? !form.split(/[\s'’-]+/).every((word) => nameWords.has(word.toLowerCase()))
+        : !names.some((name) => name.includes(form))))
+      .map((form) => ({ form, matches: nameFormMatcher(form) }));
+    if (forms.length) terms.push({ source, forms });
+  }
+  if (!terms.length) return { keys: [], terms: [] };
+  const lines = new Map(list(parsed?.lines).filter((item) => item && text(item.key)).map((item) => [text(item.key), text(item.text).normalize('NFC')]));
+  const keys = [];
+  const kept = new Map();
+  for (const line of list(compact.subtitles)) {
+    const value = lines.get(line.key);
+    if (!value) continue;
+    const hits = terms.filter((term) => text(line.text).includes(term.source))
+      .flatMap((term) => term.forms.filter(({ matches }) => matches(value)).map(({ form }) => [term.source, form]));
+    if (!hits.length) continue;
+    keys.push(line.key);
+    for (const [source, form] of hits) kept.set(source, [...new Set([...(kept.get(source) || []), form])]);
+  }
+  return { keys, terms: [...kept].map(([source, forms]) => ({ source, kept: forms })) };
+}
+
 // 模型偶尔漏掉个别条目（例如"同学们"这类群体角色没给名字）：只把缺的条目再问一次，不重新收费。
 function missingItems(target, compact, parsed, series = {}) {
   const badHan = (value) => !target.allows_han && HAN.test(value);
@@ -675,7 +760,9 @@ function missingItems(target, compact, parsed, series = {}) {
     return !text(out?.name) || badHan(text(out?.name)) || !text(out?.appearance);
   });
   const pinyin = pinyinLines(compact, parsed);
-  const missingLines = compact.subtitles.filter((line) => !lines.get(line.key) || badHan(lines.get(line.key)) || pinyin.keys.includes(line.key));
+  const kept = nameTermLines(target, compact, parsed, series);
+  const missingLines = compact.subtitles.filter((line) => !lines.get(line.key) || badHan(lines.get(line.key))
+    || pinyin.keys.includes(line.key) || kept.keys.includes(line.key));
   const story = storyProblem(compact, parsed, series);
   return {
     characters: missingCharacters,
@@ -684,6 +771,7 @@ function missingItems(target, compact, parsed, series = {}) {
     story,
     ...(story ? { story_names: storyCharacterNames(parsed) } : {}),
     ...(pinyin.keys.length ? { pinyin_lines: pinyin.keys, pinyin_terms: pinyin.terms } : {}),
+    ...(kept.keys.length ? { name_lines: kept.keys, name_terms: kept.terms, line_names: storyCharacterNames(parsed) } : {}),
     count: missingCharacters.length + missingLines.length + (text(parsed?.setting) ? 0 : 1) + (story ? 1 : 0),
   };
 }
@@ -692,7 +780,8 @@ function buildRepairPrompt(target, compact, missing) {
   const world = missing.world || {};
   const base = buildPrompt(target, compact, {}, missing.names_in_use || [], world);
   const foreign = list(missing.scenes).length + list(missing.props).length;
-  const characterNames = list(missing.character_names).length ? missing.character_names : list(missing.story_names);
+  const characterNames = list(missing.character_names).length ? missing.character_names
+    : (list(missing.story_names).length ? missing.story_names : list(missing.line_names));
   return {
     system: `${base.system}\nYour previous answer left out or broke the items below. Return the same JSON shape containing only these items, completed.${foreign
       ? '\nThe scenes and props below contained English words or names of people who are not characters: rewrite their location, time, visual and name in Simplified Chinese, refer to people only by the names in character_names, and keep sign wording inside quotation marks.'
@@ -700,6 +789,8 @@ function buildRepairPrompt(target, compact, missing) {
       ? '\nRetell the story in Simplified Chinese and refer to every person only by the name given for their id in character_names (all_characters lists the same ids with the original names); never invent other names.'
       : ''}${list(missing.pinyin_lines).length
       ? `\nThe lines for some subtitles below kept the Hanyu Pinyin of source names (pinyin_terms): translate them again in natural spoken ${target.language_en} as used in ${target.country_en} and use the names of this ${target.country_en} version instead, never the pinyin.`
+      : ''}${list(missing.name_lines).length
+      ? `\nThe lines for some subtitles below kept Chinese personal names (name_terms lists each source name with the spellings found in your lines): translate them again in natural spoken ${target.language_en} as used in ${target.country_en} and refer to each person by the new name given for their id in character_names (all_characters lists the same ids with the original names and relationships), or by a natural ${target.country_en} name or form of address for someone who is not one of the characters; never a Chinese name in any form.`
       : ''}`,
     user: JSON.stringify({
       characters: missing.characters,
@@ -710,6 +801,9 @@ function buildRepairPrompt(target, compact, missing) {
       ...(list(missing.props).length ? { props: missing.props } : {}),
       ...(characterNames.length ? { character_names: characterNames } : {}),
       ...(list(missing.pinyin_terms).length ? { pinyin_terms: missing.pinyin_terms } : {}),
+      ...(list(missing.name_terms).length ? { name_terms: missing.name_terms } : {}),
+      // 认出"李长老"指的是谁要看原名和身份；要重写梗概时下面会一起给。
+      ...(list(missing.name_lines).length && !missing.story ? { all_characters: compact.characters } : {}),
       ...(text(world.setting) ? { series_setting: text(world.setting) } : {}),
       ...(list(world.story).length ? { previous_story: list(world.story) } : {}),
       ...(list(world.places).length ? { known_places: list(world.places) } : {}),
@@ -914,6 +1008,7 @@ async function runLocalization(db, log, ctx, deps) {
         task_id: taskId, characters: missing.characters.map((c) => c.id), lines: missing.subtitles.length, setting: missing.setting,
         scenes: list(missing.scenes).map((scene) => scene.id), props: list(missing.props).map((prop) => prop.id),
         ...(list(missing.pinyin_terms).length ? { pinyin_terms: missing.pinyin_terms } : {}),
+        ...(list(missing.name_terms).length ? { name_terms: missing.name_terms } : {}),
       });
       taskService.updateTaskStatus(db, taskId, 'processing', 70, '正在补全遗漏的名字、形象或台词');
       const merged = mergeOutputs(parsed, await ask(buildRepairPrompt(target, compact, { ...missing, world })));
@@ -921,10 +1016,12 @@ async function runLocalization(db, log, ctx, deps) {
       const leftover = foreignTextItems(compact, parsed, series);
       const storyWords = storyForeignWords(parsed, series);
       const pinyinLeft = pinyinLines(compact, parsed);
-      if (leftover.scenes.length || leftover.props.length || storyWords.length || pinyinLeft.keys.length) {
+      const namesLeft = nameTermLines(target, compact, parsed, series);
+      if (leftover.scenes.length || leftover.props.length || storyWords.length || pinyinLeft.keys.length || namesLeft.keys.length) {
         log?.warn?.('redraw factory localization still has foreign text after repair', {
           task_id: taskId, scenes: leftover.scenes.map((scene) => scene.id), props: leftover.props.map((prop) => prop.id),
           story_words: storyWords.slice(0, 10), pinyin_lines: pinyinLeft.keys, pinyin_terms: pinyinLeft.terms,
+          name_lines: namesLeft.keys, name_terms: namesLeft.terms,
         });
       }
     }
@@ -943,6 +1040,7 @@ async function runLocalization(db, log, ctx, deps) {
     log?.info?.('redraw factory localization completed', {
       task_id: taskId, work_id: work.id, target: target.key, version_id: versionId,
       pinyin_terms: list(parsed?.pinyin_terms).map(text).filter(Boolean).slice(0, 10),
+      name_terms: list(parsed?.name_terms).map((item) => text(item?.source)).filter(Boolean).slice(0, 10),
     });
     return versionId;
   } catch (error) {
@@ -1059,4 +1157,5 @@ module.exports = {
   describeTarget,
   parseModelJson,
   pinyinLines,
+  nameTermLines,
 };

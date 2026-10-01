@@ -347,7 +347,7 @@ function seedCapability(db, { locale = 'es', market = '' } = {}) {
   prices.set(db, MODEL, 10);
 }
 
-function seedWork(db, storageRoot) {
+function seedWork(db, storageRoot, facts = factsV2()) {
   const now = new Date().toISOString();
   const projectId = Number(db.prepare(`INSERT INTO redraw_projects (tenant_id, user_id, title, default_locale, default_market,
     localization_level, status, created_at, updated_at) VALUES (?, ?, '样片', 'es', '', 'faithful', 'draft', ?, ?)`)
@@ -361,7 +361,7 @@ function seedWork(db, storageRoot) {
     .run(projectId, TENANT, USER, sourceAssetId, 'f'.repeat(64), taskId, now, now).lastInsertRowid);
   const rel = `redraw-analysis/${taskId}/source-analysis.json`;
   fs.mkdirSync(path.dirname(path.join(storageRoot, rel)), { recursive: true });
-  fs.writeFileSync(path.join(storageRoot, rel), JSON.stringify({ schema_version: '2.0', facts: { facts_hash: FACTS_HASH }, facts_v2: factsV2() }));
+  fs.writeFileSync(path.join(storageRoot, rel), JSON.stringify({ schema_version: '2.0', facts: { facts_hash: FACTS_HASH }, facts_v2: facts }));
   const resultAssetId = Number(db.prepare(`INSERT INTO assets (name, type, category, local_path, metadata, created_at, updated_at)
     VALUES ('analysis', 'json', 'redraw_source_analysis', ?, ?, ?, ?)`)
     .run(rel, JSON.stringify({ tenant_id: TENANT, user_id: USER, work_id: workId }), now, now).lastInsertRowid);
@@ -372,7 +372,7 @@ function seedWork(db, storageRoot) {
   db.prepare(`INSERT INTO redraw_versions (work_id, tenant_id, user_id, version, locale, market, localization_level,
     source_facts_json, facts_hash, status, created_at, updated_at) VALUES (?, ?, ?, 1, 'source', '', 'faithful', ?, ?, 'asset_review', ?, ?)`)
     // main 分支把 v2 源片事实直接存在 source 版本里。
-    .run(workId, TENANT, USER, JSON.stringify(factsV2()), FACTS_HASH, now, now);
+    .run(workId, TENANT, USER, JSON.stringify(facts), FACTS_HASH, now, now);
   return workId;
 }
 
@@ -385,12 +385,12 @@ function captureResponse() {
   };
 }
 
-function setup(generate) {
+function setup(generate, { facts } = {}) {
   const db = createDb();
   const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'redraw-factory-l10n-'));
   seedCapability(db);
   creditLedger.setTenantAccountBalance(db, TENANT, 1000);
-  const workId = seedWork(db, storageRoot);
+  const workId = seedWork(db, storageRoot, facts);
   let pending = null;
   const handlers = redrawRoutes(db, { error() {}, info() {}, warn() {} }, {
     cfg: { storage: { local_path: storageRoot } },
@@ -779,17 +779,51 @@ test('Japanese names written in kana, or kanji mixed with kana, are character na
   }
 });
 
-test('model output: the first complete JSON object is used when the stream carries more after it', () => {
+test('model output: when the stream carries more after the JSON, the complete object with the most answer content is used', () => {
   const { parseModelJson } = localization;
   const seen = [];
   assert.deepEqual(parseModelJson('{"a":1}{"a":1}', (info) => seen.push(info)), { a: 1 });
-  assert.deepEqual(seen[0], { json_length: 7, trailing_length: 7, trailing_is_json: true });
+  assert.deepEqual(seen[0], { json_length: 7, trailing_length: 7, trailing_is_json: true, objects: 2, used: 1, used_length: 7 });
   assert.deepEqual(parseModelJson('{"a":"}{\\""}\n以上是结果', (info) => seen.push(info)), { a: '}{"' }, 'braces and quotes inside strings do not end the object');
   assert.equal(seen[1].trailing_is_json, false);
   assert.deepEqual(parseModelJson('```json\n{"a":1}\n```'), { a: 1 });
   assert.equal(seen.length, 2, 'a clean answer reports no trailing content');
   assert.throws(() => parseModelJson('{"a":'), (error) => error.code === 'REDRAW_FACTORY_LOCALIZATION_INVALID' && /不是合法 JSON/.test(error.message));
   assert.throws(() => parseModelJson('以上是结果{"a":1}'), /不是合法 JSON/, 'text before the JSON is still invalid');
+  // 2026-10-01 印尼语第 2 集补问：开头一小段（318 字），后面那段（4754 字）才是补全的台词和梗概。
+  const short = { lines: [] };
+  const answer = { lines: [{ key: 'k1', text: 'Mulai hari ini' }, { key: 'k2', text: 'Sari menjadi murid utama' }], story: ['梗概'] };
+  const two = `${JSON.stringify(short)}\n${JSON.stringify(answer)}`;
+  assert.deepEqual(parseModelJson(two, (info) => seen.push(info)), answer);
+  assert.deepEqual(seen.at(-1), {
+    json_length: JSON.stringify(short).length, trailing_length: JSON.stringify(answer).length, trailing_is_json: true,
+    objects: 2, used: 2, used_length: JSON.stringify(answer).length,
+  });
+  assert.deepEqual(parseModelJson(`${JSON.stringify(short)}\n\`\`\`json\n${JSON.stringify(answer)}\n\`\`\``), answer, 'a fenced second object is read as well');
+  assert.deepEqual(parseModelJson(`${JSON.stringify(answer)}${JSON.stringify(answer).slice(0, 30)}`), answer, 'a cut-off second part leaves the complete first one');
+  assert.deepEqual(parseModelJson(`${JSON.stringify(answer)}{"lines":[]}`), answer, 'a short object after the answer does not replace it');
+});
+
+test('a repair answer whose real content follows a short JSON object still completes the localization', async () => {
+  const calls = [];
+  const { db, storageRoot, call, settle } = setup(async () => {
+    calls.push(1);
+    if (calls.length === 1) return JSON.stringify(modelOutput({ lines: [{ key: 'shot-1:txt1', text: '¿Y tú quién eres?' }] }));
+    return `${JSON.stringify({ lines: [] })}\n${JSON.stringify({ lines: [{ key: 'shot-2:txt3', text: 'El Mundial será mi capital inicial.' }] })}`;
+  });
+  try {
+    await call({ action: 'start', localization: { locale: 'es', market: 'MX' }, expected_credits: 10 });
+    await settle();
+    assert.equal(calls.length, 2);
+    const status = await call({ action: 'status', localization: { locale: 'es', market: 'MX' } });
+    assert.equal(status.body.data.status, 'ready');
+    const version = db.prepare('SELECT text_map_json FROM redraw_versions WHERE id = ?').get(status.body.data.version_id);
+    assert.match(version.text_map_json, /El Mundial será mi capital inicial/);
+    assert.equal(creditLedger.getTenantAccount(db, TENANT).spent, 10, 'the repair call is not charged');
+  } finally {
+    db.close();
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  }
 });
 
 test('a stream that repeats the whole answer after the JSON still localizes and charges once', async () => {
@@ -890,6 +924,138 @@ test('pinyin terms that do not appear in any line cause no extra call', async ()
     await call({ action: 'start', localization: { locale: 'es', market: 'MX' }, expected_credits: 10 });
     await settle();
     assert.equal(calls.length, 1);
+    const status = await call({ action: 'status', localization: { locale: 'es', market: 'MX' } });
+    assert.equal(status.body.data.status, 'ready');
+  } finally {
+    db.close();
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  }
+});
+
+test('Chinese names kept in lines: only where the source line has the name; other scripts as substrings, Latin spellings as capitalized whole words', () => {
+  const { nameTermLines, describeTarget } = localization;
+  // 2026-10-01 泰语版第 2 集："李长老这是下死手了啊"译成 ผู้อาวุโสหลี่…（姓"李"音译成泰文）。
+  const compact = {
+    subtitles: [
+      { key: 'a', text: '李长老这是下死手了啊' },
+      { key: 'b', text: '王师兄来了' },
+      { key: 'c', text: '我不想让你失望' },
+      { key: 'd', text: '李长老说得对' },
+    ],
+  };
+  const parsed = {
+    characters: [{ id: 'c1', name: 'แพรไหม' }, { id: 'c2', name: 'อาจารย์' }],
+    name_terms: [
+      { source: '李', pinyin: 'Li', transliteration: 'หลี่' },
+      { source: '王', pinyin: 'Wang', transliteration: 'หวัง' },
+      { source: 'Li', pinyin: 'Li' },
+    ],
+    lines: [
+      { key: 'a', text: 'ผู้อาวุโสหลี่เอาจริงถึงตายเลยนะ' },
+      { key: 'b', text: 'ศิษย์พี่มาแล้ว' },
+      { key: 'c', text: 'ฉันไม่อยากให้เธอผิดหวัง' },
+      { key: 'd', text: 'อาจารย์พูดถูก' },
+    ],
+  };
+  assert.deepEqual(nameTermLines(describeTarget('th', 'TH'), compact, parsed), { keys: ['a'], terms: [{ source: '李', kept: ['หลี่'] }] },
+    'หวัง ("hope") in a line whose source has no 王 is an ordinary word');
+  assert.deepEqual(nameTermLines(describeTarget('th', 'TH'), compact, { ...parsed, name_terms: [] }), { keys: [], terms: [] });
+
+  const indonesian = {
+    subtitles: [{ key: 'a', text: '李长老这是下死手了啊' }, { key: 'b', text: '杨师兄说的' }, { key: 'c', text: '杨师兄来了' }, { key: 'd', text: '李长老来了' }],
+  };
+  assert.deepEqual(nameTermLines(describeTarget('id', 'ID'), indonesian, {
+    characters: [{ id: 'c1', name: 'Sari' }],
+    name_terms: [{ source: '李', pinyin: 'Li', transliteration: 'Li' }, { source: '杨', pinyin: 'Yang', transliteration: 'Yang' }],
+    lines: [
+      { key: 'a', text: 'Tetua Li benar-benar ingin membunuhnya!' },
+      { key: 'b', text: 'Itu yang dikatakan kakak senior.' },
+      { key: 'c', text: 'Kakak Yang sudah datang.' },
+      { key: 'd', text: 'Tetua Linda sudah datang.' },
+    ],
+  }), { keys: ['a', 'c'], terms: [{ source: '李', kept: ['Li'] }, { source: '杨', kept: ['Yang'] }] },
+  'lowercase yang is an ordinary word and Linda is not Li');
+
+  assert.deepEqual(nameTermLines(describeTarget('en', 'SG'), { subtitles: [{ key: 'a', text: '李长老来了' }] }, {
+    characters: [{ id: 'c1', name: 'Li Wei' }],
+    name_terms: [{ source: '李', pinyin: 'Li', transliteration: 'Li' }],
+    lines: [{ key: 'a', text: 'Elder Li is here.' }],
+  }), { keys: [], terms: [] }, 'a spelling that is a character name is that character');
+
+  assert.deepEqual(nameTermLines(describeTarget('ja', 'JP'), { subtitles: [{ key: 'a', text: '李长老这是下死手了啊' }] }, {
+    characters: [{ id: 'c1', name: '黒田' }],
+    name_terms: [{ source: '李', pinyin: 'Li', transliteration: 'リー' }],
+    lines: [{ key: 'a', text: '李長老は本気で殺す気だ' }],
+  }), { keys: ['a'], terms: [{ source: '李', kept: ['李'] }] }, 'Japanese may write kanji, but not the Chinese name');
+
+  assert.deepEqual(nameTermLines(describeTarget('vi', 'VN'), { subtitles: [{ key: 'a', text: '李长老这是下死手了啊' }, { key: 'b', text: '李长老讲道理' }] }, {
+    characters: [],
+    name_terms: [{ source: '李', pinyin: 'Li', transliteration: 'Lý' }],
+    lines: [{ key: 'a', text: 'Trưởng lão Lý ra tay thật rồi!' }, { key: 'b', text: 'Trưởng lão nói có lý.' }],
+  }), { keys: ['a'], terms: [{ source: '李', kept: ['Lý'] }] });
+});
+
+// 第 2 镜字幕带称呼里的姓名"李长老"（main 的 source 版本建好后不能再改，建作品时就带上）。
+function factsWithElderLi() {
+  const facts = factsV2();
+  facts.shots[1].text_regions[0].source_text = '李长老说世界杯就是我的起步资金';
+  return facts;
+}
+
+test('a line that keeps a Chinese name from a form of address is asked for once more with the new names, without charging again', async () => {
+  const calls = [];
+  const { db, storageRoot, call, settle } = setup(async (_db, _log, _type, user, system) => {
+    calls.push({ user: JSON.parse(user), system });
+    if (calls.length === 1) {
+      return JSON.stringify(modelOutput({
+        lines: [
+          { key: 'shot-1:txt1', text: '¿Y tú quién eres?' },
+          { key: 'shot-2:txt3', text: 'El anciano Li dice que el Mundial será mi capital inicial.' },
+        ],
+        name_terms: [{ source: '李', pinyin: 'Li', transliteration: 'Li' }],
+      }));
+    }
+    return JSON.stringify({ lines: [{ key: 'shot-2:txt3', text: 'Don Mateo dice que el Mundial será mi capital inicial.' }] });
+  }, { facts: factsWithElderLi() });
+  try {
+    await call({ action: 'start', localization: { locale: 'es', market: 'MX' }, expected_credits: 10 });
+    await settle();
+    assert.equal(calls.length, 2);
+    assert.match(calls[0].system, /name_terms: every Chinese personal name/);
+    assert.match(calls[0].system, /never keep a Chinese personal name/);
+    assert.deepEqual(calls[1].user.subtitles.map((line) => line.key), ['shot-2:txt3']);
+    assert.deepEqual(calls[1].user.name_terms, [{ source: '李', kept: ['Li'] }]);
+    assert.deepEqual(calls[1].user.character_names, [{ id: 'c1', name: 'Diego' }, { id: 'c2', name: 'Mateo' }]);
+    assert.deepEqual(calls[1].user.all_characters.map((character) => character.source_name), ['林江', '林哥']);
+    assert.match(calls[1].system, /kept Chinese personal names/);
+    const status = await call({ action: 'status', localization: { locale: 'es', market: 'MX' } });
+    assert.equal(status.body.data.status, 'ready');
+    const version = db.prepare('SELECT text_map_json FROM redraw_versions WHERE id = ?').get(status.body.data.version_id);
+    assert.doesNotMatch(version.text_map_json, /anciano Li/);
+    assert.match(version.text_map_json, /Don Mateo/);
+    assert.equal(creditLedger.getTenantAccount(db, TENANT).spent, 10, 'the repair call is not charged');
+  } finally {
+    db.close();
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  }
+});
+
+test('name terms whose source name is not in a line, or that are not kept, cause no extra call', async () => {
+  const calls = [];
+  const { db, storageRoot, call, settle } = setup(async () => {
+    calls.push(1);
+    return JSON.stringify(modelOutput({
+      lines: [
+        { key: 'shot-1:txt1', text: '¿Y tú quién eres, Li?' },
+        { key: 'shot-2:txt3', text: 'Don Mateo dice que el Mundial será mi capital inicial.' },
+      ],
+      name_terms: [{ source: '李', pinyin: 'Li', transliteration: 'Li' }],
+    }));
+  }, { facts: factsWithElderLi() });
+  try {
+    await call({ action: 'start', localization: { locale: 'es', market: 'MX' }, expected_credits: 10 });
+    await settle();
+    assert.equal(calls.length, 1, 'the source of shot-1 has no 李 and shot-2 uses the new name');
     const status = await call({ action: 'status', localization: { locale: 'es', market: 'MX' } });
     assert.equal(status.body.data.status, 'ready');
   } finally {
