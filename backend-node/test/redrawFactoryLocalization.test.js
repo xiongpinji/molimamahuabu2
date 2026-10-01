@@ -825,3 +825,75 @@ test('an answer cut off before its JSON closes still fails and refunds', async (
     fs.rmSync(storageRoot, { recursive: true, force: true });
   }
 });
+
+test('pinyin left in lines: whole words of five or more letters, spaces between syllables optional, character names excluded', () => {
+  const { pinyinLines } = localization;
+  const compact = { subtitles: [{ key: 'a' }, { key: 'b' }, { key: 'c' }, { key: 'd' }] };
+  const parsed = {
+    characters: [{ id: 'c1', name: 'Mingyu' }],
+    pinyin_terms: ['Qingyun Zong', 'Tian Shan', 'Dao', 'Mingyu', '青云'],
+    lines: [
+      { key: 'a', text: 'Kamu diusir dari Akademi Qingyunzong.' },
+      { key: 'b', text: 'Ke Tianshan kita pergi.' },
+      { key: 'c', text: 'Mingyu, dao ini milikmu; Tianshanese style.' },
+      { key: 'd', text: 'Tidak ada apa-apa.' },
+    ],
+  };
+  assert.deepEqual(pinyinLines(compact, parsed), { keys: ['a', 'b'], terms: ['Qingyun Zong', 'Tian Shan'] });
+  assert.deepEqual(pinyinLines(compact, { ...parsed, pinyin_terms: [] }), { keys: [], terms: [] });
+});
+
+test('a line that keeps the Hanyu Pinyin of a source name is asked for once more without charging again', async () => {
+  // 2026-10-01 马来语版：门派名留成拼音 "Akademi Qingyun"。
+  const calls = [];
+  const { db, storageRoot, call, settle } = setup(async (_db, _log, _type, user, system) => {
+    calls.push({ user: JSON.parse(user), system });
+    if (calls.length === 1) {
+      return JSON.stringify(modelOutput({
+        lines: [
+          { key: 'shot-1:txt1', text: '¿Y tú quién eres?' },
+          { key: 'shot-2:txt3', text: 'Con el Mundial entraré a la Academia Qingyun.' },
+        ],
+        pinyin_terms: ['Qingyun', 'Qing Yun', 'Dao'],
+      }));
+    }
+    return JSON.stringify({ lines: [{ key: 'shot-2:txt3', text: 'Con el Mundial entraré a la Academia del Valle.' }] });
+  });
+  try {
+    await call({ action: 'start', localization: { locale: 'es', market: 'MX' }, expected_credits: 10 });
+    await settle();
+    assert.equal(calls.length, 2);
+    assert.match(calls[0].system, /pinyin_terms: the Hanyu Pinyin/);
+    assert.match(calls[0].system, /never write them in Hanyu Pinyin/);
+    assert.deepEqual(calls[1].user.subtitles.map((line) => line.key), ['shot-2:txt3']);
+    assert.deepEqual(calls[1].user.pinyin_terms, ['Qingyun', 'Qing Yun']);
+    assert.match(calls[1].system, /kept the Hanyu Pinyin of source names/);
+    const status = await call({ action: 'status', localization: { locale: 'es', market: 'MX' } });
+    assert.equal(status.body.data.status, 'ready');
+    const version = db.prepare('SELECT text_map_json FROM redraw_versions WHERE id = ?').get(status.body.data.version_id);
+    assert.doesNotMatch(version.text_map_json, /Qingyun/);
+    assert.match(version.text_map_json, /Academia del Valle/);
+    assert.equal(creditLedger.getTenantAccount(db, TENANT).spent, 10, 'the repair call is not charged');
+  } finally {
+    db.close();
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  }
+});
+
+test('pinyin terms that do not appear in any line cause no extra call', async () => {
+  const calls = [];
+  const { db, storageRoot, call, settle } = setup(async () => {
+    calls.push(1);
+    return JSON.stringify(modelOutput({ pinyin_terms: ['Qingyun', 'Tian Shan'] }));
+  });
+  try {
+    await call({ action: 'start', localization: { locale: 'es', market: 'MX' }, expected_credits: 10 });
+    await settle();
+    assert.equal(calls.length, 1);
+    const status = await call({ action: 'status', localization: { locale: 'es', market: 'MX' } });
+    assert.equal(status.body.data.status, 'ready');
+  } finally {
+    db.close();
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  }
+});
