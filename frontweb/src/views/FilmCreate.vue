@@ -1049,7 +1049,7 @@
             </div>
             <!-- 连贯帧模式 UI 暂时隐藏（保留变量与批量生成逻辑，后续可快速恢复） -->
             <div class="batch-video-options" style="margin-top:8px;display:flex;align-items:center;gap:8px;font-size:13px;">
-              <el-checkbox v-model="videoFrameContiguity" size="small">
+              <el-checkbox v-model="videoFrameContiguity" size="small" @change="saveProjectSettings()">
                 连贯帧模式（自动衔接同场景分镜）
               </el-checkbox>
               <el-tooltip placement="top" :show-after="100">
@@ -5379,6 +5379,9 @@ async function loadDrama() {
     if (savedVideoModel) selectedVideoModel.value = savedVideoModel
     videoNativeAudio.value = d.metadata?.video_native_audio !== false
     videoUseStoryboardReferenceVideo.value = d.metadata?.video_use_storyboard_reference_video === true
+    // 连贯帧按项目记住用户的选择；没存过时普通项目照旧默认开启，样片转绘导入的项目（全能参考镜头用不上连贯帧）默认关闭。
+    const savedFrameContiguity = d.metadata?.video_frame_contiguity
+    videoFrameContiguity.value = typeof savedFrameContiguity === 'boolean' ? savedFrameContiguity : !d.metadata?.redraw_import
     const savedImageModel = String(d.metadata?.image_model || '').trim()
     if (savedImageModel && imageModelOptions.value.some((item) => item.model === savedImageModel)) {
       selectedImageModel.value = savedImageModel
@@ -5796,6 +5799,7 @@ async function saveProjectSettings(includeGenerationStyle = false) {
     last_frame_use_first_layout_lock: !!lastFrameUseFirstLayoutLock.value,
     video_native_audio: !!videoNativeAudio.value,
     video_use_storyboard_reference_video: !!videoUseStoryboardReferenceVideo.value,
+    video_frame_contiguity: !!videoFrameContiguity.value,
   }
   if (includeGenerationStyle) {
     Object.assign(metadata, projectStylePromptMetadata())
@@ -7031,6 +7035,12 @@ async function refreshVideoModelCatalogBeforeGeneration() {
 
 async function onVideoModelChange() {
   syncVideoSelectionForModel(selectedVideoModel.value)
+  // 合成时按分镜时长裁剪的项目（样片转绘导入）：分镜时长就是原片节奏，换模型不改写；
+  // 提交时 submittableVideoDuration 已按模型档位取不小于它的最短时长，合成再裁回分镜时长。
+  if (store.drama?.metadata?.merge_trim_to_storyboard_duration === true) {
+    await saveProjectSettings(false)
+    return
+  }
   const durations = videoDurationOptionsForModel(selectedVideoModel.value)
   const nextDurations = { ...sbDuration.value }
   const updates = []
@@ -7106,6 +7116,12 @@ function kmGeneratingVideoCount() {
 
 function isKmConcurrencyRejection(error) {
   return /KM 请求被拒绝（HTTP 429）/.test(String(error?.message || error || ''))
+}
+
+/** 视频请求里带的参考素材数（参考图、参考视频、参考音频）。 */
+function omniReferenceMaterialCount(payload) {
+  return ['reference_image_urls', 'reference_video_urls', 'reference_audio_urls']
+    .reduce((sum, key) => sum + (Array.isArray(payload?.[key]) ? payload[key].length : 0), 0)
 }
 
 /** 与 buildSbVideoRequestContext 的 useOmni 判断一致：全能参考镜头不用首尾帧，连贯帧对它不起作用。 */
@@ -7682,14 +7698,17 @@ async function onGenerateSbVideo(sb) {
       )
       return
     }
-    try {
-      await ElMessageBox.confirm(
-        '当前没有可用的参考图（场景/角色/道具等；不含经典分镜主图），将按纯文案提交平台当前启用的视频模型，效果可能不稳定。确认继续？',
-        '全能模式无参考图',
-        { confirmButtonText: '继续生成', cancelButtonText: '取消', type: 'warning' }
-      )
-    } catch {
-      return
+    // KM 全能参考没有图时还可能带分镜参考原片或参考音频，组好请求后再判断（见下）；其它模型照旧可按纯文案提交。
+    if (!isKmVideoModel(getStoryboardVideoModel(sb))) {
+      try {
+        await ElMessageBox.confirm(
+          '当前没有可用的参考图（场景/角色/道具等；不含经典分镜主图），将按纯文案提交平台当前启用的视频模型，效果可能不稳定。确认继续？',
+          '全能模式无参考图',
+          { confirmButtonText: '继续生成', cancelButtonText: '取消', type: 'warning' }
+        )
+      } catch {
+        return
+      }
     }
   }
   let requestContext
@@ -7701,6 +7720,14 @@ async function onGenerateSbVideo(sb) {
   } catch (e) {
     sbVideoErrors.value[sb.id] = e.message || '视频参数校验失败'
     ElMessage.error(e.message || '视频参数校验失败')
+    return
+  }
+  // KM 全能参考一个参考素材都没有时会被 KM 直接拒绝（"必须包含通用参考素材"，不扣费），不提交，告诉用户先补素材。
+  if (isKmVideoModel(requestContext.model) && requestContext.universalOmniApi
+      && omniReferenceMaterialCount(requestContext.payload) === 0) {
+    const message = 'KM 全能参考模式至少要带一个参考素材（角色图、场景图、道具图、分镜参考原片或参考音频），否则会被 KM 直接拒绝。请先生成角色图或场景图后再提交。'
+    sbVideoErrors.value[sb.id] = message
+    await ElMessageBox.alert(message, 'KM 全能参考缺少参考素材', { confirmButtonText: '知道了', type: 'warning' })
     return
   }
   if (isKmVideoModel(requestContext.model) && kmGeneratingVideoCount() >= KM_MAX_INFLIGHT_VIDEOS) {
@@ -7719,9 +7746,11 @@ async function onGenerateSbVideo(sb) {
   }
   storyboardsAPI.update(sb.id, { video_url: null }).catch(() => {})
   try {
-    const res = await videosAPI.create(requestContext.payload)
+    // 和批量一样：KM 明确拒绝（429，没扣费）时等 60 秒重提同一镜头，最多 2 次。
+    const { res, pollRes } = await createSbVideoWithKmRetry(sb, requestContext.payload, meta, {
+      retries: KM_REJECTED_RETRIES,
+    })
     if (res?.task_id) {
-      const pollRes = await pollTask(res.task_id, () => loadSingleStoryboardMedia(sb.id), meta)
       if (pollRes?.status === 'failed') {
         sbVideoErrors.value[sb.id] = isKmConcurrencyRejection(pollRes.error)
           ? 'KM 同时生成已满，已被拒绝，未扣费，请稍后再点'
