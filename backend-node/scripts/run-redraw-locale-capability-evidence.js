@@ -19,7 +19,8 @@
  *     --text-config=22 --image-config=26 --video-config=27 --carrier-config=22 [--commit --confirm=...]
  */
 
-require('../src/config/dotenv.js').loadDotenv();
+// 线上版本没有 dotenv 模块：先 `set -a; . /opt/moli-drama/shared/production.env; set +a` 再运行，环境变量由调用方提供。
+try { require('../src/config/dotenv.js').loadDotenv(); } catch (error) { if (error.code !== 'MODULE_NOT_FOUND') throw error; }
 
 const fs = require('node:fs');
 const path = require('node:path');

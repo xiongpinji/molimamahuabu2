@@ -32,7 +32,7 @@ const HAN = /[一-鿿]/;
 // 语言只验证到语种级（没有 market）时，由用户在这些国家里选目标国家。
 const COUNTRIES_BY_LANGUAGE = {
   es: ['MX', 'ES', 'AR', 'CO', 'CL', 'PE', 'US'],
-  en: ['US', 'GB', 'CA', 'AU', 'PH'],
+  en: ['US', 'GB', 'CA', 'AU', 'PH', 'SG'],
   pt: ['BR', 'PT'],
   fr: ['FR', 'CA'],
   de: ['DE'],
@@ -40,6 +40,8 @@ const COUNTRIES_BY_LANGUAGE = {
   ja: ['JP'],
   ko: ['KR'],
   id: ['ID'],
+  ms: ['MY', 'SG', 'BN'],
+  fil: ['PH'],
   th: ['TH'],
   vi: ['VN'],
   tr: ['TR'],
@@ -63,6 +65,51 @@ function list(value) {
 function parseJson(value, fallback) {
   if (!value) return fallback;
   try { return JSON.parse(value); } catch (_) { return fallback; }
+}
+
+// 流式返回偶尔在一段完整的 JSON 之后又接着第二段输出（上游在同一次推送里重发或再生成一次；2026-10-01 英语版
+// 总长 9431、报错位置 4716，越南语版 9670 / 5414）。整体解析失败时取开头第一段完整的 JSON 对象（按括号配对，
+// 跳过字符串里的括号），之后照常走校验与补问；开头那段本身不完整的，仍按“不是合法 JSON”失败并退款。
+function leadingJsonObject(value) {
+  const start = value.search(/\S/);
+  if (start < 0 || value[start] !== '{') return null;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < value.length; index += 1) {
+    const char = value[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') inString = false;
+    } else if (char === '"') {
+      inString = true;
+    } else if (char === '{') {
+      depth += 1;
+    } else if (char === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        try { return { value: JSON.parse(value.slice(start, index + 1)), end: index + 1 }; } catch (_) { return null; }
+      }
+    }
+  }
+  return null;
+}
+
+function parseModelJson(raw, onTrailing) {
+  if (typeof raw !== 'string') return raw;
+  const body = raw.replace(/^```(?:json)?\s*|\s*```$/g, '');
+  try {
+    return JSON.parse(body);
+  } catch (error) {
+    const first = leadingJsonObject(body);
+    if (!first) throw codedError('REDRAW_FACTORY_LOCALIZATION_INVALID', `本地化结果不是合法 JSON：${error.message}`);
+    const trailing = body.slice(first.end).trim();
+    if (typeof onTrailing === 'function') {
+      onTrailing({ json_length: first.end, trailing_length: trailing.length, trailing_is_json: /^(?:```|\{)/.test(trailing) });
+    }
+    return first.value;
+  }
 }
 
 function displayName(code, type, lang) {
@@ -324,23 +371,27 @@ function applySeriesWorld(parsed, world) {
   return setting ? { ...(parsed || {}), setting } : parsed;
 }
 
-// 场景和道具要用简体中文写：引号外出现的拉丁字母单词，只允许是角色名字（本集新名字、沿用的名字、前几集用过的名字）。
-// 引号里的是招牌、标语等画面文字，可以是目标语言。单个字母（T恤、U盘）不算。
+// 场景和道具要用简体中文写：引号外出现的外文单词（拉丁字母，含越南语等带声调的字母；泰文、假名、韩文等非汉字文字），
+// 只允许是角色名字（本集新名字、沿用的名字、前几集用过的名字）。引号里的是招牌、标语等画面文字，可以是目标语言。
+// 单个字母（T恤、U盘）不算。统一按 NFC 比较，同一个带声调的名字不会因为编码形式不同被当成外文。
 const QUOTED_TEXT = /“[^”]*”|"[^"]*"|「[^」]*」|『[^』]*』|‘[^’]*’/g;
-const LATIN_WORD = /[A-Za-zÀ-ÖØ-öø-ɏ]{2,}/g;
+const FOREIGN_WORD = /(?:(?!\p{Script=Han})[\p{L}\p{M}]){2,}/gu;
+const NAME_WORD_SEPARATOR = /[\s'’\-·・]+/;
 
+// 名字按空格、连字符、间隔号拆成词；汉字与假名混写的名字（ゆき子）再把其中的非汉字部分也算作名字。
 function knownNameWords(parsed, series = {}) {
   const names = [
     ...list(parsed?.characters).map((character) => text(character?.name)),
     ...Object.values(series.locked || {}).map((value) => text(value?.name)),
     ...list(series.taken).map(text),
-  ];
-  return new Set(names.flatMap((name) => name.split(/[\s'’-]+/)).map((word) => word.toLowerCase()).filter(Boolean));
+  ].map((name) => name.normalize('NFC'));
+  return new Set(names.flatMap((name) => [...name.split(NAME_WORD_SEPARATOR), ...(name.match(FOREIGN_WORD) || [])])
+    .map((word) => word.toLowerCase()).filter(Boolean));
 }
 
 function foreignWords(value, known) {
-  const outside = text(value).replace(QUOTED_TEXT, ' ');
-  return (outside.match(LATIN_WORD) || []).filter((word) => !known.has(word.toLowerCase()));
+  const outside = text(value).normalize('NFC').replace(QUOTED_TEXT, ' ');
+  return (outside.match(FOREIGN_WORD) || []).filter((word) => !known.has(word.toLowerCase()));
 }
 
 // 梗概里允许出现的人名：本集角色的新名字、沿用的锁定名字和前几集用过的名字。
@@ -551,17 +602,17 @@ function oldNames(compact) {
 
 const SUBTITLE_WORDS = /字幕|subtitle|caption/i;
 const HAN_GLOBAL = /[一-鿿]/g;
-const LATIN_OR_CYRILLIC_GLOBAL = /[A-Za-zÀ-ɏЀ-ӿ]/g;
+const NON_HAN_LETTER_GLOBAL = /(?!\p{Script=Han})\p{L}/gu;
 
-// 汉字和拉丁字母各有多少：先去掉允许夹带的人名（长的先去），人名再多也不算外文。
+// 汉字和其它文字的字母（拉丁、泰文、假名、韩文……）各有多少：先去掉允许夹带的人名（长的先去），人名再多也不算外文。
 function scriptCounts(value, names = []) {
-  let rest = text(value);
-  for (const name of [...new Set(list(names).map(text).filter(Boolean))].sort((a, b) => b.length - a.length)) {
+  let rest = text(value).normalize('NFC');
+  for (const name of [...new Set(list(names).map((item) => text(item).normalize('NFC')).filter(Boolean))].sort((a, b) => b.length - a.length)) {
     rest = rest.split(name).join(' ');
   }
   return {
     han: (rest.match(HAN_GLOBAL) || []).length,
-    letters: (rest.match(LATIN_OR_CYRILLIC_GLOBAL) || []).length,
+    letters: (rest.match(NON_HAN_LETTER_GLOBAL) || []).length,
   };
 }
 
@@ -667,11 +718,11 @@ function capitalizeName(name, locale) {
   return upper === first ? name : `${upper}${name.slice(1)}`;
 }
 
-const LATIN_OR_CYRILLIC = /[A-Za-zÀ-ɏЀ-ӿ]/;
+const NON_HAN_LETTER = /(?!\p{Script=Han})\p{L}/u;
 
 /**
  * 文化词对照：前几集已定的说法优先（known），再收本集模型给的。原词必须在原文里出现、至少两个汉字、不是人名，
- * 新说法必须是简体中文（不含拉丁/西里尔字母）；不合格的条目直接丢弃，不补问。
+ * 新说法必须是简体中文（不含拉丁、泰文、假名等其它文字的字母）；不合格的条目直接丢弃，不补问。
  * @returns {Record<string,string>} 原词 → 目标国家的说法
  */
 function cultureTerms(compact, parsed, known = {}) {
@@ -692,7 +743,7 @@ function cultureTerms(compact, parsed, known = {}) {
     const source = text(item?.source);
     const value = text(item?.target);
     if (!source || !value || source === value || terms[source]) continue;
-    if ((source.match(HAN_GLOBAL) || []).length < 2 || !HAN.test(value) || LATIN_OR_CYRILLIC.test(value)) continue;
+    if ((source.match(HAN_GLOBAL) || []).length < 2 || !HAN.test(value) || NON_HAN_LETTER.test(value)) continue;
     if (!corpus.includes(source)) continue;
     if (names.some((name) => name.includes(source) || source.includes(name))) continue;
     terms[source] = value;
@@ -810,11 +861,9 @@ async function runLocalization(db, log, ctx, deps) {
       const raw = await generateText(db, log, 'text', prompt.user, prompt.system, {
         model, json_mode: true, temperature: 0.4, min_max_tokens: 12000, silence_timeout_ms: MODEL_SILENCE_TIMEOUT_MS,
       });
-      try {
-        return typeof raw === 'string' ? JSON.parse(raw.replace(/^```(?:json)?\s*|\s*```$/g, '')) : raw;
-      } catch (error) {
-        throw codedError('REDRAW_FACTORY_LOCALIZATION_INVALID', `本地化结果不是合法 JSON：${error.message}`);
-      }
+      return parseModelJson(raw, (info) => log?.warn?.('redraw factory localization output had trailing content after the JSON', {
+        task_id: taskId, ...info,
+      }));
     };
     const locked = lockedCharacters(compact, lock);
     const world = lock.world || {};
@@ -966,4 +1015,5 @@ module.exports = {
   compactFacts,
   validateOutput,
   describeTarget,
+  parseModelJson,
 };

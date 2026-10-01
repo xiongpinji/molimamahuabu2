@@ -646,3 +646,182 @@ test('prop image prompt drops a transliterated owner clause as well', () => {
   assert.equal(pkg.props[0].prompt,
     '写实风格，电影级光影。 一枚比索硬币，作为单独物品放在纯色无缝背景上。 画面中只有这件物品，没有任何人物、手或身体部位，没有文字。');
 });
+
+test('Southeast Asian targets: Malay and Filipino list their countries and English adds Singapore', () => {
+  const db = createDb();
+  try {
+    for (const locale of ['ms', 'fil', 'en', 'ja']) seedCapability(db, { locale });
+    const keys = localization.listTargets(db, () => true).map((item) => item.key);
+    for (const key of ['ms-MY', 'ms-SG', 'ms-BN', 'fil-PH', 'en-US', 'en-SG', 'ja-JP']) assert.ok(keys.includes(key), key);
+    assert.equal(localization.describeTarget('ja', 'JP').allows_han, true);
+    assert.equal(localization.describeTarget('vi', 'VN').allows_han, false);
+  } finally {
+    db.close();
+  }
+});
+
+test('Vietnamese names with tone marks count as character names, so scenes, props and the story are not asked for again', async () => {
+  const calls = [];
+  const { db, storageRoot, call, settle } = setup(async (_db, _log, _type, user, system) => {
+    calls.push({ user: JSON.parse(user), system });
+    return JSON.stringify(modelOutput({
+      characters: [
+        { id: 'c1', name: 'Nguyễn Minh Khôi', appearance: '约17岁的越南少年，偏瘦，浅棕色皮肤，黑色短发，越南公立高中白色校服' },
+        { id: 'c2', name: 'Trần Bảo', appearance: '约17岁的越南少年，壮实，古铜色皮肤，白色校服衬衫' },
+      ],
+      scenes: [
+        { id: 's1', location: '街角杂货店门口', visual: '胡志明市街角的杂货店，招牌写着“Tạp hóa Cô Ba”，Trần Bảo常在门口停留' },
+        { id: 's2', location: '卧室', visual: '越南普通家庭卧室，木书桌与旧电脑' },
+      ],
+      props: [{ id: 'p1', name: 'Nguyễn Minh Khôi手中的一枚越南盾硬币' }],
+      lines: [
+        { key: 'shot-1:txt1', text: 'Mày là ai vậy?' },
+        { key: 'shot-2:txt3', text: 'World Cup sẽ là vốn khởi nghiệp của tao.' },
+      ],
+      screen_texts: [{ key: 'shot-1:txt2', text: 'Tạp hóa' }],
+      story: ['Nguyễn Minh Khôi在胡志明市街角杂货店被Trần Bảo嘲笑后，发现口袋里只剩一枚越南盾硬币。'],
+      episode_hook: 'Nguyễn Minh Khôi决定把世界杯当作起步资金。',
+      setting: '故事发生在胡志明市，所有人物都是越南人。',
+    }));
+  });
+  try {
+    seedCapability(db, { locale: 'vi' });
+    await call({ action: 'start', localization: { locale: 'vi', market: 'VN' }, expected_credits: 10 });
+    await settle();
+    assert.equal(calls.length, 1, 'Nguyễn and Trần are character names, not foreign words');
+    const status = await call({ action: 'status', localization: { locale: 'vi', market: 'VN' } });
+    assert.equal(status.body.data.status, 'ready');
+  } finally {
+    db.close();
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  }
+});
+
+test('Thai words outside quotes in Chinese scene text are asked for once more; a quoted Thai sign and Thai character names are fine', async () => {
+  const calls = [];
+  const { db, storageRoot, call, settle } = setup(async (_db, _log, _type, user, system) => {
+    calls.push({ user: JSON.parse(user), system });
+    if (calls.length === 1) {
+      return JSON.stringify(modelOutput({
+        characters: [
+          { id: 'c1', name: 'สมชาย', appearance: '约17岁的泰国少年，偏瘦，浅棕色皮肤，黑色短发，泰国公立高中白衬衫校服' },
+          { id: 'c2', name: 'ธนา', appearance: '约17岁的泰国少年，壮实，古铜色皮肤，白色校服衬衫' },
+        ],
+        scenes: [
+          { id: 's1', location: '街角小卖部门口', visual: '曼谷街角的小卖部，招牌写着“ร้านชำ”，สมชาย常在门口停留' },
+          { id: 's2', location: '卧室', visual: '泰国普通家庭ห้องนอน，木书桌与旧电脑' },
+        ],
+        props: [{ id: 'p1', name: 'สมชาย手中的一枚泰铢硬币' }],
+        lines: [
+          { key: 'shot-1:txt1', text: 'แกเป็นใคร' },
+          { key: 'shot-2:txt3', text: 'ฟุตบอลโลกจะเป็นทุนตั้งต้นของฉัน' },
+        ],
+        screen_texts: [{ key: 'shot-1:txt2', text: 'ร้านชำ' }],
+        story: ['สมชาย在曼谷街角小卖部被ธนา嘲笑后，发现口袋里只剩一枚泰铢硬币。'],
+        episode_hook: 'สมชาย决定把世界杯当作起步资金。',
+        setting: '故事发生在曼谷，所有人物都是泰国人。',
+      }));
+    }
+    return JSON.stringify({ scenes: [{ id: 's2', location: '卧室', visual: '泰国普通家庭卧室，木书桌与旧电脑' }] });
+  });
+  try {
+    seedCapability(db, { locale: 'th' });
+    await call({ action: 'start', localization: { locale: 'th', market: 'TH' }, expected_credits: 10 });
+    await settle();
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[1].user.scenes.map((scene) => scene.id), ['s2']);
+    assert.equal((calls[1].user.props || []).length, 0, 'a Thai character name in a prop is fine');
+    const status = await call({ action: 'status', localization: { locale: 'th', market: 'TH' } });
+    assert.equal(status.body.data.status, 'ready');
+    const culture = JSON.parse(db.prepare('SELECT culture_map_json FROM redraw_versions WHERE id = ?').get(status.body.data.version_id).culture_map_json);
+    assert.equal(culture.scenes.s2.visual, '泰国普通家庭卧室，木书桌与旧电脑');
+    assert.equal(culture.props.p1.name, 'สมชาย手中的一枚泰铢硬币');
+  } finally {
+    db.close();
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  }
+});
+
+test('Japanese names written in kana, or kanji mixed with kana, are character names', async () => {
+  const calls = [];
+  const { db, storageRoot, call, settle } = setup(async (_db, _log, _type, user, system) => {
+    calls.push({ user: JSON.parse(user), system });
+    return JSON.stringify(modelOutput({
+      characters: [
+        { id: 'c1', name: 'ゆき子', appearance: '约17岁的日本少女，偏瘦，白皙皮肤，黑色短发，日本公立高中水手服' },
+        { id: 'c2', name: 'タナカ・ケン', appearance: '约17岁的日本少年，壮实，小麦色皮肤，立领校服' },
+      ],
+      scenes: [
+        { id: 's1', location: '街角便利店门口', visual: '东京街角的便利店，招牌写着“コンビニ”，ゆき子常在门口停留' },
+        { id: 's2', location: '卧室', visual: '日本普通家庭卧室，木书桌与旧电脑' },
+      ],
+      props: [{ id: 'p1', name: 'タナカ・ケン手中的一枚日元硬币' }],
+      lines: [
+        { key: 'shot-1:txt1', text: 'お前、誰だよ？' },
+        { key: 'shot-2:txt3', text: 'ワールドカップが俺の元手だ。' },
+      ],
+      screen_texts: [{ key: 'shot-1:txt2', text: 'コンビニ' }],
+      story: ['ゆき子在东京街角便利店被タナカ・ケン嘲笑后，发现口袋里只剩一枚日元硬币。'],
+      episode_hook: 'ゆき子决定把世界杯当作起步资金。',
+      setting: '故事发生在东京，所有人物都是日本人。',
+    }));
+  });
+  try {
+    seedCapability(db, { locale: 'ja' });
+    await call({ action: 'start', localization: { locale: 'ja', market: 'JP' }, expected_credits: 10 });
+    await settle();
+    assert.equal(calls.length, 1, 'kana in ゆき子 and タナカ・ケン are parts of character names');
+    const status = await call({ action: 'status', localization: { locale: 'ja', market: 'JP' } });
+    assert.equal(status.body.data.status, 'ready');
+  } finally {
+    db.close();
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  }
+});
+
+test('model output: the first complete JSON object is used when the stream carries more after it', () => {
+  const { parseModelJson } = localization;
+  const seen = [];
+  assert.deepEqual(parseModelJson('{"a":1}{"a":1}', (info) => seen.push(info)), { a: 1 });
+  assert.deepEqual(seen[0], { json_length: 7, trailing_length: 7, trailing_is_json: true });
+  assert.deepEqual(parseModelJson('{"a":"}{\\""}\n以上是结果', (info) => seen.push(info)), { a: '}{"' }, 'braces and quotes inside strings do not end the object');
+  assert.equal(seen[1].trailing_is_json, false);
+  assert.deepEqual(parseModelJson('```json\n{"a":1}\n```'), { a: 1 });
+  assert.equal(seen.length, 2, 'a clean answer reports no trailing content');
+  assert.throws(() => parseModelJson('{"a":'), (error) => error.code === 'REDRAW_FACTORY_LOCALIZATION_INVALID' && /不是合法 JSON/.test(error.message));
+  assert.throws(() => parseModelJson('以上是结果{"a":1}'), /不是合法 JSON/, 'text before the JSON is still invalid');
+});
+
+test('a stream that repeats the whole answer after the JSON still localizes and charges once', async () => {
+  const calls = [];
+  const { db, storageRoot, call, settle } = setup(async () => {
+    calls.push(1);
+    return JSON.stringify(modelOutput()) + JSON.stringify(modelOutput());
+  });
+  try {
+    await call({ action: 'start', localization: { locale: 'es', market: 'MX' }, expected_credits: 10 });
+    await settle();
+    const status = await call({ action: 'status', localization: { locale: 'es', market: 'MX' } });
+    assert.equal(status.body.data.status, 'ready');
+    assert.equal(calls.length, 1);
+    assert.deepEqual([creditLedger.getTenantAccount(db, TENANT).spent, creditLedger.getTenantAccount(db, TENANT).held], [10, 0]);
+  } finally {
+    db.close();
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  }
+});
+
+test('an answer cut off before its JSON closes still fails and refunds', async () => {
+  const { db, storageRoot, call, settle } = setup(async () => JSON.stringify(modelOutput()).slice(0, 200));
+  try {
+    await call({ action: 'start', localization: { locale: 'es', market: 'MX' }, expected_credits: 10 });
+    await settle();
+    const status = await call({ action: 'status', localization: { locale: 'es', market: 'MX' } });
+    assert.equal(status.body.data.status, 'failed');
+    assert.match(status.body.data.error, /不是合法 JSON/);
+    assert.deepEqual([creditLedger.getTenantAccount(db, TENANT).available, creditLedger.getTenantAccount(db, TENANT).held], [1000, 0]);
+  } finally {
+    db.close();
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  }
+});
