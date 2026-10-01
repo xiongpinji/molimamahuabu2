@@ -1063,3 +1063,36 @@ test('name terms whose source name is not in a line, or that are not kept, cause
     fs.rmSync(storageRoot, { recursive: true, force: true });
   }
 });
+
+test('culture terms cover how sect and school members are called (弟子, 师兄 …) and the plot uses the new wording', () => {
+  // 2026-09-30 阿根廷、智利版："弟子"没进文化词对照，分镜描述 12 处、剧本 5 处仍写"弟子"。
+  const { system } = localization.buildPrompt(TARGET, localization.compactFacts(factsV2()));
+  assert.match(system, /how members of a sect or school are called and call each other such as 弟子, 师兄, 师姐, 师父, 掌门, 长老/);
+  assert.match(system, /\{"source":"弟子","target":"学员"\}/);
+  assert.match(system, /using only the new names, the new places and the target wording of your culture_terms/);
+});
+
+test('a 弟子 culture term from the model is kept and replaces 弟子 in the imported shot descriptions', async () => {
+  const facts = factsV2();
+  facts.shots[1].composition = '林江和弟子们在书桌前握着硬币';
+  const { db, storageRoot, call, settle } = setup(async () => JSON.stringify(modelOutput({
+    culture_terms: [{ source: '弟子', target: '学员' }],
+  })), { facts });
+  try {
+    await call({ action: 'start', localization: { locale: 'es', market: 'MX' }, expected_credits: 10 });
+    await settle();
+    const status = await call({ action: 'status', localization: { locale: 'es', market: 'MX' } });
+    assert.equal(status.body.data.status, 'ready');
+    const version = db.prepare('SELECT glossary_json FROM redraw_versions WHERE id = ?').get(status.body.data.version_id);
+    assert.deepEqual(JSON.parse(version.glossary_json), { 弟子: '学员' });
+    const imported = await call({ action: 'import', localization: { locale: 'es', market: 'MX' } });
+    assert.equal(imported.statusCode, 200, JSON.stringify(imported.body));
+    const boards = db.prepare(`SELECT s.description FROM storyboards s JOIN episodes e ON e.id = s.episode_id
+      WHERE e.drama_id = ? ORDER BY s.storyboard_number`).all(imported.body.data.drama_id);
+    assert.match(boards[1].description, /Diego和学员们在书桌前握着硬币/);
+    assert.doesNotMatch(boards.map((board) => board.description).join(''), /弟子/);
+  } finally {
+    db.close();
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  }
+});
