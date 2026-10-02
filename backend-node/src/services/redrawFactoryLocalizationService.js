@@ -589,7 +589,9 @@ function buildPrompt(target, compact, locked = {}, taken = [], world = {}) {
     `Every person becomes a person from ${target.country_en}, every line is spoken in ${target.language_en} as used in ${target.country_en}, and every place and prop belongs to ${target.country_en}.`,
     'Keep the plot, relationships, ages, body builds, emotions, actions and the role clothing plays in the story (for example a shared school uniform) exactly; change names, ethnicity and looks, language, and cultural details.',
     'Return this JSON shape: {"characters":[{"id":"","name":"","role":"","appearance":""}],"scenes":[{"id":"","location":"","time":"","visual":""}],"props":[{"id":"","name":""}],"lines":[{"key":"","text":""}],"screen_texts":[{"key":"","text":""}],"story":[""],"episode_hook":"","setting":"","culture_terms":[{"source":"","target":""}],"pinyin_terms":[""],"name_terms":[{"source":"","pinyin":"","transliteration":""}]}',
-    `characters: exactly one entry for EVERY supplied id, including groups and crowds, never skip one. name is a natural first name common in ${target.country_en} written as locals write it; for unnamed roles (mother, father, an athlete on TV) use a short natural ${target.language_en} role label, and for a group of people use a short plural ${target.language_en} label (for example the equivalent of "classmates"); these labels are used as the character's name, so capitalize them the way a name is written (for example "Mamá", "Compañeros"). appearance describes a person from ${target.country_en}: apparent age, build, skin tone, face, hair, and ${target.country_en}-style clothing that keeps the same story role; write appearance in Simplified Chinese and never mention the old name. role is a short Simplified Chinese description of the person's place in the story using the new names.`,
+    `characters: exactly one entry for EVERY supplied id, including groups and crowds, never skip one. name is a natural first name common in ${target.country_en} written as locals write it; for unnamed roles (mother, father, an athlete on TV) use a short natural ${target.language_en} role label, and for a group of people use a short plural ${target.language_en} label (for example the equivalent of "classmates"); these labels are used as the character's name, so capitalize them the way a name is written (for example "Mamá", "Compañeros"). ${target.allows_han
+      ? `Names and labels are written the way ${target.language_en} writes names; never reuse the Chinese wording of the source (for example 长老, 弟子) or of your culture_terms as a name.`
+      : `Every name, role label and group label is written in ${target.language_en} letters, never in Chinese characters, even for roles such as 长老, 师父 or 弟子 whose Chinese wording your culture_terms change in the Chinese texts.`} appearance describes a person from ${target.country_en}: apparent age, build, skin tone, face, hair, and ${target.country_en}-style clothing that keeps the same story role; write appearance in Simplified Chinese and never mention the old name. role is a short Simplified Chinese description of the person's place in the story using the new names.`,
     `scenes: one entry for every supplied id; move the place to ${target.country_en}: location is a short, natural Simplified Chinese place name that a native Chinese screenwriter would write (for example "中学小卖部门口", "老街区铁门外", "家中餐厅"), never a word-by-word translation of the source wording (not "学校门面入口"), time is the time of day in Simplified Chinese, visual describes ${target.country_en} architecture, signage in ${target.language_en}, street details, lighting and palette in Simplified Chinese; no Chinese characters on signs.`,
     'props: one entry for every supplied id; Simplified Chinese name of the equivalent local object.',
     'In scenes and props, refer to people only by their new names from characters (or locked_characters), and put any sign or on-screen wording inside quotation marks; everything else is Simplified Chinese.',
@@ -755,10 +757,14 @@ function missingItems(target, compact, parsed, series = {}) {
   const badHan = (value) => !target.allows_han && HAN.test(value);
   const characters = new Map(list(parsed?.characters).filter((item) => item && text(item.id)).map((item) => [text(item.id), item]));
   const lines = new Map(list(parsed?.lines).filter((item) => item && text(item.key)).map((item) => [text(item.key), text(item.text)]));
-  const missingCharacters = compact.characters.filter((character) => {
+  // 缺名字、名字写成了汉字（2026-10-02 西语版"长老"角色被写成中文称呼，两次校验失败）、缺形象：记下原因便于看日志。
+  const characterProblem = (character) => {
     const out = characters.get(character.id);
-    return !text(out?.name) || badHan(text(out?.name)) || !text(out?.appearance);
-  });
+    if (!text(out?.name)) return 'no_name';
+    if (badHan(text(out?.name))) return 'han_name';
+    return text(out?.appearance) ? '' : 'no_appearance';
+  };
+  const missingCharacters = compact.characters.filter((character) => characterProblem(character));
   const pinyin = pinyinLines(compact, parsed);
   const kept = nameTermLines(target, compact, parsed, series);
   const missingLines = compact.subtitles.filter((line) => !lines.get(line.key) || badHan(lines.get(line.key))
@@ -766,6 +772,9 @@ function missingItems(target, compact, parsed, series = {}) {
   const story = storyProblem(compact, parsed, series);
   return {
     characters: missingCharacters,
+    ...(missingCharacters.length
+      ? { character_problems: missingCharacters.map((character) => ({ id: character.id, problem: characterProblem(character) })) }
+      : {}),
     subtitles: missingLines,
     setting: !text(parsed?.setting),
     story,
@@ -783,7 +792,9 @@ function buildRepairPrompt(target, compact, missing) {
   const characterNames = list(missing.character_names).length ? missing.character_names
     : (list(missing.story_names).length ? missing.story_names : list(missing.line_names));
   return {
-    system: `${base.system}\nYour previous answer left out or broke the items below. Return the same JSON shape containing only these items, completed.${foreign
+    system: `${base.system}\nYour previous answer left out or broke the items below. Return the same JSON shape containing only these items, completed.${list(missing.characters).length
+      ? `\nSome characters below had no usable name or appearance: give each one a name as described for characters${target.allows_han ? '' : ` (in ${target.language_en} letters, never Chinese characters)`} and an appearance.`
+      : ''}${foreign
       ? '\nThe scenes and props below contained English words or names of people who are not characters: rewrite their location, time, visual and name in Simplified Chinese, refer to people only by the names in character_names, and keep sign wording inside quotation marks.'
       : ''}${missing.story && characterNames.length
       ? '\nRetell the story in Simplified Chinese and refer to every person only by the name given for their id in character_names (all_characters lists the same ids with the original names); never invent other names.'
@@ -901,7 +912,11 @@ function validateOutput(target, compact, parsed, series = {}) {
     const out = characters.get(character.id);
     const name = capitalizeName(text(out?.name), target.locale);
     const appearance = text(out?.appearance);
-    if (!name || badHan(name)) throw codedError('REDRAW_FACTORY_LOCALIZATION_INVALID', `角色 ${character.id} 缺少目标语言名字`);
+    if (!name || badHan(name)) {
+      throw codedError('REDRAW_FACTORY_LOCALIZATION_INVALID', `角色 ${character.id} 缺少目标语言名字`, {
+        detail: { id: character.id, problem: name ? 'han_name' : 'no_name' },
+      });
+    }
     if (!appearance) throw codedError('REDRAW_FACTORY_LOCALIZATION_INVALID', `角色 ${character.id} 缺少目标国家形象`);
     nameMap[character.id] = name;
     cultureCharacters[character.id] = { appearance, ...(text(out?.role) ? { role: text(out.role) } : {}) };
@@ -1009,6 +1024,7 @@ async function runLocalization(db, log, ctx, deps) {
     if (missing.count) {
       log?.warn?.('redraw factory localization repairing missing items', {
         task_id: taskId, characters: missing.characters.map((c) => c.id), lines: missing.subtitles.length, setting: missing.setting,
+        ...(list(missing.character_problems).length ? { character_problems: missing.character_problems } : {}),
         scenes: list(missing.scenes).map((scene) => scene.id), props: list(missing.props).map((prop) => prop.id),
         ...(list(missing.pinyin_terms).length ? { pinyin_terms: missing.pinyin_terms } : {}),
         ...(list(missing.name_terms).length ? { name_terms: missing.name_terms } : {}),

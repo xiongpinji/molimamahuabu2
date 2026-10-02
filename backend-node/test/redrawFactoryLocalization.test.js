@@ -1131,3 +1131,43 @@ test('a culture term that is only part of a longer character name is kept: the n
     fs.rmSync(storageRoot, { recursive: true, force: true });
   }
 });
+
+test('names and role labels are written in the target language, never the Chinese wording of 长老 or 弟子 from culture terms', () => {
+  // 2026-10-02 R86 之后西语版两次"角色 c3 缺少目标语言名字"：长老这个角色的名字被写成了中文称呼。
+  const { system } = localization.buildPrompt(TARGET, localization.compactFacts(factsV2()));
+  assert.match(system, /Every name, role label and group label is written in Spanish letters, never in Chinese characters, even for roles such as 长老, 师父 or 弟子/);
+  const ja = localization.buildPrompt(localization.describeTarget('ja', 'JP'), localization.compactFacts(factsV2()));
+  assert.match(ja.system, /Names and labels are written the way Japanese writes names; never reuse the Chinese wording of the source \(for example 长老, 弟子\) or of your culture_terms as a name/);
+  assert.doesNotMatch(ja.system, /never in Chinese characters, even for roles/, 'Japanese names may use kanji');
+});
+
+test('a character named with Chinese wording is asked for once more with the name rule, without charging again', async () => {
+  const calls = [];
+  const { db, storageRoot, call, settle } = setup(async (_db, _log, _type, user, system) => {
+    calls.push({ user: JSON.parse(user), system });
+    if (calls.length === 1) {
+      return JSON.stringify(modelOutput({
+        characters: [
+          modelOutput().characters[0],
+          { id: 'c2', name: '长老', appearance: '约六十岁的墨西哥男子，留长须，穿深色长袍' },
+        ],
+      }));
+    }
+    return JSON.stringify({ characters: [{ id: 'c2', name: 'Don Mateo', appearance: '约六十岁的墨西哥男子，留长须，穿深色长袍' }] });
+  });
+  try {
+    await call({ action: 'start', localization: { locale: 'es', market: 'MX' }, expected_credits: 10 });
+    await settle();
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[1].user.characters.map((character) => character.id), ['c2']);
+    assert.match(calls[1].system, /Some characters below had no usable name or appearance: give each one a name as described for characters \(in Spanish letters, never Chinese characters\) and an appearance/);
+    const status = await call({ action: 'status', localization: { locale: 'es', market: 'MX' } });
+    assert.equal(status.body.data.status, 'ready');
+    const version = db.prepare('SELECT name_map_json FROM redraw_versions WHERE id = ?').get(status.body.data.version_id);
+    assert.deepEqual(JSON.parse(version.name_map_json), { c1: 'Diego', c2: 'Don Mateo' });
+    assert.equal(creditLedger.getTenantAccount(db, TENANT).spent, 10, 'the repair call is not charged');
+  } finally {
+    db.close();
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  }
+});
