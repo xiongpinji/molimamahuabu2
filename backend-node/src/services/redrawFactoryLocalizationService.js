@@ -876,7 +876,10 @@ function cultureTerms(compact, parsed, known = {}) {
     if (!source || !value || source === value || terms[source]) continue;
     if ((source.match(HAN_GLOBAL) || []).length < 2 || !HAN.test(value) || NON_HAN_LETTER.test(value)) continue;
     if (!corpus.includes(source)) continue;
-    if (names.some((name) => name.includes(source) || source.includes(name))) continue;
+    // 原词等于或包含角色原名的不收（会把人名换掉）。只是较长原名一部分的可以收（2026-10-02 秘鲁版：群体角色叫
+    // "白衣弟子众人"，"弟子"一直被这条丢掉，镜头里单独出现的"弟子"没换）：导入时原名和文化词按原词从长到短替换，
+    // "白衣弟子众人"先换成新名字，剩下的"弟子"再换成目标说法。
+    if (names.some((name) => source.includes(name))) continue;
     terms[source] = value;
   }
   return terms;

@@ -1096,3 +1096,38 @@ test('a 弟子 culture term from the model is kept and replaces 弟子 in the im
     fs.rmSync(storageRoot, { recursive: true, force: true });
   }
 });
+
+test('a culture term that is only part of a longer character name is kept: the name is replaced first, the rest of 弟子 becomes the target word', async () => {
+  // 2026-10-02 秘鲁版：群体角色原名"白衣弟子众人"，"弟子"因是这个原名的一部分一直被丢掉，镜头里"一名弟子"没换。
+  const facts = factsV2();
+  facts.characters.push({ id: 'c3', source_name: '白衣弟子众人', relationship: '围观的弟子们', relationships: [], appearance: '白衣' });
+  facts.shots[1].composition = '林江和白衣弟子众人在书桌前，一名弟子握着林江的同学给的硬币';
+  const { db, storageRoot, call, settle } = setup(async () => JSON.stringify(modelOutput({
+    characters: [
+      ...modelOutput().characters,
+      { id: 'c3', name: 'Compañeros', appearance: '一群穿白色练功服的秘鲁年轻学员' },
+    ],
+    culture_terms: [
+      { source: '弟子', target: '学员' },
+      { source: '白衣弟子众人', target: '学员们' },
+      { source: '林江的同学', target: '同学' },
+    ],
+  })), { facts });
+  try {
+    await call({ action: 'start', localization: { locale: 'es', market: 'MX' }, expected_credits: 10 });
+    await settle();
+    const status = await call({ action: 'status', localization: { locale: 'es', market: 'MX' } });
+    assert.equal(status.body.data.status, 'ready', JSON.stringify(status.body.data));
+    const version = db.prepare('SELECT glossary_json FROM redraw_versions WHERE id = ?').get(status.body.data.version_id);
+    assert.deepEqual(JSON.parse(version.glossary_json), { 弟子: '学员' }, 'a term equal to or containing a character name is still dropped');
+    const imported = await call({ action: 'import', localization: { locale: 'es', market: 'MX' } });
+    assert.equal(imported.statusCode, 200, JSON.stringify(imported.body));
+    const boards = db.prepare(`SELECT s.description FROM storyboards s JOIN episodes e ON e.id = s.episode_id
+      WHERE e.drama_id = ? ORDER BY s.storyboard_number`).all(imported.body.data.drama_id);
+    assert.match(boards[1].description, /Diego和Compañeros在书桌前，一名学员握着Diego的同学给的硬币/);
+    assert.doesNotMatch(boards.map((board) => board.description).join(''), /弟子/);
+  } finally {
+    db.close();
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  }
+});
