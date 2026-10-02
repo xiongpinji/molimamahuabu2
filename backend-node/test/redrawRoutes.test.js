@@ -1215,7 +1215,15 @@ test('作品状态返回真实分析报价和 async task 状态', () => {
     handlers.getWork(request({ id: workId }), own);
 
     assert.equal(own.statusCode, 200);
-    assert.deepEqual(own.body.data.analysis_quote, { model: 'GPT-5.5', credits: 6, amount: 6 });
+    assert.deepEqual(own.body.data.analysis_quote, {
+      model: 'GPT-5.5',
+      credits: 30,
+      amount: 30,
+      unit_credits: 6,
+      segments: 5,
+      max_duration_ms: 300_000,
+      exceeds_max_duration: false,
+    });
     assert.equal(own.body.data.task_id, 'task-real-progress');
     assert.equal(own.body.data.task_status, 'processing');
     assert.equal(own.body.data.task_progress, 64);
@@ -1493,7 +1501,7 @@ test('未注入外部分析器时路由使用原生视觉服务完成真实编�
       VALUES (102, 'analysis', 'json', 'redraw_source_analysis', 'redraw-analysis/result.json', ?, ?)`)
       .run(NOW, NOW);
     const projectId = insertProject(db);
-    const workId = insertWork(db, projectId);
+    const workId = insertWork(db, projectId, { duration_ms: 20_000 });
     let nativeInput;
     const handlers = redrawRoutes(db, { error() {}, warn() {}, info() {} }, routeDeps({
       cfg: { storage: { local_path: tempRoot } },
@@ -1866,6 +1874,99 @@ test('本地化报价只使用服务端 owner 与能力上下文并按租户隔�
     assert.equal(calls.length, 1);
     assert.equal(db.prepare("SELECT COUNT(*) AS count FROM async_tasks WHERE type = 'redraw_localization'").get().count, 0);
     assert.equal(db.prepare("SELECT COUNT(*) AS count FROM tenant_usage_reservations WHERE resource_type = 'redraw_localization'").get().count, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('分析人工确认只接受 expected_facts_hash，按服务端 owner 调用并映射冲突为 409', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId);
+    const calls = [];
+    const hash = 'e'.repeat(64);
+    let failWith = null;
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      localizationOrchestrator: {
+        approveAnalysisReview: (_db, input) => {
+          calls.push(input);
+          if (failWith) throw Object.assign(new Error('stale'), { code: failWith });
+          return { approved: true, automation_decision: { action: 'advance', evidence_hash: hash } };
+        },
+        quoteLocalization: () => { throw new Error('should not quote'); },
+        startLocalization: () => { throw new Error('should not start'); },
+      },
+    }));
+
+    const ok = captureResponse();
+    handlers.approveAnalysisReview(request({ id: workId, body: { expected_facts_hash: hash } }), ok);
+    assert.equal(ok.statusCode, 200);
+    assert.equal(ok.body.data.approved, true);
+    assert.equal(ok.body.data.analysis_decision.action, 'advance');
+    assert.deepEqual(calls[0], { workId, tenantId: 'tenant-a', userId: 'user-a', expectedFactsHash: hash });
+
+    const extra = captureResponse();
+    handlers.approveAnalysisReview(request({ id: workId, body: { expected_facts_hash: hash, action: 'advance' } }), extra);
+    assert.equal(extra.statusCode, 400);
+    assert.equal(extra.body.error.code, 'REDRAW_ANALYSIS_REVIEW_INVALID');
+
+    failWith = 'REDRAW_ANALYSIS_REVIEW_STALE';
+    const stale = captureResponse();
+    handlers.approveAnalysisReview(request({ id: workId, body: { expected_facts_hash: hash } }), stale);
+    assert.equal(stale.statusCode, 409);
+    assert.equal(stale.body.error.code, 'REDRAW_ANALYSIS_REVIEW_STALE');
+
+    const otherTenant = captureResponse();
+    handlers.approveAnalysisReview(request({ id: workId, tenantId: 'tenant-b', body: { expected_facts_hash: hash } }), otherTenant);
+    assert.equal(otherTenant.statusCode, 404);
+    assert.equal(calls.length, 2);
+  } finally {
+    db.close();
+  }
+});
+
+test('本地化人工确认只接受 version_id 与 expected_facts_hash 并映射冲突为 409', () => {
+  const db = createDb();
+  try {
+    const projectId = insertProject(db);
+    const workId = insertWork(db, projectId);
+    const calls = [];
+    const hash = 'f'.repeat(64);
+    let failWith = null;
+    const handlers = redrawRoutes(db, { error() {} }, routeDeps({
+      localizationOrchestrator: {
+        approveLocalizationReview: (_db, input) => {
+          calls.push(input);
+          if (failWith) throw Object.assign(new Error('blocked'), { code: failWith });
+          return { approved: true, version_id: 9, localization_decision: { action: 'advance', evidence_hash: hash } };
+        },
+        quoteLocalization: () => { throw new Error('should not quote'); },
+        startLocalization: () => { throw new Error('should not start'); },
+      },
+    }));
+
+    const ok = captureResponse();
+    handlers.approveLocalizationReview(request({ id: workId, body: { version_id: 9, expected_facts_hash: hash } }), ok);
+    assert.equal(ok.statusCode, 200);
+    assert.equal(ok.body.data.version_id, 9);
+    assert.equal(ok.body.data.localization_decision.action, 'advance');
+    assert.deepEqual(calls[0], { workId, versionId: 9, tenantId: 'tenant-a', userId: 'user-a', expectedFactsHash: hash });
+
+    const missingVersion = captureResponse();
+    handlers.approveLocalizationReview(request({ id: workId, body: { expected_facts_hash: hash } }), missingVersion);
+    assert.equal(missingVersion.statusCode, 400);
+    const extra = captureResponse();
+    handlers.approveLocalizationReview(request({ id: workId, body: { version_id: 9, expected_facts_hash: hash, action: 'advance' } }), extra);
+    assert.equal(extra.statusCode, 400);
+    assert.equal(extra.body.error.code, 'REDRAW_LOCALIZATION_REVIEW_INVALID');
+
+    failWith = 'REDRAW_LOCALIZATION_REVIEW_NOT_ALLOWED';
+    const blocked = captureResponse();
+    handlers.approveLocalizationReview(request({ id: workId, body: { version_id: 9, expected_facts_hash: hash } }), blocked);
+    assert.equal(blocked.statusCode, 409);
+    assert.equal(blocked.body.error.code, 'REDRAW_LOCALIZATION_REVIEW_NOT_ALLOWED');
+    assert.equal(calls.length, 2);
   } finally {
     db.close();
   }

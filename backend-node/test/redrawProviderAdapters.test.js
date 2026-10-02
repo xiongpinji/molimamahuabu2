@@ -309,6 +309,34 @@ test('localize calls text client with verified model and parses JSON result', as
   assert.ok(calls[0][5].min_max_tokens >= 4096);
 });
 
+test('localize asks for the strict v2 result contract when source facts are schema 2.0', async () => {
+  const calls = [];
+  const adapters = createRedrawProviderAdapters({
+    db: { tag: 'db' },
+    log: createLog(),
+    cfg: {},
+    aiClient: {
+      async generateText(...args) {
+        calls.push(args);
+        return '{}';
+      },
+    },
+  });
+  await adapters.localize({
+    model: 'verified-text-model',
+    locale: 'en-US',
+    market: 'US',
+    input: { source_facts_hash: 'x', source_facts: { schema_version: '2.0', facts_hash: 'f', shots: [] } },
+  });
+  const systemPrompt = calls[0][4];
+  for (const key of ['facts_hash', 'locale', 'market', 'name_map', 'culture_map', 'glossary', 'dialogue', 'text_map', 'confidence', 'target_text']) {
+    assert.match(systemPrompt, new RegExp(key));
+  }
+  assert.match(systemPrompt, /nothing else/);
+  assert.doesNotMatch(systemPrompt, /copy source_facts_hash/);
+  assert.doesNotMatch(systemPrompt, /Return every supplied source-fact field/);
+});
+
 test('localize fails closed without model and rejects invalid JSON', async () => {
   const adapters = createRedrawProviderAdapters({
     db: {},

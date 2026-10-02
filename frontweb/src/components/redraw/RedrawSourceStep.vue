@@ -94,6 +94,9 @@
           开始分析
         </el-button>
       </div>
+      <small v-if="analysisLocked" class="analysis-locked-hint">
+        该作品已完成样片分析，结果已锁定；如需重新分析，请新建作品重新上传样片。
+      </small>
     </div>
 
     <section v-if="taskState.task_id || workState?.task_id" class="task-card">
@@ -111,6 +114,82 @@
       </div>
       <p>{{ workState?.analysis_summary || workState?.analysis_task?.message || '分析已完成，请确认后创建英文 1:1 本地化版本。' }}</p>
       <div class="billing-row">
+        <strong>用反推出的剧本、角色、场景、道具与分镜新建短剧工厂项目，后续资产与视频在短剧工厂里生成</strong>
+        <el-button
+          type="success"
+          :loading="factoryImporting"
+          :disabled="seriesImporting"
+          @click="importToFactory"
+        >
+          导入短剧工厂
+        </el-button>
+      </div>
+      <div v-if="fullLocalizationTargets.length" class="billing-row factory-localization-row">
+        <strong>完全转绘：{{ localizationStatusText(fullLocalizationState, selectedFullLocalizationLabel) }}</strong>
+        <span v-if="seriesLockText(fullLocalizationState)" class="factory-series-lock">{{ seriesLockText(fullLocalizationState) }}</span>
+        <span v-if="seriesImportHint" class="factory-series-import">
+          {{ seriesImportHint }}
+          <strong v-if="seriesImportQuote" class="canvas-credit-callout-v1">整部导入预计扣除 {{ seriesImportQuote }} 积分</strong>
+        </span>
+        <span v-if="seriesProgress" class="factory-series-progress">{{ seriesProgress }}</span>
+        <div class="factory-localization-actions">
+          <el-select v-model="fullLocalizationKey" placeholder="选择目标语言与国家" :disabled="fullLocalizationBusy || seriesImporting">
+            <el-option v-for="item in fullLocalizationTargets" :key="item.key" :label="item.label" :value="item.key" />
+          </el-select>
+          <el-select
+            v-if="seriesTargets.length"
+            v-model="seriesTargetId"
+            class="factory-series-select"
+            placeholder="导入到"
+            :disabled="fullLocalizationBusy || seriesImporting"
+            @change="seriesTargetTouched = true"
+          >
+            <el-option :value="0" label="新建短剧工厂项目" />
+            <el-option v-for="item in seriesTargets" :key="item.drama_id" :label="seriesTargetLabel(item)" :value="item.drama_id" />
+          </el-select>
+          <strong
+            v-if="fullLocalizationState.credits != null && fullLocalizationState.status !== 'ready'"
+            class="canvas-credit-callout-v1"
+          >本次预计扣除 {{ fullLocalizationState.credits }} 积分</strong>
+          <el-button
+            type="primary"
+            :loading="fullLocalizationBusy"
+            :disabled="!fullLocalizationKey || fullLocalizationState.status === 'localizing' || seriesImporting"
+            @click="runFullLocalization"
+          >
+            {{ localizationActionLabel(fullLocalizationState) }}
+          </el-button>
+          <el-button
+            v-if="seriesPlan.episodes.length > 1"
+            :loading="seriesImporting"
+            :disabled="!fullLocalizationKey || fullLocalizationBusy || seriesImporting"
+            @click="runSeriesImport"
+          >
+            整部导入（共 {{ seriesPlan.episodes.length }} 集）
+          </el-button>
+        </div>
+      </div>
+      <div v-if="needsAnalysisReview" class="billing-row">
+        <strong>安全模式：请人工确认分析结果后再进入本地化</strong>
+        <el-button
+          type="primary"
+          :loading="analysisReviewSubmitting"
+          @click="confirmAnalysisReview"
+        >
+          确认分析结果
+        </el-button>
+      </div>
+      <div v-else-if="needsLocalizationReview" class="billing-row">
+        <strong>本地化已完成（安全模式）：请核对译文后确认进入资产阶段</strong>
+        <el-button
+          type="primary"
+          :loading="localizationReviewSubmitting"
+          @click="confirmLocalizationReview"
+        >
+          确认本地化结果
+        </el-button>
+      </div>
+      <div v-else class="billing-row">
         <strong v-if="hasLocalizationQuote" class="canvas-credit-callout-v1">本地化报价 {{ localizationCredits }} 积分</strong>
         <strong v-else class="canvas-credit-callout-v1">本地化报价待管理员配置</strong>
         <el-button
@@ -158,11 +237,30 @@
 
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { useRouter } from 'vue-router'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { redrawAPI } from '@/api/redraw'
 import StylePresetPicker from '@/components/redraw/StylePresetPicker.vue'
 import {
+  defaultLocalizationTarget,
+  defaultSeriesTarget,
+  importSuccessMessage,
+  localizationActionLabel,
+  localizationBody,
+  localizationStatusText,
+  seriesImportBlocker,
+  seriesImportCredits,
+  seriesImportSteps,
+  seriesImportSummary,
+  seriesImportTarget,
+  seriesLockText,
+  seriesProgressText,
+  seriesTargetLabel,
+} from '@/utils/redrawFactoryLocalization'
+import {
   analysisQuoteCredits,
+  analysisReviewPending,
+  localizationReviewPending,
   buildAnalyzePayload,
   buildLocalizationPayload,
   canConfirmLocalization,
@@ -172,6 +270,7 @@ import {
   localizationTaskState,
   createLocalizationQuoteRequestGate,
   isCurrentLocalizationConfirmation,
+  redrawAnalysisLocked,
   redrawWorkflowPhase,
   resolveEightStageState,
   shouldResetLocalizationIdempotencyKey,
@@ -208,6 +307,10 @@ const workState = ref(props.initialWork)
 const uploading = ref(false)
 const submitting = ref(false)
 const localizationSubmitting = ref(false)
+const analysisReviewSubmitting = ref(false)
+const factoryImporting = ref(false)
+const router = useRouter()
+const localizationReviewSubmitting = ref(false)
 const taskState = ref({ task_id: '', status: '', progress: 0 })
 const localizationState = ref(localizationTaskState(props.initialWork))
 const workflowPhase = ref(redrawWorkflowPhase(props.initialWork))
@@ -228,7 +331,10 @@ const canStartAnalysis = computed(() => canStartRedrawAnalysis({
   selectedPreset: selectedPreset.value,
   freeStyle: freeStyle.value,
 }))
+const analysisLocked = computed(() => redrawAnalysisLocked(workState.value))
 const canSubmitLocalization = computed(() => canConfirmLocalization(workState.value))
+const needsAnalysisReview = computed(() => analysisReviewPending(workState.value))
+const needsLocalizationReview = computed(() => localizationReviewPending(workState.value))
 const eightStageState = computed(() => resolveEightStageState({
   ...(workState.value || {}),
   events: props.events,
@@ -294,7 +400,8 @@ function startTaskPolling() {
   pollAttempts = 0
   pollTimer = setInterval(async () => {
     pollAttempts += 1
-    if (pollAttempts > 120 || !shouldPollWork(workState.value)) {
+    // 分段分析最长约一小时（5 分钟样片约 15 段），轮询覆盖到这个时长。
+    if (pollAttempts > 1800 || !shouldPollWork(workState.value)) {
       stopTaskPolling()
       return
     }
@@ -340,10 +447,296 @@ async function refreshWork() {
   return fresh
 }
 
+async function importToFactory() {
+  const work = workState.value
+  if (!work?.id || factoryImporting.value) return
+  factoryImporting.value = true
+  try {
+    const result = await redrawAPI.importToFactory(work.id)
+    ElMessage.success(result?.created === false ? '已导入过，打开现有短剧工厂项目' : '已导入短剧工厂')
+    if (result?.drama_id) await router.push(`/film/${result.drama_id}`)
+  } catch (error) {
+    ElMessage.error(error.message || '导入短剧工厂失败')
+  } finally {
+    factoryImporting.value = false
+  }
+}
+
+// 完全转绘：选目标语言 + 国家 → 付费生成该国的名字、形象、台词与场景 → 轮询完成 → 导入短剧工厂。
+const FULL_LOCALIZATION_POLL_MS = 5000
+const FULL_LOCALIZATION_POLL_LIMIT = 240
+const fullLocalizationTargets = ref([])
+const fullLocalizationKey = ref('')
+const fullLocalizationState = ref({ status: '', credits: null })
+const fullLocalizationBusy = ref(false)
+let fullLocalizationTimer = null
+let fullLocalizationPolls = 0
+const selectedFullLocalizationLabel = computed(() => fullLocalizationTargets.value
+  .find((item) => item.key === fullLocalizationKey.value)?.label || '')
+// 整部剧：同一部剧按同一目标国家导入过的短剧工厂项目，本集可追加为下一集（来自 status 的 series_targets）。
+const seriesTargets = ref([])
+const seriesTargetId = ref(0)
+const seriesTargetTouched = ref(false)
+
+function applySeriesTargets(state) {
+  if (!Array.isArray(state?.series_targets)) return
+  seriesTargets.value = state.series_targets
+  const keep = seriesTargetTouched.value
+    && (seriesTargetId.value === 0 || state.series_targets.some((item) => item.drama_id === seriesTargetId.value))
+  if (!keep) seriesTargetId.value = defaultSeriesTarget(state.series_targets)
+}
+
+function stopFullLocalizationPolling() {
+  if (fullLocalizationTimer) clearTimeout(fullLocalizationTimer)
+  fullLocalizationTimer = null
+}
+
+async function loadFullLocalizationTargets() {
+  const work = workState.value
+  if (!work?.id || fullLocalizationTargets.value.length) return
+  try {
+    const result = await redrawAPI.factoryLocalization(work.id, { action: 'targets' })
+    fullLocalizationTargets.value = Array.isArray(result?.targets) ? result.targets : []
+    fullLocalizationKey.value = defaultLocalizationTarget(fullLocalizationTargets.value, result?.default_locale, result?.default_market)
+  } catch (_) {
+    fullLocalizationTargets.value = []
+  }
+}
+
+async function refreshFullLocalizationStatus() {
+  const body = localizationBody(fullLocalizationTargets.value, fullLocalizationKey.value, 'status')
+  if (!workState.value?.id || !body) return null
+  fullLocalizationState.value = await redrawAPI.factoryLocalization(workState.value.id, body)
+  applySeriesTargets(fullLocalizationState.value)
+  return fullLocalizationState.value
+}
+
+async function importFullLocalization() {
+  const extra = seriesTargetId.value ? { target_drama_id: seriesTargetId.value } : {}
+  const body = localizationBody(fullLocalizationTargets.value, fullLocalizationKey.value, 'import', extra)
+  const result = await redrawAPI.factoryLocalization(workState.value.id, body)
+  ElMessage.success(importSuccessMessage(result, selectedFullLocalizationLabel.value))
+  if (result?.drama_id) await router.push(`/film/${result.drama_id}`)
+}
+
+function pollFullLocalization() {
+  stopFullLocalizationPolling()
+  fullLocalizationTimer = setTimeout(async () => {
+    fullLocalizationPolls += 1
+    try {
+      const state = await refreshFullLocalizationStatus()
+      if (state?.status === 'ready') {
+        fullLocalizationBusy.value = true
+        await importFullLocalization()
+        fullLocalizationBusy.value = false
+        return
+      }
+      if (state?.status === 'failed') {
+        ElMessage.error(localizationStatusText(state))
+        return
+      }
+    } catch (error) {
+      ElMessage.error(error.message || '查询转绘进度失败')
+    }
+    if (fullLocalizationPolls < FULL_LOCALIZATION_POLL_LIMIT) pollFullLocalization()
+  }, FULL_LOCALIZATION_POLL_MS)
+}
+
+async function runFullLocalization() {
+  if (!workState.value?.id || fullLocalizationBusy.value) return
+  fullLocalizationBusy.value = true
+  try {
+    const current = await refreshFullLocalizationStatus()
+    if (current?.status === 'ready') {
+      await importFullLocalization()
+      return
+    }
+    const started = await redrawAPI.factoryLocalization(
+      workState.value.id,
+      localizationBody(fullLocalizationTargets.value, fullLocalizationKey.value, 'start', { expected_credits: current?.credits }),
+    )
+    fullLocalizationState.value = started
+    if (started?.status === 'ready') {
+      await importFullLocalization()
+      return
+    }
+    ElMessage.success(`已开始生成${selectedFullLocalizationLabel.value}版本`)
+    fullLocalizationPolls = 0
+    pollFullLocalization()
+  } catch (error) {
+    ElMessage.error(error.message || '完全转绘失败')
+  } finally {
+    fullLocalizationBusy.value = false
+  }
+}
+
+// 整部导入：按集号逐集"生成（没生成的才扣积分）→ 追加到同一个短剧工厂项目"。每集的转绘要沿用前几集的结果，所以必须串行。
+// 中途关闭页面就停下；再点一次时已生成、已导入的集会跳过，从没完成的那一集继续。
+const EMPTY_SERIES_PLAN = { episodes: [], credits_needed: 0, series_targets: [] }
+const seriesPlan = ref(EMPTY_SERIES_PLAN)
+const seriesImporting = ref(false)
+const seriesProgress = ref('')
+let seriesPlanToken = 0
+let seriesCancelled = false
+const seriesImportPlan = computed(() => {
+  const targetId = seriesImportTarget(seriesPlan.value)
+  return { targetId, steps: seriesImportSteps(seriesPlan.value, targetId) }
+})
+const seriesImportQuote = computed(() => seriesImportCredits(seriesImportPlan.value.steps))
+const seriesImportHint = computed(() => {
+  const total = seriesPlan.value.episodes.length
+  if (total < 2) return ''
+  const pending = seriesImportPlan.value.steps.length
+  if (!pending) return `全剧 ${total} 集都已导入同一个短剧工厂项目。`
+  return `整部导入：按集号把还没导入的 ${pending} 集逐集转绘，并导入同一个短剧工厂项目。`
+})
+
+async function loadSeriesPlan() {
+  const token = ++seriesPlanToken
+  const body = localizationBody(fullLocalizationTargets.value, fullLocalizationKey.value, 'series')
+  if (!workState.value?.id || !body) {
+    seriesPlan.value = EMPTY_SERIES_PLAN
+    return seriesPlan.value
+  }
+  try {
+    const plan = await redrawAPI.factoryLocalization(workState.value.id, body)
+    if (token === seriesPlanToken) seriesPlan.value = { ...EMPTY_SERIES_PLAN, ...plan }
+  } catch (_) {
+    if (token === seriesPlanToken) seriesPlan.value = EMPTY_SERIES_PLAN
+  }
+  return seriesPlan.value
+}
+
+async function waitSeriesEpisodeReady(workId, step) {
+  const statusBody = localizationBody(fullLocalizationTargets.value, fullLocalizationKey.value, 'status')
+  for (let polls = 0; polls < FULL_LOCALIZATION_POLL_LIMIT; polls += 1) {
+    if (seriesCancelled) throw new Error('已离开页面，整部导入已停止')
+    await new Promise((resolve) => setTimeout(resolve, FULL_LOCALIZATION_POLL_MS))
+    const state = await redrawAPI.factoryLocalization(workId, statusBody)
+    if (state?.status === 'ready') return state
+    if (state?.status === 'failed') {
+      throw new Error(`第 ${step.episode} 集生成失败，积分已退回：${state.error || '未知原因'}`)
+    }
+  }
+  throw new Error(`第 ${step.episode} 集生成超时，请稍后再点一次整部导入继续`)
+}
+
+async function runSeriesImport() {
+  if (seriesImporting.value || fullLocalizationBusy.value || !fullLocalizationKey.value) return
+  seriesImporting.value = true
+  seriesCancelled = false
+  let dramaId = 0
+  try {
+    const plan = await loadSeriesPlan()
+    dramaId = seriesImportTarget(plan)
+    const steps = seriesImportSteps(plan, dramaId)
+    const blocker = seriesImportBlocker(plan, dramaId, steps)
+    if (blocker) {
+      ElMessage.error(blocker)
+      return
+    }
+    if (!steps.length) {
+      ElMessage.success('全剧各集都已导入同一个短剧工厂项目')
+      if (dramaId) await router.push(`/film/${dramaId}`)
+      return
+    }
+    await ElMessageBox.confirm(seriesImportSummary(plan, dramaId, steps, selectedFullLocalizationLabel.value), '整部导入', {
+      confirmButtonText: '开始整部导入',
+      cancelButtonText: '取消',
+      type: 'warning',
+    })
+    const statusBody = localizationBody(fullLocalizationTargets.value, fullLocalizationKey.value, 'status')
+    for (const [index, step] of steps.entries()) {
+      if (seriesCancelled) return
+      seriesProgress.value = seriesProgressText(step, index, steps.length, 'localizing')
+      let state = await redrawAPI.factoryLocalization(step.work_id, statusBody)
+      if (state?.status !== 'ready') {
+        if (state?.status !== 'localizing') {
+          state = await redrawAPI.factoryLocalization(step.work_id, localizationBody(
+            fullLocalizationTargets.value, fullLocalizationKey.value, 'start', { expected_credits: state?.credits },
+          ))
+        }
+        if (state?.status !== 'ready') state = await waitSeriesEpisodeReady(step.work_id, step)
+      }
+      seriesProgress.value = seriesProgressText(step, index, steps.length, 'importing')
+      const result = await redrawAPI.factoryLocalization(step.work_id, localizationBody(
+        fullLocalizationTargets.value, fullLocalizationKey.value, 'import', dramaId ? { target_drama_id: dramaId } : {},
+      ))
+      dramaId = Number(result?.drama_id) || dramaId
+    }
+    ElMessage.success(`整部导入完成：共导入 ${steps.length} 集`)
+    if (dramaId) await router.push(`/film/${dramaId}`)
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') return
+    ElMessage.error(error?.message || '整部导入失败')
+  } finally {
+    seriesImporting.value = false
+    seriesProgress.value = ''
+    if (!seriesCancelled) void loadSeriesPlan()
+  }
+}
+
+watch(fullLocalizationKey, async () => {
+  stopFullLocalizationPolling()
+  seriesTargets.value = []
+  seriesTargetId.value = 0
+  seriesTargetTouched.value = false
+  // 切换目标国家时先清掉上一个国家的状态，避免短暂显示成"已生成"。
+  fullLocalizationState.value = { status: '', credits: null }
+  seriesPlan.value = EMPTY_SERIES_PLAN
+  void loadSeriesPlan()
+  try {
+    const state = await refreshFullLocalizationStatus()
+    if (state?.status === 'localizing') {
+      fullLocalizationPolls = 0
+      pollFullLocalization()
+    }
+  } catch (_) {
+    fullLocalizationState.value = { status: '', credits: null }
+  }
+})
+
+watch(workflowPhase, (phase) => {
+  if (phase === 'analysis_review') void loadFullLocalizationTargets()
+}, { immediate: true })
+
+async function confirmAnalysisReview() {
+  const work = workState.value
+  if (!analysisReviewPending(work) || analysisReviewSubmitting.value) return
+  analysisReviewSubmitting.value = true
+  try {
+    await redrawAPI.approveAnalysisReview(work.id, work.analysis_decision.evidence_hash)
+    await refreshWork()
+  } catch (error) {
+    ElMessage.error(error.message || '确认分析结果失败')
+  } finally {
+    analysisReviewSubmitting.value = false
+  }
+}
+
+async function confirmLocalizationReview() {
+  const work = workState.value
+  if (!localizationReviewPending(work) || localizationReviewSubmitting.value) return
+  localizationReviewSubmitting.value = true
+  try {
+    await redrawAPI.approveLocalizationReview(work.id, {
+      versionId: work.localization_decision.version_id,
+      expectedFactsHash: work.localization_decision.evidence_hash,
+    })
+    await refreshWork()
+  } catch (error) {
+    ElMessage.error(error.message || '确认本地化结果失败')
+  } finally {
+    localizationReviewSubmitting.value = false
+  }
+}
+
 async function ensureLocalizationQuote(work = workState.value) {
   if (
     !work?.id
       || work?.localization_quote
+      || analysisReviewPending(work)
+      || localizationReviewPending(work)
       || !['analysis_review', 'localization_needs_attention', 'failed'].includes(redrawWorkflowPhase(work))
   ) {
     return
@@ -485,7 +878,9 @@ watch(() => props.initialWork, (next) => {
 })
 
 onUnmounted(() => {
+  seriesCancelled = true
   stopTaskPolling()
+  stopFullLocalizationPolling()
 })
 </script>
 
@@ -539,6 +934,13 @@ onUnmounted(() => {
   color: #ff8585;
 }
 
+.analysis-locked-hint {
+  display: block;
+  margin-top: 8px;
+  color: #f0b86e;
+  text-align: right;
+}
+
 .section-heading,
 .billing-row,
 .task-card > div {
@@ -547,6 +949,41 @@ onUnmounted(() => {
   justify-content: space-between;
   gap: 12px;
   min-width: 0;
+}
+
+.factory-localization-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.factory-localization-actions .el-select {
+  width: 200px;
+}
+
+.factory-localization-actions .factory-series-select {
+  width: 280px;
+  max-width: 100%;
+}
+
+.factory-series-lock {
+  color: #f4d58d;
+  font-size: 13px;
+}
+
+.factory-series-import {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  font-size: 13px;
+}
+
+.factory-series-progress {
+  color: #ffb38a;
+  font-size: 13px;
 }
 
 .section-heading > div {

@@ -79,8 +79,10 @@ test('单条、批量、一键流水线和修复缺失全部通过 buildSbVideoR
   for (const [name, nextName] of paths) {
     const body = functionSource(name, nextName)
     assert.match(body, /buildSbVideoRequestContext\(sb/)
-    assert.match(body, /videosAPI\.create\(requestContext\.payload\)/)
+    // 批量生成经 createSbVideoWithKmRetry 提交同一个 requestContext.payload（KM 429 时原样重提）。
+    assert.match(body, /videosAPI\.create\(requestContext\.payload\)|createSbVideoWithKmRetry\(sb, requestContext\.payload,/)
   }
+  assert.match(functionSource('createSbVideoWithKmRetry', 'videoCatalogPublicConfig'), /videosAPI\.create\(payload\)/)
   assert.doesNotMatch(source, /videosAPI\.create\(\s*\{/)
   const singleBody = functionSource('onGenerateSbVideo', 'onLinkTailFrameToNext')
   const previewBody = functionSource('onPreviewSbVideoRequest', 'onStoryboardVideoModelChange')
@@ -99,7 +101,10 @@ test('全能模式透传真实存在的完整参考数组，首尾帧模式不�
   assert.match(body, /capability[, :]/)
   assert.match(body, /supportsAudioReference/)
   assert.match(body, /const referenceImageUrls = useOmni \? referenceUrls : undefined/)
-  assert.doesNotMatch(source, /sb\?\.reference_video_urls/)
+  // 分镜参考视频只能来自后端显式登记的 storyboard_reference_video 项目素材（dramaService 注入），
+  // 且必须同时满足项目开关、全能参考模式和模型声明 supportsVideoReference，不得把分镜产物臆造成参考视频。
+  assert.match(body, /videoUseStoryboardReferenceVideo\.value && useOmni\s+&& capability\.supportsVideoReference === true\s+\? collectStoryboardReferenceUrls\(sb\?\.reference_video_urls\)/)
+  assert.doesNotMatch(source, /reference_video_urls:\s*\[?\s*sb\.(video_url|local_path)/)
   assert.match(requestBuilderSource, /reference_video_urls: referenceVideoUrlList/)
 })
 

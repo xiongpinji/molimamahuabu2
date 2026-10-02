@@ -1,3 +1,4 @@
+require('./config/dotenv.js').loadDotenv();
 const { loadConfig } = require('./config/index.js');
 
 const preConfig = loadConfig();
@@ -13,9 +14,10 @@ if (insecureTlsOn) {
 }
 
 const { createApp } = require('./app.js');
-const { closeDb } = require('./db/index.js');
+const { closeDb, getDb } = require('./db/index.js');
 const taskService = require('./services/taskService');
 const logger = require('./logger.js');
+const redrawVoiceAutoBind = require('./services/redrawVoiceAutoBindService');
 
 const { app, config } = createApp();
 const port = Number(process.env.PORT) || config.server?.port || 5679;
@@ -32,6 +34,15 @@ server.keepAliveTimeout = 65_000;
 server.headersTimeout = 66_000;
 server.requestTimeout = 600_000;
 server.maxConnections = Number(process.env.SERVER_MAX_CONNECTIONS) || 1_024;
+
+// 样片转绘项目：定音镜头生成后自动提取并沿用角色音色；REDRAW_VOICE_AUTO_BIND_INTERVAL_MS=0 关闭。
+const voiceAutoBindInterval = process.env.REDRAW_VOICE_AUTO_BIND_INTERVAL_MS;
+redrawVoiceAutoBind.startRedrawVoiceAutoBind(getDb(config.database), logger, {
+  intervalMs: voiceAutoBindInterval == null || voiceAutoBindInterval === ''
+    ? redrawVoiceAutoBind.DEFAULT_INTERVAL_MS
+    : Number(voiceAutoBindInterval),
+  cfg: config,
+});
 
 let shutdownStarted = false;
 
@@ -54,6 +65,7 @@ async function shutdown() {
     });
   }
   await serverClosed;
+  redrawVoiceAutoBind.stopRedrawVoiceAutoBind();
   clearTimeout(forceExitTimer);
   closeDb();
   logger.info('Server exited');

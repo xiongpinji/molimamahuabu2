@@ -1039,9 +1039,17 @@
               <el-button v-if="batchImageRunning" size="large" type="danger" plain @click="batchImageStopping = true">停止图片</el-button>
               <el-button v-if="batchVideoRunning" size="large" type="danger" plain @click="batchVideoStopping = true">停止视频</el-button>
             </div>
+            <div class="batch-video-options" style="margin-top:8px;display:flex;align-items:center;gap:8px;font-size:13px;">
+              <el-checkbox v-model="videoNativeAudio" size="small" @change="saveProjectSettings()">
+                模型原生音频（模型支持时生成带声音的视频）
+              </el-checkbox>
+              <el-checkbox v-model="videoUseStoryboardReferenceVideo" size="small" @change="saveProjectSettings()">
+                分镜参考原片（全能参考模式下提交分镜对应的样片片段）
+              </el-checkbox>
+            </div>
             <!-- 连贯帧模式 UI 暂时隐藏（保留变量与批量生成逻辑，后续可快速恢复） -->
             <div class="batch-video-options" style="margin-top:8px;display:flex;align-items:center;gap:8px;font-size:13px;">
-              <el-checkbox v-model="videoFrameContiguity" size="small">
+              <el-checkbox v-model="videoFrameContiguity" size="small" @change="saveProjectSettings()">
                 连贯帧模式（自动衔接同场景分镜）
               </el-checkbox>
               <el-tooltip placement="top" :show-after="100">
@@ -2985,7 +2993,7 @@ import {
 } from '@/utils/pipelineRetryPolicy'
 import { GRID_LAYOUTS, isGridFrameType } from '@/utils/gridLayout'
 import { buildStoryboardContinuityPrompt, canChainStoryboardFrames } from '@/utils/videoContinuity'
-import { assertVideoDurationAllowed, videoDurationOptionsForCapability } from '@/utils/videoDuration'
+import { assertVideoDurationAllowed, submittableVideoDuration, videoDurationOptionsForCapability } from '@/utils/videoDuration'
 import { buildVoicePromptPreview, videoVoicePolicyForConfig } from '@/utils/videoVoicePolicy'
 import {
   buildVideoGenerationAudit,
@@ -3876,6 +3884,15 @@ const batchVideoProgress = ref({ current: 0, total: 0, failed: 0 })
 const batchVideoErrors = ref([])
 // P0-1: 连贯帧模式默认开启；用户可关闭以恢复各镜独立生成
 const videoFrameContiguity = ref(true)
+// 模型原生音频：默认开启；仅当前视频模型声明 supportsAudio 时才会随请求提交 generate_audio=true，项目可单独关闭。
+const videoNativeAudio = ref(true)
+// 分镜参考视频：使用分镜已登记的参考视频（如样片转绘切出的原片片段），仅在全能参考模式且模型支持参考视频时提交。
+const videoUseStoryboardReferenceVideo = ref(false)
+// KM 线路同一账号同时生成的任务有上限，超过会被 KM 以 429 明确拒绝（没有任务、不扣费）。
+// 单镜按钮本页最多同时 8 个；批量生成遇到这种拒绝时等 60 秒重提同一镜头，最多 2 次（用户 2026-09-30 同意）。
+const KM_MAX_INFLIGHT_VIDEOS = 8
+const KM_REJECTED_RETRY_DELAY_MS = 60_000
+const KM_REJECTED_RETRIES = 2
 // P0-3: 分镜超分辨率 loading set
 const upscalingSbIds = reactive(new Set())
 // P2-4: TTS 状态
@@ -5360,6 +5377,11 @@ async function loadDrama() {
     if (savedVideoResolution) videoResolution.value = savedVideoResolution
     const savedVideoModel = (d.metadata && d.metadata.video_model) ? String(d.metadata.video_model) : ''
     if (savedVideoModel) selectedVideoModel.value = savedVideoModel
+    videoNativeAudio.value = d.metadata?.video_native_audio !== false
+    videoUseStoryboardReferenceVideo.value = d.metadata?.video_use_storyboard_reference_video === true
+    // 连贯帧按项目记住用户的选择；没存过时普通项目照旧默认开启，样片转绘导入的项目（全能参考镜头用不上连贯帧）默认关闭。
+    const savedFrameContiguity = d.metadata?.video_frame_contiguity
+    videoFrameContiguity.value = typeof savedFrameContiguity === 'boolean' ? savedFrameContiguity : !d.metadata?.redraw_import
     const savedImageModel = String(d.metadata?.image_model || '').trim()
     if (savedImageModel && imageModelOptions.value.some((item) => item.model === savedImageModel)) {
       selectedImageModel.value = savedImageModel
@@ -5775,6 +5797,9 @@ async function saveProjectSettings(includeGenerationStyle = false) {
     storyboard_universal_omni: !!storyboardUniversalOmni.value,
     storyboard_use_first_last_frame: !!storyboardUseFirstLastFrame.value,
     last_frame_use_first_layout_lock: !!lastFrameUseFirstLayoutLock.value,
+    video_native_audio: !!videoNativeAudio.value,
+    video_use_storyboard_reference_video: !!videoUseStoryboardReferenceVideo.value,
+    video_frame_contiguity: !!videoFrameContiguity.value,
   }
   if (includeGenerationStyle) {
     Object.assign(metadata, projectStylePromptMetadata())
@@ -7010,6 +7035,12 @@ async function refreshVideoModelCatalogBeforeGeneration() {
 
 async function onVideoModelChange() {
   syncVideoSelectionForModel(selectedVideoModel.value)
+  // 合成时按分镜时长裁剪的项目（样片转绘导入）：分镜时长就是原片节奏，换模型不改写；
+  // 提交时 submittableVideoDuration 已按模型档位取不小于它的最短时长，合成再裁回分镜时长。
+  if (store.drama?.metadata?.merge_trim_to_storyboard_duration === true) {
+    await saveProjectSettings(false)
+    return
+  }
   const durations = videoDurationOptionsForModel(selectedVideoModel.value)
   const nextDurations = { ...sbDuration.value }
   const updates = []
@@ -7055,7 +7086,7 @@ function requireStoryboardVideoGenerationOptions(sb) {
   if (entry.capabilities?.declared && !resolutions.includes(resolution)) {
     throw new Error(`当前视频模型不支持 ${resolution || '未选择'} 清晰度；可用档位：${resolutions.join('、') || '无'}`)
   }
-  const duration = getSbVideoDurationForApi(sb)
+  const duration = submittableVideoDuration(getSbVideoDurationForApi(sb), entry.capabilities)
   try {
     assertVideoDurationAllowed(duration, entry.capabilities)
   } catch (error) {
@@ -7071,6 +7102,51 @@ function requireStoryboardVideoGenerationOptions(sb) {
 function getStoryboardVideoModel(sb) {
   const override = sb?.id != null ? String(sbVideoModel.value[sb.id] || '').trim() : ''
   return override || String(selectedVideoModel.value || '').trim()
+}
+
+// 公开目录不下发协议名；KM 线路的模型显示名都带"（KM）"。
+function isKmVideoModel(model) {
+  return /[（(]KM[）)]/.test(String(videoModelMetadata(model)?.label || ''))
+}
+
+function kmGeneratingVideoCount() {
+  return (store.storyboards || [])
+    .filter((item) => generatingSbVideoIds.has(item.id) && isKmVideoModel(getStoryboardVideoModel(item))).length
+}
+
+function isKmConcurrencyRejection(error) {
+  return /KM 请求被拒绝（HTTP 429）/.test(String(error?.message || error || ''))
+}
+
+/** 视频请求里带的参考素材数（参考图、参考视频、参考音频）。 */
+function omniReferenceMaterialCount(payload) {
+  return ['reference_image_urls', 'reference_video_urls', 'reference_audio_urls']
+    .reduce((sum, key) => sum + (Array.isArray(payload?.[key]) ? payload[key].length : 0), 0)
+}
+
+/** 与 buildSbVideoRequestContext 的 useOmni 判断一致：全能参考镜头不用首尾帧，连贯帧对它不起作用。 */
+function sbUsesOmniReference(sb) {
+  const entry = videoModelMetadata(getStoryboardVideoModel(sb))
+  if (!entry) return false
+  const capability = entry.capabilities || {}
+  const protocol = String(entry.protocol || '').trim().toLowerCase()
+  if (protocol === 'toapis_video') return isSbUniversalMode(sb.id) && capability.supportsImageReference === true
+  return isSbUniversalMode(sb.id)
+}
+
+/** 提交并等待一个分镜视频；KM 明确拒绝（429，没扣费）时等 60 秒重提同一镜头，最多 retries 次。 */
+async function createSbVideoWithKmRetry(sb, payload, meta, { retries = 0, shouldStop = () => false } = {}) {
+  let res = await videosAPI.create(payload)
+  let pollRes = res?.task_id ? await pollTask(res.task_id, () => loadSingleStoryboardMedia(sb.id), meta) : null
+  for (let attempt = 0; attempt < retries; attempt += 1) {
+    if (!res?.task_id || pollRes?.status !== 'failed' || !isKmConcurrencyRejection(pollRes.error) || shouldStop()) break
+    ElMessage.info(`#${sb.storyboard_number ?? sb.id} KM 同时生成已满（未扣费），${KM_REJECTED_RETRY_DELAY_MS / 1000} 秒后自动重提（第 ${attempt + 1}/${retries} 次）`)
+    await new Promise((resolve) => setTimeout(resolve, KM_REJECTED_RETRY_DELAY_MS))
+    if (shouldStop()) break
+    res = await videosAPI.create(payload)
+    pollRes = res?.task_id ? await pollTask(res.task_id, () => loadSingleStoryboardMedia(sb.id), meta) : null
+  }
+  return { res, pollRes }
 }
 
 function videoCatalogPublicConfig(model) {
@@ -7195,14 +7271,15 @@ async function buildSbVideoRequestContext(sb, { universalOmniApi, persistGridSel
     referenceUrls = absoluteUrl ? [absoluteUrl] : undefined
   }
 
-  const continuityFirstFrameUrl = !strictToapis && persistGridSelection
-    ? await resolveContinuityFirstFrameUrl(sb, '')
-    : (!strictToapis ? getNonMutatingContinuityFirstFrameUrl(sb, '') : '')
+  // 全能参考模式不带首尾帧（各线路一致）：上一镜尾帧当首帧会和全能参考互斥，请求组装时报错、镜头提交不了。
+  const continuityFirstFrameUrl = useOmni
+    ? ''
+    : !strictToapis && persistGridSelection
+      ? await resolveContinuityFirstFrameUrl(sb, '')
+      : (!strictToapis ? getNonMutatingContinuityFirstFrameUrl(sb, '') : '')
   const firstLast = sbVideoFirstLastUrls(sb, universalOmniApi, absoluteUrl || undefined)
-  const { first: firstFrameUrl, last: lastFrameUrl } = strictToapis && useOmni
+  const { first: firstFrameUrl, last: lastFrameUrl } = useOmni
     ? { first: undefined, last: undefined }
-    : useOmni
-    ? { first: continuityFirstFrameUrl || undefined, last: undefined }
     : { first: continuityFirstFrameUrl || firstLast.first, last: firstLast.last }
   if (useOmni && firstFrameUrl && referenceUrls && !referenceUrls.includes(firstFrameUrl)) {
     referenceUrls = [firstFrameUrl, ...referenceUrls]
@@ -7212,8 +7289,13 @@ async function buildSbVideoRequestContext(sb, { universalOmniApi, persistGridSel
   }
   const preferClassicPrompt = universal && !useOmni
   const referenceImageUrls = useOmni ? referenceUrls : undefined
-  // 短剧工厂当前没有参考视频选择器；不能把分镜产物臆造成供应商参考视频。
-  const referenceVideoUrls = undefined
+  // 分镜参考视频只来自分镜已登记的项目素材（如样片转绘切出的原片片段），不臆造供应商参考视频；
+  // 需要项目开启开关、全能参考模式、且模型声明支持参考视频。
+  const storyboardReferenceVideos = videoUseStoryboardReferenceVideo.value && useOmni
+    && capability.supportsVideoReference === true
+    ? collectStoryboardReferenceUrls(sb?.reference_video_urls)
+    : []
+  const referenceVideoUrls = storyboardReferenceVideos.length ? storyboardReferenceVideos : undefined
   const referenceAudioUrls = useOmni && capability.supportsAudioReference === true
     ? getStoryboardReferenceAudioUrls(sb)
     : undefined
@@ -7242,7 +7324,7 @@ async function buildSbVideoRequestContext(sb, { universalOmniApi, persistGridSel
     referenceVideoUrls,
     referenceAudioUrls,
     referenceMode,
-    generateAudio: capability.supportsAudio === true ? false : undefined,
+    generateAudio: capability.supportsAudio === true ? videoNativeAudio.value === true : undefined,
     style: getSelectedStyle(),
     aspectRatio: projectAspectRatio.value || '16:9',
     resolution: selection.resolution || undefined,
@@ -7616,14 +7698,17 @@ async function onGenerateSbVideo(sb) {
       )
       return
     }
-    try {
-      await ElMessageBox.confirm(
-        '当前没有可用的参考图（场景/角色/道具等；不含经典分镜主图），将按纯文案提交平台当前启用的视频模型，效果可能不稳定。确认继续？',
-        '全能模式无参考图',
-        { confirmButtonText: '继续生成', cancelButtonText: '取消', type: 'warning' }
-      )
-    } catch {
-      return
+    // KM 全能参考没有图时还可能带分镜参考原片或参考音频，组好请求后再判断（见下）；其它模型照旧可按纯文案提交。
+    if (!isKmVideoModel(getStoryboardVideoModel(sb))) {
+      try {
+        await ElMessageBox.confirm(
+          '当前没有可用的参考图（场景/角色/道具等；不含经典分镜主图），将按纯文案提交平台当前启用的视频模型，效果可能不稳定。确认继续？',
+          '全能模式无参考图',
+          { confirmButtonText: '继续生成', cancelButtonText: '取消', type: 'warning' }
+        )
+      } catch {
+        return
+      }
     }
   }
   let requestContext
@@ -7635,6 +7720,18 @@ async function onGenerateSbVideo(sb) {
   } catch (e) {
     sbVideoErrors.value[sb.id] = e.message || '视频参数校验失败'
     ElMessage.error(e.message || '视频参数校验失败')
+    return
+  }
+  // KM 全能参考一个参考素材都没有时会被 KM 直接拒绝（"必须包含通用参考素材"，不扣费），不提交，告诉用户先补素材。
+  if (isKmVideoModel(requestContext.model) && requestContext.universalOmniApi
+      && omniReferenceMaterialCount(requestContext.payload) === 0) {
+    const message = 'KM 全能参考模式至少要带一个参考素材（角色图、场景图、道具图、分镜参考原片或参考音频），否则会被 KM 直接拒绝。请先生成角色图或场景图后再提交。'
+    sbVideoErrors.value[sb.id] = message
+    await ElMessageBox.alert(message, 'KM 全能参考缺少参考素材', { confirmButtonText: '知道了', type: 'warning' })
+    return
+  }
+  if (isKmVideoModel(requestContext.model) && kmGeneratingVideoCount() >= KM_MAX_INFLIGHT_VIDEOS) {
+    ElMessage.warning(`KM 同时生成的镜头已有 ${KM_MAX_INFLIGHT_VIDEOS} 个，请等前面完成后再提交（避免被供应商拒绝）`)
     return
   }
   generatingSbVideoIds.add(sb.id)
@@ -7649,11 +7746,15 @@ async function onGenerateSbVideo(sb) {
   }
   storyboardsAPI.update(sb.id, { video_url: null }).catch(() => {})
   try {
-    const res = await videosAPI.create(requestContext.payload)
+    // 和批量一样：KM 明确拒绝（429，没扣费）时等 60 秒重提同一镜头，最多 2 次。
+    const { res, pollRes } = await createSbVideoWithKmRetry(sb, requestContext.payload, meta, {
+      retries: KM_REJECTED_RETRIES,
+    })
     if (res?.task_id) {
-      const pollRes = await pollTask(res.task_id, () => loadSingleStoryboardMedia(sb.id), meta)
       if (pollRes?.status === 'failed') {
-        sbVideoErrors.value[sb.id] = pollRes.error || '视频生成失败'
+        sbVideoErrors.value[sb.id] = isKmConcurrencyRejection(pollRes.error)
+          ? 'KM 同时生成已满，已被拒绝，未扣费，请稍后再点'
+          : (pollRes.error || '视频生成失败')
       } else if (pollRes?.status === 'completed') {
         sbVideoErrors.value[sb.id] = ''
         ElMessage.success('视频生成完成')
@@ -8028,7 +8129,8 @@ async function startBatchVideoGeneration() {
       return
     }
     batchVideoProgress.value = { current: 0, total: todo.length, failed: 0 }
-    const contiguity = videoFrameContiguity.value
+    // 连贯帧只作用于非全能参考镜头：待生成的全是全能参考镜头时不必一个一个等。
+    const contiguity = videoFrameContiguity.value && todo.some((item) => !sbUsesOmniReference(item))
     // 连贯帧模式强制顺序（concurrency=1），普通模式并发
     const videoConcurrency = contiguity ? 1 : (pipelineVideoConcurrency.value || 2)
     let videoDoneCount = 0
@@ -8063,12 +8165,17 @@ async function startBatchVideoGeneration() {
             delete next[sb.id]
             sbSelectedVideoId.value = next
           }
-          const res = await videosAPI.create(requestContext.payload)
+          const meta = buildSbGenMeta(sb, GEN_RESOURCE.SB_VIDEO, '分镜视频')
+          const { res, pollRes } = await createSbVideoWithKmRetry(sb, requestContext.payload, meta, {
+            retries: KM_REJECTED_RETRIES,
+            shouldStop: () => batchVideoStopping.value,
+          })
           if (res?.task_id) {
-            const meta = buildSbGenMeta(sb, GEN_RESOURCE.SB_VIDEO, '分镜视频')
-            const pollRes = await pollTask(res.task_id, () => loadSingleStoryboardMedia(sb.id), meta)
             if (pollRes?.status === 'failed') {
-              batchVideoErrors.value.push(`#${sb.storyboard_number ?? sb.id}: ${pollRes.error || '生成失败'}`)
+              const reason = isKmConcurrencyRejection(pollRes.error)
+                ? 'KM 同时生成已满，被拒绝（未扣费），请稍后重试'
+                : (pollRes.error || '生成失败')
+              batchVideoErrors.value.push(`#${sb.storyboard_number ?? sb.id}: ${reason}`)
               batchVideoProgress.value = { ...batchVideoProgress.value, failed: batchVideoProgress.value.failed + 1 }
             }
           } else {

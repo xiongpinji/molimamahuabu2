@@ -586,6 +586,122 @@ const REDRAW_TTS_CLEANUP_CLEAN_PLATE_UNLOCK = {
     'backend-node/test/incrementalReleaseScope.test.js',
   ],
 };
+const REDRAW_FACTORY_IMPORT_COMMON_TESTS = [
+  'backend-node/test/redrawFactoryImport.test.js',
+  'backend-node/test/redrawRoutes.test.js',
+  'backend-node/test/featureLockManifest.test.js',
+  'backend-node/test/incrementalReleaseScope.test.js',
+];
+function redrawFactoryImportUnlock(extraTests) {
+  return {
+    reason: '2026-09-28 一键转绘导入短剧工厂与样片分析超时修复获批',
+    approvedBy: 'product-owner 2026-09-28 redraw-import-to-factory',
+    impactTests: [...extraTests, ...REDRAW_FACTORY_IMPORT_COMMON_TESTS],
+  };
+}
+const REDRAW_FACTORY_IMPORT_UNLOCK_BY_FEATURE = {
+  [SAFE_PROVIDER_FAILOVER_FEATURE_ID]: redrawFactoryImportUnlock([
+    'backend-node/test/aiClientVisionMetadata.test.js',
+    'backend-node/test/redrawNativeSourceAnalysis.test.js',
+  ]),
+  [ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID]: redrawFactoryImportUnlock([]),
+  [PROACTIVE_CANARY_FEATURE_ID]: redrawFactoryImportUnlock([
+    'backend-node/test/aiClientVisionMetadata.test.js',
+    'backend-node/test/redrawNativeSourceAnalysis.test.js',
+    'backend-node/test/redrawLocalizationOrchestration.test.js',
+  ]),
+  [REDRAW_COVERAGE_HTTP_ROUTE_FEATURE_ID]: redrawFactoryImportUnlock(['backend-node/test/redrawEpisodeFacts.test.js']),
+  [REDRAW_CLEAN_PLATE_MEDIA_FEATURE_ID]: redrawFactoryImportUnlock(['backend-node/test/redrawProviderAdapters.test.js']),
+  [REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_FEATURE_ID]: redrawFactoryImportUnlock(['backend-node/test/redrawEpisodeFacts.test.js']),
+};
+
+// 2026-09-29 整部剧导入（跨集本地化锁定与追加导入）只改到 routes/redraw.js，批准叠加在它所在两个锁的最上层。
+const REDRAW_SERIES_IMPORT_UNLOCK = {
+  reason: '2026-09-29 整部剧转绘：跨集本地化锁定与追加导入获批',
+  approvedBy: 'product-owner 2026-09-29 redraw-series-import',
+  impactTests: [
+    'backend-node/test/redrawSeriesImport.test.js',
+    'backend-node/test/redrawFactoryImport.test.js',
+    'backend-node/test/redrawFactoryLocalization.test.js',
+    'backend-node/test/redrawRoutes.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
+const REDRAW_SERIES_IMPORT_FEATURE_IDS = [REDRAW_COVERAGE_HTTP_ROUTE_FEATURE_ID, REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_FEATURE_ID];
+
+function peelRedrawSeriesImport(manifest) {
+  manifest.features = manifest.features.map((feature) => {
+    if (!REDRAW_SERIES_IMPORT_FEATURE_IDS.includes(feature.featureId)) return feature;
+    assert.deepEqual(feature.unlock, REDRAW_SERIES_IMPORT_UNLOCK, `${feature.featureId} 缺少整部剧导入批准`);
+    return { ...feature, unlock: feature.unlockHistory.at(-1), unlockHistory: feature.unlockHistory.slice(0, -1) };
+  });
+  return manifest;
+}
+
+// 2026-09-30 整集出片（R76 移植）只改到 videoService.js 的参考素材白名单，批准叠加在"未知状态计费对账"锁的最上层。
+const WHOLE_EPISODE_PRODUCTION_UNLOCK = {
+  reason: '2026-09-30 整集出片：同项目道具表里的道具图可作视频参考素材获批（R76 移植）',
+  approvedBy: 'product-owner 2026-09-30 redraw-whole-episode-production',
+  impactTests: [
+    'backend-node/test/videoGenerationRequestSnapshot.test.js',
+    'backend-node/test/featureLockManifest.test.js',
+    'backend-node/test/incrementalReleaseScope.test.js',
+  ],
+};
+const WHOLE_EPISODE_PRODUCTION_FEATURE_IDS = ['stability.unknown-state-billing-reconciliation'];
+
+function peelWholeEpisodeProduction(manifest) {
+  manifest.features = manifest.features.map((feature) => {
+    if (!WHOLE_EPISODE_PRODUCTION_FEATURE_IDS.includes(feature.featureId)) return feature;
+    assert.deepEqual(feature.unlock, WHOLE_EPISODE_PRODUCTION_UNLOCK, `${feature.featureId} 缺少整集出片批准`);
+    return { ...feature, unlock: feature.unlockHistory.at(-1), unlockHistory: feature.unlockHistory.slice(0, -1) };
+  });
+  return manifest;
+}
+
+// 2026-09-28 的批准叠加在各锁最上层（整集出片、整部剧导入两层先剥掉）：先断言它，再把上一条批准还原为"当前"，供原有逐层断言继续校验。
+function loadManifestBeforeRedrawFactoryImport() {
+  const manifest = peelRedrawSeriesImport(peelWholeEpisodeProduction(JSON.parse(fs.readFileSync(manifestPath, 'utf8'))));
+  manifest.features = manifest.features.map((feature) => {
+    const expected = REDRAW_FACTORY_IMPORT_UNLOCK_BY_FEATURE[feature.featureId];
+    if (!expected) return feature;
+    assert.deepEqual(feature.unlock, expected, `${feature.featureId} 缺少转绘导入工厂批准`);
+    return {
+      ...feature,
+      unlock: feature.unlockHistory.at(-1),
+      unlockHistory: feature.unlockHistory.slice(0, -1),
+    };
+  });
+  return manifest;
+}
+
+test('整部剧导入批准只叠加在 routes/redraw.js 所在的两个锁上，转绘导入工厂批准留作上一层', () => {
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const withSeries = manifest.features
+    .filter((feature) => feature.unlock?.approvedBy === REDRAW_SERIES_IMPORT_UNLOCK.approvedBy)
+    .map((feature) => feature.featureId)
+    .sort();
+  assert.deepEqual(withSeries, [...REDRAW_SERIES_IMPORT_FEATURE_IDS].sort());
+  for (const featureId of REDRAW_SERIES_IMPORT_FEATURE_IDS) {
+    const feature = manifest.features.find((item) => item.featureId === featureId);
+    assert.ok(feature.protectedPaths.includes('backend-node/src/routes/redraw.js'));
+    assert.deepEqual(feature.unlockHistory.at(-1), REDRAW_FACTORY_IMPORT_UNLOCK_BY_FEATURE[featureId]);
+  }
+});
+
+test('整集出片批准只叠加在 videoService.js 所在的未知状态计费对账锁上，上一层仍是原批准', () => {
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const withWholeEpisode = manifest.features
+    .filter((feature) => feature.unlock?.approvedBy === WHOLE_EPISODE_PRODUCTION_UNLOCK.approvedBy)
+    .map((feature) => feature.featureId)
+    .sort();
+  assert.deepEqual(withWholeEpisode, [...WHOLE_EPISODE_PRODUCTION_FEATURE_IDS].sort());
+  const feature = manifest.features.find((item) => item.featureId === 'stability.unknown-state-billing-reconciliation');
+  assert.ok(feature.protectedPaths.includes('backend-node/src/services/videoService.js'));
+  assert.equal(feature.unlockHistory.at(-1).approvedBy, 'product-owner 2026-09-03 newapi-readonly-preflight-compat');
+});
+
 const NEWAPI_SHARED_ROUTE_REGISTRATION_UNLOCK = {
   reason: '2026-09-03 NewAPI 中转站成本同步管理路由注册获批',
   approvedBy: 'product-owner 2026-09-03 newapi-config-scoped-capability-binding',
@@ -1331,7 +1447,7 @@ test('主动巡检锁固定验收文本并覆盖任务 2 到 12 的核心文件�
 });
 
 test('NewAPI 计费只读预检修复刷新主动巡检锁并保留前序历史', () => {
-  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const manifest = loadManifestBeforeRedrawFactoryImport();
   const feature = manifest.features.find(({ featureId }) => featureId === PROACTIVE_CANARY_FEATURE_ID);
   assert.ok(feature, `缺少功能锁 ${PROACTIVE_CANARY_FEATURE_ID}`);
   assert.deepEqual(feature.unlock, APP_UPDATE_DIALOG_UNLOCK);
@@ -1396,7 +1512,7 @@ test('Coverage 产品登记服务 Task B 使用独立功能锁覆盖服务和迁
 });
 
 test('Coverage 版本级 HTTP 入口 Task C 使用独立功能锁和新鲜批准', () => {
-  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const manifest = loadManifestBeforeRedrawFactoryImport();
   const feature = manifest.features.find(({ featureId }) => featureId === REDRAW_COVERAGE_HTTP_ROUTE_FEATURE_ID);
   assert.ok(feature, `缺少功能锁 ${REDRAW_COVERAGE_HTTP_ROUTE_FEATURE_ID}`);
   assert.deepEqual(feature.protectedPaths, REDRAW_COVERAGE_HTTP_ROUTE_PROTECTED_PATHS);
@@ -1417,7 +1533,7 @@ test('Coverage 版本级 HTTP 入口 Task C 使用独立功能锁和新鲜批准
 });
 
 test('Clean provider 本地媒体登记 Task D 使用独立功能锁和新鲜批准', () => {
-  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const manifest = loadManifestBeforeRedrawFactoryImport();
   const feature = manifest.features.find(({ featureId }) => featureId === REDRAW_CLEAN_PLATE_MEDIA_FEATURE_ID);
   assert.ok(feature, `缺少功能锁 ${REDRAW_CLEAN_PLATE_MEDIA_FEATURE_ID}`);
   assert.deepEqual(feature.protectedPaths, REDRAW_CLEAN_PLATE_MEDIA_PROTECTED_PATHS);
@@ -1438,7 +1554,7 @@ test('Clean provider 本地媒体登记 Task D 使用独立功能锁和新鲜批
 });
 
 test('真实产品 HTTP 媒体同链 Task E 使用独立功能锁和新鲜批准', () => {
-  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const manifest = loadManifestBeforeRedrawFactoryImport();
   const feature = manifest.features.find(({ featureId }) => featureId === REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_FEATURE_ID);
   assert.ok(feature, `缺少功能锁 ${REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_FEATURE_ID}`);
   assert.deepEqual(feature.protectedPaths, REDRAW_PRODUCT_MEDIA_HTTP_CHAIN_PROTECTED_PATHS);
@@ -1479,7 +1595,7 @@ test('ToAPIs 未知提交恢复批准在后续转绘更新后仍保留于四个�
 });
 
 test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜批准并保留完整历史', () => {
-  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const manifest = loadManifestBeforeRedrawFactoryImport();
   for (const [featureId, requirements] of Object.entries(PROVIDER_TASK_LOCK_REQUIREMENTS)) {
     const feature = manifest.features.find((entry) => entry.featureId === featureId);
     assert.ok(feature, `缺少功能锁 ${featureId}`);
@@ -1735,7 +1851,7 @@ test('供应商任务凭证与四轮无产物质量修复使用分阶段新鲜�
 });
 
 test('NewAPI 六模型修复刷新管理员预设锁并保留 Wan3 与前序历史', () => {
-  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const manifest = loadManifestBeforeRedrawFactoryImport();
   const feature = manifest.features.find(
     ({ featureId }) => featureId === ADMIN_PROVIDER_OBSERVABILITY_FEATURE_ID,
   );
@@ -1755,7 +1871,7 @@ test('NewAPI 六模型修复刷新管理员预设锁并保留 Wan3 与前序历�
 });
 
 test('未触及锁保留当前批准记录且所有锁保留历史证据', () => {
-  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const manifest = loadManifestBeforeRedrawFactoryImport();
   assert.equal(manifest.features.length >= 5, true);
   for (const feature of manifest.features) {
     if (feature.featureId === REDRAW_COVERAGE_REGISTRATION_FEATURE_ID) {
@@ -1792,7 +1908,7 @@ test('未触及锁保留当前批准记录且所有锁保留历史证据', () =>
 });
 
 test('失败视频重试闭环保留 Wan3 素材签名与完整历史并仅刷新实际触及的运行时功能锁', () => {
-  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const manifest = loadManifestBeforeRedrawFactoryImport();
   for (const featureId of [
     PROVIDER_ROUTE_CONTRACT_FEATURE_ID,
     SAFE_PROVIDER_FAILOVER_FEATURE_ID,

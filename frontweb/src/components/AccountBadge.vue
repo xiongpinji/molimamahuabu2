@@ -14,7 +14,7 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { getCreditAccount } from '@/api/auth'
 import { readSession } from '@/utils/authSession'
@@ -46,9 +46,20 @@ function handleCreditAccountRefresh() {
   if (visible.value) void loadAccount()
 }
 
+// 组件在登录前就已挂载（或旧会话请求 401），登录后路由切换时会话令牌变了，要重新拉余额，否则一直显示 0。
+const sessionToken = computed(() => (visible.value ? String(readSession()?.token || '') : ''))
+let loadedToken = ''
+
+watch(sessionToken, (token) => {
+  if (!token || token === loadedToken) return
+  loadedToken = token
+  void loadAccount()
+})
+
 onMounted(async () => {
   window.addEventListener('moli:credit-account-refresh', handleCreditAccountRefresh)
   if (!visible.value) return
+  loadedToken = sessionToken.value
   await loadAccount()
 })
 

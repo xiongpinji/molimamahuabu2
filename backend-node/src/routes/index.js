@@ -394,6 +394,9 @@ function setupRouter(cfg, db, log, options = {}) {
   r.get('/redraw/style-presets', redraw.listStylePresets);
   r.get('/redraw/locales', redraw.listLocales);
   r.post('/redraw/works/:id/analyze', redraw.uploadReferenceImage, redraw.analyzeWork);
+  r.post('/redraw/works/:id/analysis-review', redraw.approveAnalysisReview);
+  r.post('/redraw/works/:id/import-to-factory', redraw.importToFactory);
+  r.post('/redraw/works/:id/localization-review', redraw.approveLocalizationReview);
   r.post('/redraw/works/:id/localization-quote', redraw.localizationQuote);
   r.post('/redraw/works/:id/versions', redraw.createVersion);
   if (typeof explicitCoverageRegistrationProvider === 'function') {
