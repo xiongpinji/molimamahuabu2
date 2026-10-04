@@ -63,12 +63,12 @@ function resolveSourcePath(storageRoot, localPath) {
   return { absolute: real, relative: normalized.replace(/\\/g, '/') };
 }
 
-function execFileChecked(command, args, timeoutMs) {
+function execFileChecked(command, args, timeoutMs, options = {}) {
   return new Promise((resolve, reject) => {
     const child = execFile(command, args, {
       windowsHide: true,
       timeout: timeoutMs,
-      maxBuffer: 1024 * 1024,
+      maxBuffer: options.maxBuffer || 1024 * 1024,
     }, (error, stdout, stderr) => {
       if (error) {
         const wrapped = codedError('MEDIA_TOOL_FAILED', `${command} 失败: ${(stderr || error.message || '').slice(0, 300)}`);
@@ -157,6 +157,194 @@ function sheetFilter(mode, page, options = {}) {
   return `${prefix}fps=${page.sampleRate},scale=240:-1,${timestamp},tile=${SHEET_COLUMNS}x${rows}:nb_frames=${page.frameCount}:padding=4:margin=4:color=black`;
 }
 
+// 硬切候选：逐帧场景分数取局部峰值。按每秒 1 帧的拼图，模型会把 1~2 秒内的几次硬切当成一个镜头
+// （2026-10-03 #98 第 1 集：约 10 个强切点落在分析出的镜头内部，成片只拍到其中一个画面）。
+// 暗色画面之间的硬切分数可能只有 0.05 左右（第 2 镜男子特写切大殿全景 0.06），固定阈值 0.3 会漏掉：
+// 分数达到 0.3、或是前后 10 帧中位数 8 倍以上的峰值都算候选，交给模型看切点前后两帧确认。
+const CUT_STRONG_SCORE = 0.3;
+const CUT_MIN_SCORE = 0.05;
+const CUT_PEAK_RATIO = 8;
+const CUT_NEIGHBOR_FRAMES = 10;
+const CUT_LOCAL_MAX_FRAMES = 3;
+const CUT_MIN_GAP_MS = 200;
+const CUT_SNAP_WINDOW_MS = 500;
+const MIN_SNAPPED_SHOT_MS = 100;
+const CUT_SHEET_PAIRS_PER_ROW = 4;
+const CUT_SHEET_ROWS = 4;
+const CUT_SHEET_MAX_CANDIDATES = 48;
+const CUT_TILE_WIDTH = 160;
+
+/** 解析 ffmpeg `select='gte(scene,0)',metadata=print` 的输出：每帧 { ms, score }。 */
+function parseSceneScores(stderr) {
+  const scores = [];
+  let pendingMs = null;
+  for (const line of String(stderr || '').split(/\r?\n/)) {
+    const time = /pts_time:\s*(-?[0-9.]+)/.exec(line);
+    if (time) {
+      pendingMs = Math.round(Number(time[1]) * 1000);
+      continue;
+    }
+    const score = /lavfi\.scene_score=([0-9.]+)/.exec(line);
+    if (score && pendingMs != null) {
+      scores.push({ ms: pendingMs, score: Number(score[1]) });
+      pendingMs = null;
+    }
+  }
+  return scores;
+}
+
+/** 从逐帧分数里挑候选切点；相距不到 0.2 秒的只留分数最高的一个。 */
+function pickCutCandidates(scores) {
+  const frames = Array.isArray(scores) ? scores : [];
+  const peaks = [];
+  for (let index = 1; index < frames.length; index += 1) {
+    const { ms, score } = frames[index];
+    if (!(score >= CUT_MIN_SCORE)) continue;
+    const around = frames.slice(Math.max(0, index - CUT_LOCAL_MAX_FRAMES), index + CUT_LOCAL_MAX_FRAMES + 1);
+    if (around.some((frame) => frame.score > score)) continue;
+    const neighbors = [
+      ...frames.slice(Math.max(0, index - CUT_NEIGHBOR_FRAMES), index),
+      ...frames.slice(index + 1, index + 1 + CUT_NEIGHBOR_FRAMES),
+    ].map((frame) => frame.score).sort((a, b) => a - b);
+    const median = neighbors.length ? neighbors[Math.floor(neighbors.length / 2)] : 0;
+    if (score >= CUT_STRONG_SCORE || score >= CUT_PEAK_RATIO * median) {
+      peaks.push({ ms, score: Math.round(score * 1000) / 1000 });
+    }
+  }
+  const kept = [];
+  for (const peak of peaks) {
+    const last = kept[kept.length - 1];
+    if (last && peak.ms - last.ms < CUT_MIN_GAP_MS) {
+      if (peak.score > last.score) kept[kept.length - 1] = peak;
+      continue;
+    }
+    kept.push(peak);
+  }
+  return kept;
+}
+
+/** 尽力而为：ffmpeg 失败时 detected 为 false，分段边界退回均分、提示词不列候选切点。 */
+async function detectCutCandidates(sourcePath, timeoutMs) {
+  try {
+    const { stderr } = await execFileChecked('ffmpeg', [
+      '-hide_banner', '-nostats', '-i', sourcePath, '-an', '-sn',
+      '-vf', "select='gte(scene,0)',metadata=print", '-f', 'null', '-',
+    ], timeoutMs, { maxBuffer: 64 * 1024 * 1024 });
+    return { detected: true, candidates: pickCutCandidates(parseSceneScores(stderr)) };
+  } catch (_) {
+    return { detected: false, candidates: [] };
+  }
+}
+
+/** 候选切点按时间编号 C1、C2…；太多时只留分数最高的，再按时间排回。 */
+function labelCutCandidates(candidates) {
+  const all = Array.isArray(candidates) ? candidates : [];
+  const kept = all.length > CUT_SHEET_MAX_CANDIDATES
+    ? [...all].sort((a, b) => b.score - a.score).slice(0, CUT_SHEET_MAX_CANDIDATES).sort((a, b) => a.ms - b.ms)
+    : all;
+  return kept.map((candidate, index) => ({ label: `C${index + 1}`, ms: candidate.ms, score: candidate.score }));
+}
+
+async function extractCutTile(sourcePath, ms, outputPath, label, timeoutMs) {
+  const fontFile = selectFontFile();
+  const fontOption = fontFile ? `fontfile=${filterPath(fontFile)}:` : '';
+  for (const at of [ms, Math.max(0, ms - 120)]) {
+    await execFileChecked('ffmpeg', [
+      '-hide_banner', '-loglevel', 'error', '-y',
+      '-ss', (at / 1000).toFixed(3), '-i', sourcePath, '-frames:v', '1',
+      '-vf', `scale=${CUT_TILE_WIDTH}:-2,drawtext=${fontOption}text='${label}':x=4:y=4:fontsize=13:fontcolor=white:box=1:boxcolor=black@0.75`,
+      outputPath,
+    ], timeoutMs);
+    if (fs.existsSync(outputPath)) return;
+  }
+  throw codedError('REDRAW_CUT_TILE_MISSING', `切点画面截取失败 ${label}`);
+}
+
+/**
+ * 切点拼图：每个候选切点两格，"C3 A" 是切点前一刻、"C3 B" 是切点后一刻，每张最多 16 个候选。
+ * 每秒 1 帧的拼图看不到不足 1 秒的镜头，这里补上每个候选切点两侧的画面。
+ */
+async function createCutSheets(sourcePath, durationMs, labeled, sheetDir, timeoutMs) {
+  const perSheet = CUT_SHEET_PAIRS_PER_ROW * CUT_SHEET_ROWS;
+  const sheets = [];
+  for (let start = 0; start < labeled.length; start += perSheet) {
+    const part = labeled.slice(start, start + perSheet);
+    const sheetNumber = sheets.length + 1;
+    const tileDir = path.join(sheetDir, `cut-tiles-${sheetNumber}`);
+    ensureDir(tileDir);
+    let tiles = 0;
+    for (const candidate of part) {
+      const before = Math.max(0, candidate.ms - 80);
+      const after = Math.min(Math.max(0, durationMs - 40), candidate.ms + 40);
+      for (const [side, ms] of [['A', before], ['B', after]]) {
+        tiles += 1;
+        await extractCutTile(sourcePath, ms, path.join(tileDir, `tile-${String(tiles).padStart(3, '0')}.jpg`),
+          `${candidate.label} ${side} ${(ms / 1000).toFixed(2)}s`, timeoutMs);
+      }
+    }
+    const columns = CUT_SHEET_PAIRS_PER_ROW * 2;
+    const sheetPath = path.join(sheetDir, `cut-sheet-${sheetNumber}.jpg`);
+    await execFileChecked('ffmpeg', [
+      '-hide_banner', '-loglevel', 'error', '-y',
+      '-framerate', '1', '-start_number', '1', '-i', path.join(tileDir, 'tile-%03d.jpg'),
+      '-vf', `tile=${columns}x${Math.ceil(tiles / columns)}:nb_frames=${tiles}:padding=4:margin=4:color=black`,
+      '-frames:v', '1', sheetPath,
+    ], timeoutMs);
+    sheets.push({ mode: 'cuts', path: sheetPath, sha256: sha256File(sheetPath), candidates: part });
+  }
+  return sheets;
+}
+
+/**
+ * 模型按每秒 1 帧估的镜头边界常差几百毫秒（#98 第 2、3 镜之间分析写 7000，实际硬切在 6633）：
+ * 边界 ±500 毫秒内有候选切点就对齐到最近的切点；场景、道具时间段里同一个边界值一起移动。
+ */
+function snapShotBoundaries(rawFacts, cutTimesMs) {
+  const facts = cloneJson(rawFacts);
+  const shots = Array.isArray(facts.shots) ? facts.shots : [];
+  const cuts = [...new Set((cutTimesMs || []).map(Number).filter(Number.isFinite))].sort((a, b) => a - b);
+  if (!cuts.length || shots.length < 2) return facts;
+  const moved = new Map();
+  for (let index = 1; index < shots.length; index += 1) {
+    const previous = shots[index - 1];
+    const shot = shots[index];
+    const boundary = Number(shot?.start_ms);
+    if (!Number.isSafeInteger(boundary) || Number(previous?.end_ms) !== boundary) continue;
+    let best = null;
+    for (const cut of cuts) {
+      if (Math.abs(cut - boundary) > CUT_SNAP_WINDOW_MS) continue;
+      if (cut - Number(previous.start_ms) < MIN_SNAPPED_SHOT_MS || Number(shot.end_ms) - cut < MIN_SNAPPED_SHOT_MS) continue;
+      if (best == null || Math.abs(cut - boundary) < Math.abs(best - boundary)) best = cut;
+    }
+    if (best == null || best === boundary) continue;
+    previous.end_ms = best;
+    shot.start_ms = best;
+    moved.set(boundary, best);
+  }
+  if (!moved.size) return facts;
+  const follow = (range) => {
+    if (!range || typeof range !== 'object') return;
+    if (moved.has(Number(range.start_ms))) range.start_ms = moved.get(Number(range.start_ms));
+    if (moved.has(Number(range.end_ms))) range.end_ms = moved.get(Number(range.end_ms));
+  };
+  for (const scene of Array.isArray(facts.scenes) ? facts.scenes : []) {
+    for (const range of Array.isArray(scene?.source_ranges) ? scene.source_ranges : []) follow(range);
+  }
+  for (const prop of Array.isArray(facts.props) ? facts.props : []) {
+    for (const range of Array.isArray(prop?.evidence_ranges) ? prop.evidence_ranges : []) follow(range);
+  }
+  return facts;
+}
+
+/** 落在某个镜头内部（离两端都超过 0.3 秒）的强切点：多半是模型把两个镜头合成了一个，记进诊断。 */
+function unsplitCuts(facts, cuts) {
+  const shots = Array.isArray(facts?.shots) ? facts.shots : [];
+  return (Array.isArray(cuts) ? cuts : [])
+    .filter((cut) => cut.score >= CUT_STRONG_SCORE
+      && shots.some((shot) => cut.ms > Number(shot?.start_ms) + 300 && cut.ms < Number(shot?.end_ms) - 300))
+    .map((cut) => ({ ms: cut.ms, score: cut.score }));
+}
+
 async function createSheet(sourcePath, outputPath, mode, page, timeoutMs) {
   await execFileChecked('ffmpeg', [
     '-hide_banner',
@@ -231,16 +419,30 @@ function getAsset(db, assetId) {
 
 function buildPrompt(probe, options = {}) {
   const knownCast = Array.isArray(options.knownCast) ? options.knownCast : [];
+  const knownProps = Array.isArray(options.knownProps) ? options.knownProps.filter(Boolean) : [];
+  const cutCandidates = Array.isArray(options.cutCandidates) ? options.cutCandidates : [];
+  const cutSheetCount = Number(options.cutSheetCount) || 0;
   return [
     'You are analyzing a short-drama source video for strict 1:1 redraw facts v2.',
     'Return ONLY JSON with one top-level key named source_facts.',
     'source_facts.schema_version MUST be "2.0". Do not add explanations or any keys outside the schema.',
     'The images cover the full source in chronological pages. Every tile is labeled with its page offset and relative timestamp.',
     'Do not invent characters, scenes, props, reversals, dialogue, or timing that is not visible.',
+    'A prop is a physical object that a person holds, carries or uses, or that the plot depends on. Visual effects are never props: sword energy, flying blades, rains of swords, light beams, glows, auras, magic circles and formations, barriers, lightning, fire or smoke from powers, illusions and speed lines are described in continuous_action of the shots where they appear.',
+    'List each physical object once: the same object in another state (glowing, bloodied, sheathed, broken) or in another person\'s hands is still one prop with one name, and all its evidence_ranges go under that prop; describe the state in the shots instead.',
+    'When a crowd or group of unnamed people is visible (disciples, onlookers, guards, classmates), add one character for the group with a short Chinese source_name such as 白衣弟子众人 or 围观群众, and list its id in visible_character_ids of every shot where the group can be seen.',
     'For dialogue, use only provided audio transcript evidence or visibly burned-in subtitles. No transcript evidence is provided here, so do not guess speech from mouths, faces, or contact-sheet context.',
     'When dialogue evidence is absent, set audio_contract.dialogue_mode to "silent", keep dialogue empty, and keep speaker_mapping confidence low.',
     'Every spoken dialogue turn MUST contain id, speaker_id, source_text, integer start_ms, and integer end_ms.',
+    'speaker_id is the character who visibly says the line in that shot (mouth moving or clearly calling out); a character who only listens or reacts is never the speaker. A line called out from a crowd belongs to the group character. When the speaker cannot be seen or is unclear, leave the line out of dialogue; its subtitle stays in text_regions.',
     'Shots MUST be chronological, continuous, gap-free, non-overlapping, start at 0, and end at duration_ms.',
+    'A shot is one continuous camera setup. Every hard cut (the picture switches to a different framing, angle, subject or location) MUST start a new shot, even when the new shot lasts less than one second; never describe two different camera setups as one shot. A flash, glow, speed lines, motion blur or fast movement inside the same setup is not a cut.',
+    ...(cutSheetCount > 0 && cutCandidates.length
+      ? [
+        `Candidate hard cuts found by pixel analysis, in milliseconds from the start of this clip: ${JSON.stringify(cutCandidates.map((cut) => ({ label: cut.label, ms: cut.ms })))}.`,
+        `The last ${cutSheetCount} image(s) are cut sheets: every candidate has two tiles, "<label> A" just before and "<label> B" just after its time. When the two tiles show different camera setups, start a new shot exactly at that candidate's ms; when they show the same setup (a flash, an effect or fast movement), ignore it. Start a new shot at any other real cut you see as well.`,
+      ]
+      : []),
     'Each shot MUST include composition, camera_movement, opening_state, continuous_action, ending_state, visible_character_ids, dialogue, text_regions, audio_contract, and confidence.',
     'text_regions polygon coordinates MUST be normalized 0..1 points with at least 3 non-collinear points.',
     'characters[].source_name is the name written or addressed in the subtitles (for example a name someone calls out); if a character is never named, use a short Chinese descriptor such as 母亲. Never leave source_name empty.',
@@ -254,6 +456,12 @@ function buildPrompt(probe, options = {}) {
       ? [
         'Characters already identified in earlier parts of this episode or in earlier episodes of the same series are listed below; when the same person appears, reuse the exact source_name. Add a new character only for a new person.',
         JSON.stringify(knownCast),
+      ]
+      : []),
+    ...(knownProps.length
+      ? [
+        'Props already identified in earlier parts of this episode are listed below; when the same object appears again, reuse its exact name. Add a new prop only for a different object.',
+        JSON.stringify(knownProps),
       ]
       : []),
     `Measured video metadata: duration_ms=${probe.duration_ms}, width=${probe.width || 'unknown'}, height=${probe.height || 'unknown'}.`,
@@ -438,19 +646,6 @@ function applyNoTranscriptEvidencePolicy(rawFacts) {
   return facts;
 }
 
-// 镜头切换检测（尽力而为）：失败时返回空数组，分段边界退回均分。
-async function detectSceneCuts(sourcePath, timeoutMs) {
-  try {
-    const { stderr } = await execFileChecked('ffmpeg', [
-      '-hide_banner', '-nostats', '-i', sourcePath, '-an', '-sn',
-      '-vf', "select='gt(scene,0.3)',showinfo", '-f', 'null', '-',
-    ], timeoutMs);
-    return [...String(stderr).matchAll(/pts_time:([0-9.]+)/g)].map((match) => Math.round(Number(match[1]) * 1000));
-  } catch (_) {
-    return [];
-  }
-}
-
 async function cutSegmentClip(sourcePath, outputPath, segment, timeoutMs) {
   await execFileChecked('ffmpeg', [
     '-hide_banner', '-loglevel', 'error', '-y',
@@ -478,9 +673,26 @@ async function analyzeClip(ctx) {
       sheets.push({ mode, path: sheetPath, sha256: sha256File(sheetPath) });
     }
   }
-  const imageSources = sheets.map((sheet) => ({ localAbsPath: sheet.path }));
+  // 候选切点（本段内的相对毫秒）；没有检测结果时为 null，不给切点拼图、不对齐边界。切点拼图失败不影响分析。
+  const cuts = Array.isArray(ctx.cuts) ? ctx.cuts : null;
+  let cutSheets = [];
+  if (cuts && cuts.length) {
+    try {
+      cutSheets = await createCutSheets(sourcePath, probe.duration_ms, labelCutCandidates(cuts), sheetDir, Number(input.ffmpegTimeoutMs || 30000));
+    } catch (error) {
+      log.warn('redraw cut sheet failed; analyzing without it', { message: String(error?.message || '').slice(0, 200) });
+      cutSheets = [];
+    }
+  }
+  const allSheets = [...sheets, ...cutSheets];
+  const imageSources = allSheets.map((sheet) => ({ localAbsPath: sheet.path }));
   const vision = await visionDetailed({
-    userPrompt: buildPrompt(probe, { knownCast: ctx.knownCast }),
+    userPrompt: buildPrompt(probe, {
+      knownCast: ctx.knownCast,
+      knownProps: ctx.knownProps,
+      cutCandidates: cutSheets.flatMap((sheet) => sheet.candidates),
+      cutSheetCount: cutSheets.length,
+    }),
     systemPrompt: 'Return strict JSON only for short-drama source analysis.',
     imageSources,
     options: { ...visionOptions, max_tokens: Number(input.maxTokens || 16000) },
@@ -490,7 +702,9 @@ async function analyzeClip(ctx) {
     throw codedError('VISION_PROVIDER_RESPONSE_ID_MISSING', '视觉分析缺少真实 provider response id');
   }
   const parsed = parseJsonObject(vision.text);
-  const firstPass = coerceTextRegionKinds(coerceShotAudioContracts(coerceCharacterFields(parsed.source_facts || parsed)));
+  const named = coerceCharacterFields(parsed.source_facts || parsed);
+  const snapped = cuts ? snapShotBoundaries(named, cuts.map((cut) => cut.ms)) : named;
+  const firstPass = coerceTextRegionKinds(coerceShotAudioContracts(snapped));
   assertStrictNativeFacts(normalizeSourceFacts(applyNoTranscriptEvidencePolicy(firstPass)), probe);
   const { facts, enrichment } = await enrichSourceFacts({
     visionDetailed,
@@ -500,7 +714,7 @@ async function analyzeClip(ctx) {
     source: visionSource,
     log,
   }, firstPass);
-  return { facts, enrichment, vision, sheets };
+  return { facts, enrichment, vision, sheets: allSheets, unsplitCuts: cuts ? unsplitCuts(firstPass, cuts) : [] };
 }
 
 // 服务商偶发卡住（同类调用通常 1~2 分钟返回，偶尔 9 分钟无响应）：某一段超时只把这一段重跑一次，其它错误照常失败。
@@ -570,15 +784,25 @@ async function analyzeNativeSource(ctx = {}, input = {}) {
     let vision;
     let sheets;
     let segmentsReport = null;
+    // 硬切候选：拆镜提示与切点拼图（每段只给本段内的切点，换成段内相对时间）、镜头边界对齐、分段边界吸附都用它。
+    const cutDetection = await detectCutCandidates(source.absolute, Number(input.sceneDetectTimeoutMs || 120000));
+    const cutsWithin = (startMs, endMs) => (cutDetection.detected
+      ? cutDetection.candidates
+        .filter((cut) => cut.ms > startMs + MIN_SNAPPED_SHOT_MS && cut.ms < endMs - MIN_SNAPPED_SHOT_MS)
+        .map((cut) => ({ ...cut, ms: cut.ms - startMs }))
+      : null);
+    const unsplit = [];
     if (segmentCount <= 1) {
       const clip = await analyzeClipWithRetry({
         ...clipCtx, sourcePath: source.absolute, probe, sheetDir, knownCast: seriesCast.cast,
+        cuts: cutsWithin(0, probe.duration_ms),
       }, 'whole');
       ({ facts: enrichedFacts, enrichment, vision, sheets } = clip);
+      unsplit.push(...clip.unsplitCuts);
     } else {
       // 长样片按段依次分析：每段输出小、不易超时；后面的段带上前面已识别的角色名单。
-      const cuts = await detectSceneCuts(source.absolute, Number(input.sceneDetectTimeoutMs || 120000));
-      const plan = planSegments(probe.duration_ms, segmentCount, cuts);
+      const plan = planSegments(probe.duration_ms, segmentCount,
+        cutDetection.candidates.filter((cut) => cut.score >= CUT_STRONG_SCORE).map((cut) => cut.ms));
       const analyzed = [];
       segmentsReport = [];
       sheets = [];
@@ -588,18 +812,20 @@ async function analyzeNativeSource(ctx = {}, input = {}) {
         const clipPath = path.join(segmentDir, 'clip.mp4');
         await cutSegmentClip(source.absolute, clipPath, segment, Number(input.ffmpegTimeoutMs || 30000) * 4);
         const clipProbe = await ffprobeVideo(clipPath, Number(input.probeTimeoutMs || 15000));
+        const earlier = mergeSegmentFacts(analyzed, analyzed.length ? analyzed[analyzed.length - 1].end_ms : 0);
         const clip = await analyzeClipWithRetry({
           ...clipCtx,
           sourcePath: clipPath,
           probe: clipProbe,
           sheetDir: segmentDir,
-          knownCast: seriesCastService.mergeKnownCast(
-            seriesCast.cast,
-            knownCastFrom(mergeSegmentFacts(analyzed, analyzed.length ? analyzed[analyzed.length - 1].end_ms : 0)),
-          ),
+          knownCast: seriesCastService.mergeKnownCast(seriesCast.cast, knownCastFrom(earlier)),
+          // 前面几段已起好的道具名：同一把剑在各段沿用同一个名字，拼接时才合成一个道具（作品 9 一把剑出了 4 个名字）。
+          knownProps: [...new Set((Array.isArray(earlier.props) ? earlier.props : []).map((prop) => String(prop?.name || '').trim()).filter(Boolean))],
+          cuts: cutsWithin(segment.start_ms, segment.end_ms),
         }, `segment ${index + 1}/${plan.length}`);
         analyzed.push({ ...segment, facts: clip.facts });
         sheets.push(...clip.sheets);
+        unsplit.push(...clip.unsplitCuts.map((cut) => ({ ...cut, ms: cut.ms + segment.start_ms })));
         vision = vision || clip.vision;
         segmentsReport.push({
           start_ms: segment.start_ms,
@@ -617,7 +843,17 @@ async function analyzeNativeSource(ctx = {}, input = {}) {
           : enrichmentStatuses.some((status) => status === 'completed') ? 'partial' : 'failed',
       };
     }
-    const facts = normalizeSourceFacts(applyNoTranscriptEvidencePolicy(enrichedFacts));
+    if (unsplit.length) {
+      log.warn('redraw analysis kept strong cuts inside shots', { work_id: Number(work.id), cuts: unsplit.slice(0, 20) });
+    }
+    // 按硬切拆镜的分析（R92 起）带 shot_detection，导入工厂时据此把相邻的极短镜头并成一个分镜。
+    const shotDetection = {
+      method: 'scene_peaks_v1',
+      detected: cutDetection.detected,
+      candidates: cutDetection.candidates.length,
+      unsplit_cuts: unsplit,
+    };
+    const facts = normalizeSourceFacts(applyNoTranscriptEvidencePolicy({ ...enrichedFacts, shot_detection: shotDetection }));
     assertStrictNativeFacts(facts, probe);
     const mediaProbe = safeMediaProbeMetadata(probe, sheets.length);
     const output = {
@@ -641,6 +877,7 @@ async function analyzeNativeSource(ctx = {}, input = {}) {
           codec: probe.codec,
         },
         sheets: sheets.map((sheet) => ({ mode: sheet.mode, sha256: sheet.sha256 })),
+        shot_detection: shotDetection,
       },
     };
     const resultPath = path.join(workDir, 'source-analysis.json');
@@ -703,4 +940,11 @@ module.exports = {
   buildPrompt,
   sheetFilter,
   parseJsonObject,
+  parseSceneScores,
+  pickCutCandidates,
+  detectCutCandidates,
+  labelCutCandidates,
+  createCutSheets,
+  snapShotBoundaries,
+  unsplitCuts,
 };

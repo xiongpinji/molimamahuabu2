@@ -249,6 +249,10 @@ function propObjectPhrase(name, characterNames = []) {
   value = value.replace(/^[\s的，,、]+/, '').trim();
   const withoutHolder = value.replace(HOLDER_CLAUSE, '').trim();
   if (withoutHolder) value = withoutHolder;
+  // 持有词后面不带「的」（红衣女子所持长剑 → 所持长剑）时也去掉，否则道具图提示词成了「所持长剑」。
+  // 不含「手持」：「手持式对讲机」「手持风扇」里它是物品的一部分。
+  const withoutVerb = value.replace(/^(?:所持|手中|手里|持有)/, '').trim();
+  if (withoutVerb.length >= 2) value = withoutVerb;
   return value || text(name);
 }
 
@@ -340,13 +344,18 @@ function dropCarriedSubtitles(subtitles, previousLastSource) {
 }
 
 function mapShot(facts, shot, {
-  names, glossary, localization, style, propIds, previousLastSubtitle, setting = '', spokenLanguage = '',
+  names, glossary, localization, style, propIds, previousLastSubtitle, setting = '', spokenLanguage = '', groupLooks = new Map(),
 }) {
   const characterNames = list(shot.visible_character_ids).map((id) => names.get(text(id))).filter(Boolean);
   const { subtitles, screenText } = shotTextRegions(shot, localization, names);
   const spoken = dropCarriedSubtitles(subtitles, previousLastSubtitle);
+  // 群演不建角色、没有角色图，外形只能写进出现的镜头，否则视频模型会随便画（#98 第 3、9、22 镜白衣弟子没出来或变成黑衣人）。
+  const crowd = [...new Set(list(shot.visible_character_ids).map(text))]
+    .filter((id) => groupLooks.has(id))
+    .map((id) => `${names.get(id) || id}：${groupLooks.get(id)}`);
   const description = joinSentences(
     localizeText(stripSubtitleMentions(shot.composition), names, glossary),
+    crowd.length ? `群演外形：${crowd.join('；')}` : '',
     screenText.length ? `画面文字：「${screenText.join('」/「')}」` : '',
   );
   const action = localizeText(
@@ -468,7 +477,90 @@ function cjkPropHeads(name) {
     .filter(Boolean);
 }
 
+// 剑气、飞刃、光芒、法阵这类画面特效不是道具：出道具图后会被当成实物参考
+// （#98 第 18 镜样片里漫天细小飞刃，成片变成一把巨剑；#98 道具表里有「橙红色环形剑阵能量」「覆盖石台的橙红色网格穹顶」）。
+// 中文名按「的」之后的核心词结尾判断，「火焰纹长剑」「能量饮料」这类以实物结尾的仍是道具。
+const EFFECT_PROP_ZH = /(?:剑气|刀气|剑芒|刀芒|剑影|刀光|剑光|剑雨|刀雨|飞刃|万剑|千刃|刀山|阵|阵法|阵纹|光芒|光束|光柱|光圈|光环|光罩|光晕|光幕|光效|光球|光波|光影|灵光|特效|幻境|幻象|幻影|残影|虚影|结界|穹顶|气浪|气流|气场|气劲|灵力|真气|内力|能量|火焰|烈焰|火光|雷电|闪电|雷光|烟雾|雾气|漩涡|冲击波|护盾|屏障|速度线|集中线)$/;
+// 成群、悬空的东西也是画面效果（#98「环绕Sari的多柄悬空长剑」），不是某个人手里的那一件实物。
+const EFFECT_PROP_SWARM_ZH = /多柄|数柄|无数|漫天|成群|悬空|漂浮/;
+const EFFECT_PROP_EN = /\b(?:sword (?:energy|qi|light|rain)|light beams?|beams? of light|aura|glow|energy (?:wave|ball|blast|shield)|lightning|illusion|magic (?:circle|formation|array)|(?:spell|qi|energy) effects?|force field|barrier|shock ?wave|speed lines|visual effects?)$/i;
+
+function isVisualEffectProp(prop) {
+  const name = text(prop?.name);
+  if (!CJK_TEXT.test(name)) return EFFECT_PROP_EN.test(name.replace(/[.\s]+$/, ''));
+  const core = cjkPropCore(name);
+  return EFFECT_PROP_ZH.test(core) || EFFECT_PROP_SWARM_ZH.test(core);
+}
+
+// 同一件实物的不同叫法合成一个道具。分析按段做、同一把剑发光与否，会被写成好几个道具
+// （2026-10-04 作品 9 / 工厂 #107：红衣女子所持长剑、红衣女子手中的长剑、橙红光长剑、橙红光芒长剑；#98 里 Sari 的剑也有 4 个），
+// 每个都出道具图，同一把剑在各镜头就长得不一样。持有人相同、物品短语末两字（核心名词）相同的合成一个；
+// 没写持有人的，只有全剧只有一个人拿这种东西时才并过去，有两个以上的人拿就不并。保留出现镜头最多的叫法，时间段取并集。
+function unionRanges(ranges) {
+  const sorted = list(ranges)
+    .map((range) => ({ start_ms: Number(range?.start_ms), end_ms: Number(range?.end_ms) }))
+    .filter((range) => Number.isFinite(range.start_ms) && range.end_ms > range.start_ms)
+    .sort((a, b) => a.start_ms - b.start_ms);
+  const merged = [];
+  for (const range of sorted) {
+    const last = merged[merged.length - 1];
+    if (last && range.start_ms <= last.end_ms) last.end_ms = Math.max(last.end_ms, range.end_ms);
+    else merged.push({ ...range });
+  }
+  return merged;
+}
+
+function mergeSameObjectProps(facts, people) {
+  const props = list(facts.props);
+  const identities = new Map();
+  for (const prop of props) {
+    const id = text(prop?.id);
+    const name = text(prop?.name);
+    if (!id || !CJK_TEXT.test(name) || isVisualEffectProp(prop)) continue;
+    const object = propObjectPhrase(name, people);
+    if (object.length < 2) continue;
+    identities.set(id, { holder: people.find((person) => name.includes(person)) || '', head: object.slice(-2), object });
+  }
+  const groups = new Map();
+  const add = (key, id) => groups.set(key, [...(groups.get(key) || []), id]);
+  for (const [id, identity] of identities) if (identity.holder) add(JSON.stringify([identity.holder, identity.head]), id);
+  for (const [id, identity] of identities) {
+    if (identity.holder) continue;
+    const owners = [...groups.keys()].filter((key) => JSON.parse(key)[1] === identity.head && JSON.parse(key)[0]);
+    if (owners.length === 1) add(owners[0], id);
+    else if (owners.length === 0) add(JSON.stringify(['', identity.head]), id);
+  }
+  const byId = new Map(props.map((prop) => [text(prop?.id), prop]));
+  const shotCount = (prop) => list(facts.shots).filter((shot) => overlaps(prop?.evidence_ranges, shot)).length;
+  const canonicalOf = new Map();
+  const mergedById = new Map();
+  for (const ids of groups.values()) {
+    if (ids.length < 2) continue;
+    const members = ids.map((id) => byId.get(id));
+    const canonical = [...members].sort((a, b) => shotCount(b) - shotCount(a)
+      || identities.get(text(a.id)).object.length - identities.get(text(b.id)).object.length
+      || props.indexOf(a) - props.indexOf(b))[0];
+    for (const member of members) canonicalOf.set(text(member.id), text(canonical.id));
+    mergedById.set(text(canonical.id), {
+      ...canonical,
+      evidence_ranges: unionRanges(members.flatMap((member) => list(member.evidence_ranges))),
+    });
+  }
+  return {
+    facts: canonicalOf.size
+      ? {
+        ...facts,
+        props: props
+          .filter((prop) => !canonicalOf.has(text(prop?.id)) || canonicalOf.get(text(prop.id)) === text(prop.id))
+          .map((prop) => mergedById.get(text(prop?.id)) || prop),
+      }
+      : facts,
+    canonicalOf,
+  };
+}
+
 function isKeyProp(prop, facts) {
+  if (isVisualEffectProp(prop)) return false;
   if (CJK_TEXT.test(text(prop?.name))) {
     if (CJK_NON_PROP_SUFFIX.test(cjkPropCore(prop.name))) return false;
     const cjkShotCount = list(facts.shots).filter((shot) => overlaps(prop?.evidence_ranges, shot)).length;
@@ -490,6 +582,91 @@ function isKeyProp(prop, facts) {
   return propHeadNouns(prop).some((noun) => new RegExp(`\\b${noun.replace(/s$/, '')}s?\\b`).test(story));
 }
 
+// 群演外形：完全转绘用目标国家的形象，否则用分析出的外形（按原名词表换名字）。
+function crowdLooks(facts, names, glossary, culture) {
+  const looks = new Map();
+  for (const character of list(facts.characters).filter(isGroupCharacter)) {
+    const id = text(character.id);
+    const localized = text(culture.characters[id]?.appearance);
+    const look = localized ? replaceCharacterIds(localized, names) : localizeText(character.appearance, names, glossary);
+    if (look) looks.set(id, look);
+  }
+  return looks;
+}
+
+// 按硬切拆出的镜头常不足 1 秒；每个都单独出一段视频（模型最短 4 秒）会让整集变长、费用变高。
+// 同一场景里相邻的极短镜头并成一个分镜（不超过 6 秒），视频提示词按画面顺序写清每次硬切。
+const BEAT_MIN_MS = 2500;
+const BEAT_MAX_MS = 6000;
+const QUICK_SHOT_MS = 1500;
+
+function sourceMs(shot) {
+  return Number(shot.continuity.end_ms) - Number(shot.continuity.start_ms);
+}
+
+function combineQuickCuts(parts, number, { style, setting, spokenLanguage }) {
+  const first = parts[0];
+  const last = parts[parts.length - 1];
+  const startMs = Number(first.continuity.start_ms);
+  const endMs = Number(last.continuity.end_ms);
+  const lines = parts.flatMap((part) => text(part.dialogue).split('\n').map(text).filter(Boolean));
+  const speakers = parts.filter((part) => text(part.dialogue)).map((part) => part.solo_speaker_id);
+  const numbered = (field) => parts.map((part, index) => (text(part[field]) ? `画面${index + 1}：${text(part[field])}` : '')).filter(Boolean);
+  return {
+    shot_number: number,
+    title: `镜头 ${number}`,
+    description: numbered('description').join(' '),
+    duration: Math.max(1, Math.round((endMs - startMs) / 1000)),
+    dialogue: lines.join('\n'),
+    solo_speaker_id: speakers.length && speakers.every((id) => id && id === speakers[0]) ? speakers[0] : '',
+    action: numbered('action').join(' '),
+    movement: numbered('movement').join('；'),
+    shot_type: first.shot_type,
+    characters: [...new Set(parts.flatMap((part) => part.characters))],
+    props: [...new Set(parts.flatMap((part) => part.props))],
+    // 分镜图是第一帧，只画第一个画面。
+    image_prompt: first.image_prompt,
+    video_prompt: joinSentences(
+      style.positive,
+      setting,
+      `本镜头由 ${parts.length} 个画面组成，画面之间硬切`,
+      ...parts.map((part, index) => `画面${index + 1}（约 ${(sourceMs(part) / 1000).toFixed(1)} 秒）：${joinSentences(
+        part.description, part.action, part.movement ? `运镜：${part.movement}` : '',
+      )}`),
+      dialogueDirection(lines.map((line) => ({ text: line })), spokenLanguage),
+      NO_SUBTITLES,
+    ),
+    continuity: {
+      source_shot_id: first.continuity.source_shot_id,
+      source_shot_ids: parts.map((part) => part.continuity.source_shot_id),
+      start_ms: startMs,
+      end_ms: endMs,
+      opening_state: first.continuity.opening_state,
+      ending_state: last.continuity.ending_state,
+    },
+  };
+}
+
+function groupQuickCuts(items, context) {
+  const beats = [];
+  for (const item of items) {
+    const last = beats[beats.length - 1];
+    const lastMs = last ? Number(item.shot.continuity.start_ms) - Number(last.parts[0].continuity.start_ms) : 0;
+    const ms = sourceMs(item.shot);
+    if (last && last.sceneId === item.sceneId && lastMs + ms <= BEAT_MAX_MS && (lastMs < BEAT_MIN_MS || ms < QUICK_SHOT_MS)) {
+      last.parts.push(item.shot);
+    } else {
+      beats.push({ sceneId: item.sceneId, parts: [item.shot] });
+    }
+  }
+  return beats.map((beat, index) => ({
+    sceneId: beat.sceneId,
+    shot: beat.parts.length === 1
+      ? { ...beat.parts[0], shot_number: index + 1, title: `镜头 ${index + 1}` }
+      : combineQuickCuts(beat.parts, index + 1, context),
+  }));
+}
+
 function buildRedrawFactoryPackage({
   sourceFacts,
   localization = null,
@@ -499,44 +676,50 @@ function buildRedrawFactoryPackage({
   propIds = null,
   voicedCharacterIds = [],
 } = {}) {
-  const facts = sourceFacts || {};
-  if (facts.schema_version !== '2.0' || !Array.isArray(facts.shots) || facts.shots.length === 0) {
+  const inputFacts = sourceFacts || {};
+  if (inputFacts.schema_version !== '2.0' || !Array.isArray(inputFacts.shots) || inputFacts.shots.length === 0) {
     throw Object.assign(new Error('样片分析结果缺少可导入的镜头'), { code: 'REDRAW_FACTORY_FACTS_INVALID' });
   }
   const style = {
     positive: text(analysisSettings?.free_style?.positive),
     negative: text(analysisSettings?.free_style?.negative),
   };
-  const names = characterNameMap(facts, localization);
+  const names = characterNameMap(inputFacts, localization);
+  // 道具名里认持有人：原名、显示名、本地化名字都算，长的先匹配。
+  const people = [...new Set([
+    ...list(inputFacts.characters).flatMap((character) => [character?.source_name, character?.display_name]),
+    ...names.values(),
+  ].map(text).filter(Boolean))].sort((a, b) => b.length - a.length);
+  const { facts, canonicalOf } = mergeSameObjectProps(inputFacts, people);
   const culture = cultureOf(localization);
   const glossary = {
     ...(localization?.glossary || {}),
     ...nameGlossary(facts, names),
   };
-  // 同一道具在不同段里名字略有差别（「林江的黑色双肩包」「黑色双肩包」），按核心词只保留一个。
-  const seenPropCores = new Set();
+  // 同一道具在不同段里名字略有差别（「林江的黑色双肩包」「黑色双肩包」）已由 mergeSameObjectProps 合成一个；
+  // 不再按「的」后核心词去重，那样会把不同人的同类物品（两个人各自的长剑）删掉一个。
   const selectedPropIds = new Set(propIds
-    ? [...propIds].map(text)
-    : list(facts.props).filter((prop) => isKeyProp(prop, facts)).filter((prop) => {
-      const core = CJK_TEXT.test(text(prop.name)) ? cjkPropCore(prop.name) : text(prop.id);
-      if (seenPropCores.has(core)) return false;
-      seenPropCores.add(core);
-      return true;
-    }).map((prop) => text(prop.id)));
+    ? [...propIds].map((id) => canonicalOf.get(text(id)) || text(id))
+    : list(facts.props).filter((prop) => isKeyProp(prop, facts)).map((prop) => text(prop.id)));
   let previousLastSubtitle = '';
   const spokenLanguage = spokenLanguageOf(localization);
+  const groupLooks = crowdLooks(facts, names, glossary, culture);
   const mappedShots = [...facts.shots]
     .sort((left, right) => Number(left.start_ms) - Number(right.start_ms))
     .map((shot) => {
       const { last_subtitle_source: lastSubtitle, ...mapped } = mapShot(facts, shot, {
-        names, glossary, localization, style, propIds: selectedPropIds, previousLastSubtitle, setting: culture.setting, spokenLanguage,
+        names, glossary, localization, style, propIds: selectedPropIds, previousLastSubtitle, setting: culture.setting, spokenLanguage, groupLooks,
       });
       previousLastSubtitle = lastSubtitle;
       return { sceneId: primarySceneId(facts, shot), shot: mapped };
     });
+  // 按硬切拆镜的分析（facts_v2.shot_detection，R92 起）才并极短镜头；之前的分析照旧一镜一个分镜。
+  const episodeShots = facts.shot_detection
+    ? groupQuickCuts(mappedShots, { style, setting: culture.setting, spokenLanguage })
+    : mappedShots;
   const characters = mapCharacters(facts, names, glossary, characterImages, culture)
     .map((character) => (style.negative ? { ...character, negative_prompt: style.negative } : character));
-  const voiceCasting = markVoiceCastingShots(mappedShots.map((item) => item.shot), characters, voicedCharacterIds);
+  const voiceCasting = markVoiceCastingShots(episodeShots.map((item) => item.shot), characters, voicedCharacterIds);
   const scenes = mapScenes(facts, style, glossary, names, culture);
   // 完全转绘的剧情梗概已是目标国家版本（新名字、新地点），只解析角色编号；否则用原梗概按名词表替换名字。
   const story = culture.story.length
@@ -558,7 +741,7 @@ function buildRedrawFactoryPackage({
       description: (culture.episodeHook
         ? replaceCharacterIds(culture.episodeHook, names)
         : localizeText(facts.episode_hook, names, glossary)) || null,
-      scenes: groupShotsByScene(mappedShots, scenes),
+      scenes: groupShotsByScene(episodeShots, scenes),
     }],
     continuity_rules: [...list(facts.causal_chain), ...list(facts.reversals)].map((line) => localizeText(line, names, glossary)),
     voice_casting: voiceCasting,
@@ -585,6 +768,7 @@ function markVoiceCastingShots(shots, characters, voicedCharacterIds = []) {
 module.exports = {
   buildRedrawFactoryPackage,
   isKeyProp,
+  isVisualEffectProp,
   propObjectPhrase,
   propStylePositive,
 };

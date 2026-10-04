@@ -49,14 +49,14 @@ function compactFacts(facts) {
 
 function buildEnrichmentPrompt(facts) {
   return [
-    'You are adding recreation details to an existing short-drama analysis. The images are the same chronological contact sheets of the source video.',
+    'You are adding recreation details to an existing short-drama analysis. The images are the same chronological contact sheets of the source video (plus, when present, cut sheets showing the frames just before and after candidate cuts).',
     'Return ONLY JSON of this shape: {"characters":[{"id":"","appearance":""}],"scenes":[{"id":"","visual":""}],"shots":[{"id":"","shot_size":""}],"subtitle_speakers":[{"shot_id":"","region_id":"","speaker_id":""}]}',
     'Use only the ids listed in the existing analysis. Do not add, remove, rename or re-time anything.',
-    'appearance: apparent age range, build, hair, and the outfit worn in this clip (colors, garments, accessories). Visual traits only; no names, personality, camera wording, or background.',
+    'appearance: apparent age range, build, hair, and the outfit worn in this clip (colors, garments, accessories). Visual traits only; no names, personality, camera wording, or background. For a group character (a crowd, disciples, onlookers), describe the shared look and outfit of its members.',
     'visual: set dressing, architecture, key furniture, lighting, and color palette of the empty location, without people.',
     'Write appearance and visual in Simplified Chinese, and never mention character ids such as c1 inside them.',
     `shot_size: one of ${[...SHOT_SIZES].join(', ')}.`,
-    'subtitle_speakers: only for subtitle lines whose speaker is clear from who is on screen and reacting; omit narration and lines you are unsure about.',
+    'subtitle_speakers: only for subtitle lines that one on-screen character visibly says in that shot (mouth moving or clearly calling out); a character who only listens or reacts is never the speaker, and a line called out from a crowd belongs to that group character. Omit narration, off-screen voices and lines you are unsure about.',
     'Existing analysis:',
     JSON.stringify(compactFacts(facts)),
   ].join('\n');

@@ -3,7 +3,7 @@ const { createHash } = require('crypto');
 const TOP_LEVEL_FIELDS = [
   'schema_version', 'duration_ms', 'story', 'characters',
   'scenes', 'props', 'shots', 'causal_chain', 'locked_facts',
-  'reversals', 'episode_hook',
+  'reversals', 'episode_hook', 'shot_detection',
 ];
 
 const SHOT_FIELDS = [
@@ -356,6 +356,27 @@ function normalizeShots(value, durationMs, knownCharacters) {
   });
 }
 
+// 按硬切拆镜的分析（样片分析 R92 起）：导入短剧工厂时据此把相邻的极短镜头并成一个分镜。只收已知字段；
+// 没有这个字段的旧分析 facts_hash 不变。
+function normalizeShotDetection(value) {
+  assertAllowedKeys(value, 'shot_detection', ['method', 'detected', 'candidates', 'unsplit_cuts']);
+  const cuts = value.unsplit_cuts == null ? [] : value.unsplit_cuts;
+  if (!Array.isArray(cuts) || cuts.length > 200) throw new Error('shot_detection.unsplit_cuts 无效');
+  const candidates = value.candidates == null ? 0 : value.candidates;
+  if (!Number.isSafeInteger(candidates) || candidates < 0) throw new Error('shot_detection.candidates 无效');
+  return {
+    method: safeText(value.method, 'shot_detection.method', 40),
+    detected: value.detected === true,
+    candidates,
+    unsplit_cuts: cuts.map((cut, index) => {
+      assertAllowedKeys(cut, `shot_detection.unsplit_cuts[${index}]`, ['ms', 'score']);
+      const score = Number(cut.score);
+      if (!Number.isFinite(score) || score < 0 || score > 1) throw new Error(`shot_detection.unsplit_cuts[${index}].score 无效`);
+      return { ms: numberMs(cut.ms, `shot_detection.unsplit_cuts[${index}].ms`), score };
+    }),
+  };
+}
+
 function normalizeEpisodeFactsV2(raw) {
   assertAllowedKeys(raw, 'source_facts', TOP_LEVEL_FIELDS);
   if (raw.schema_version !== '2.0') throw new Error('schema_version 必须是 2.0');
@@ -377,6 +398,7 @@ function normalizeEpisodeFactsV2(raw) {
     reversals: normalizeStringArray(raw.reversals, 'reversals', { sort: true }),
     episode_hook: safeText(raw.episode_hook, 'episode_hook', 500),
   };
+  if (raw.shot_detection != null) normalized.shot_detection = normalizeShotDetection(raw.shot_detection);
   normalized.facts_hash = createHash('sha256').update(stableStringify(normalized)).digest('hex');
   return normalized;
 }

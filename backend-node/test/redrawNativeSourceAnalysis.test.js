@@ -239,7 +239,9 @@ test('analyzeNativeSource samples the full duration and includes a distinct late
       assetService,
       visionDetailed: async (payload) => {
         sheetPaths = payload.imageSources.map((source) => source.localAbsPath);
-        assert.equal(sheetPaths.length, 5);
+        // 2 张整幅 + 3 张下三分之一 + 1 张切点拼图（15 秒处蓝切红）。
+        assert.equal(sheetPaths.length, 6);
+        assert.match(path.basename(sheetPaths[5]), /^cut-sheet-1\.jpg$/);
         for (const sheetPath of sheetPaths) {
           const { data, info } = await sharp(sheetPath).removeAlpha().raw().toBuffer({ resolveWithObject: true });
           for (let offset = 0; offset < data.length; offset += info.channels) {
@@ -264,7 +266,7 @@ test('analyzeNativeSource samples the full duration and includes a distinct late
       model: 'vision-model',
     });
 
-    assert.equal(result.diagnostics.sheet_count, 5);
+    assert.equal(result.diagnostics.sheet_count, 6);
     assert.equal(sawLateRed, true);
     assert.equal(sheetPaths.every((sheetPath) => !fs.existsSync(sheetPath)), true);
   } finally {
