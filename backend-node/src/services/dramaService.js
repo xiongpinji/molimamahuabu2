@@ -1109,7 +1109,11 @@ function finalizeEpisode(db, log, episodeId, baseUrl, body = {}) {
     'SELECT id, storyboard_number, duration FROM storyboards WHERE episode_id = ? AND deleted_at IS NULL ORDER BY storyboard_number ASC'
   ).all(episodeId);
   const videoMergeService = require('./videoMergeService');
-  const trimToSource = dramaMetadata.merge_trim_to_storyboard_duration === true;
+  // 样片转绘导入的项目：默认保留完整镜头。生成片段（模型最短 4 秒）比原片镜头长，按原片时长只留开头会把
+  // 后半段的台词与关键动作裁掉（2026-10-03 #98 第 1 集逐镜对比：第 5、13、19、20 镜的动作在被裁部分）；
+  // 只有项目明确设了 merge_trim_mode = 'source_rhythm' 才仍按原片节奏裁剪。转绘项目的合成同时平滑音频。
+  const redrawMerge = dramaMetadata.merge_trim_to_storyboard_duration === true;
+  const trimToSource = redrawMerge && dramaMetadata.merge_trim_mode === 'source_rhythm';
   const sourceSeconds = trimToSource
     ? redrawSourceShotSeconds(db, ep.drama_id, storyboards.map((sb) => sb.id))
     : new Map();
@@ -1160,8 +1164,10 @@ function finalizeEpisode(db, log, episodeId, baseUrl, body = {}) {
       watermark_text: (body && body.watermark_text != null)
         ? String(body.watermark_text).trim().slice(0, 200)
         : '',
-      // 仅样片转绘导入的项目启用：模型最短时长大于分镜时长时，合成按分镜时长裁剪以对齐原片节奏。
-      trim_to_storyboard_duration: dramaMetadata.merge_trim_to_storyboard_duration === true,
+      // 仅样片转绘导入且明确选了"按原片节奏"的项目：模型最短时长大于分镜时长时，合成按分镜时长裁剪。
+      trim_to_storyboard_duration: trimToSource,
+      // 样片转绘导入的项目：各段声音首尾淡入淡出、音量统一，避免切点处咔哒声和忽大忽小。
+      ...(redrawMerge ? { smooth_audio: true } : {}),
     },
   };
   const created = videoMergeService.create(db, log, mergeReq);
