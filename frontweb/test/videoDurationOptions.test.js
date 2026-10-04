@@ -8,6 +8,7 @@ import {
   VIDEO_DURATION_OPTIONS,
   mergeVideoDurationSetting,
   readVideoDurationSetting,
+  submittableVideoDuration,
 } from '../src/utils/videoDuration.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -46,4 +47,15 @@ test('AI 视频模型表单按当前模型能力提供默认时长并写入设�
   assert.match(aiConfigSource, /const effectiveDefaultModel = defaultInList \? normalizedDefaultModel : \(modelList\[0\] \|\| ''\)/)
   assert.match(aiConfigSource, /video_duration:\s*readVideoDurationSetting\(row\.settings,\s*adminVideoCapabilityFor\(\{\s*\.\.\.row,\s*model:\s*modelList,\s*default_model:\s*effectiveDefaultModel,\s*\}\)\)/)
   assert.match(aiConfigSource, /mergeVideoDurationSetting\(prev\?\.settings,\s*form\.value\.video_duration,\s*adminVideoCapability\.value\)/)
+})
+
+test('短分镜按不小于分镜时长的最短模型档位提交', () => {
+  const capability = { durations: [4, 8, 10, 12, 15] }
+  assert.equal(submittableVideoDuration(3, capability), 4)
+  assert.equal(submittableVideoDuration(1, capability), 4)
+  assert.equal(submittableVideoDuration(8, capability), 8)
+  assert.equal(submittableVideoDuration(9, capability), 10)
+  assert.equal(submittableVideoDuration(30, capability), 15)
+  assert.equal(submittableVideoDuration(0, capability), undefined)
+  assert.equal(submittableVideoDuration(6, undefined), 6)
 })

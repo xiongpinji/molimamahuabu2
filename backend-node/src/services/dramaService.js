@@ -219,6 +219,7 @@ function getDrama(db, dramaId, baseUrl, userId, tenantId) {
         for (const sb of ep.storyboards) {
           sb.prop_ids = spMap[sb.id] || [];
         }
+        attachStoryboardReferenceVideos(db, ep.storyboards, sbIds);
       }
     } catch (_) {}
     ep.duration = ep.storyboards.reduce((sum, s) => sum + (s.duration || 0), 0);
@@ -371,6 +372,7 @@ function listDramas(db, query) {
             spMap[row.storyboard_id].push(row.prop_id);
           }
           for (const sb of ep.storyboards) sb.prop_ids = spMap[sb.id] || [];
+          attachStoryboardReferenceVideos(db, ep.storyboards, sbIds);
         }
       } catch (_) {}
       ep.duration = ep.storyboards.reduce((sum, s) => sum + (s.duration || 0), 0);
@@ -531,6 +533,28 @@ function parseStoryboardCharacters(charactersStr) {
   } catch (_) {
     return [];
   }
+}
+
+/**
+ * 分镜参考视频：只读取显式登记为 storyboard_reference_video 的项目素材（如样片转绘切出的原片片段）。
+ * 未登记时为空数组，普通工厂项目的分镜数据与请求不受影响。
+ */
+function attachStoryboardReferenceVideos(db, storyboards, sbIds) {
+  for (const sb of storyboards) sb.reference_video_urls = [];
+  if (!sbIds.length) return;
+  const placeholders = sbIds.map(() => '?').join(',');
+  const rows = db.prepare(`
+    SELECT storyboard_id, url FROM assets
+    WHERE storyboard_id IN (${placeholders}) AND type = 'video'
+      AND category = 'storyboard_reference_video' AND deleted_at IS NULL
+    ORDER BY id ASC
+  `).all(...sbIds);
+  const byStoryboard = new Map();
+  for (const row of rows) {
+    if (!byStoryboard.has(row.storyboard_id)) byStoryboard.set(row.storyboard_id, []);
+    byStoryboard.get(row.storyboard_id).push(row.url);
+  }
+  for (const sb of storyboards) sb.reference_video_urls = byStoryboard.get(sb.id) || [];
 }
 
 function rowToStoryboard(r) {
@@ -1037,14 +1061,62 @@ function getVideoUrlForStoryboard(db, storyboardId, baseUrl) {
   return sbUrl;
 }
 
+/**
+ * 样片转绘导入的分镜在导入时登记了样片参考片段（assets.metadata.source = redraw_sample_clip），
+ * 其中 source_start_ms / source_end_ms 是原片镜头的起止时间。切换视频模型时前端会把短于模型最短档位的
+ * 分镜时长改成模型档位（如 1 秒改成 4 秒），合成裁剪要对齐原片节奏只能从这里取回原片镜头时长。
+ */
+function redrawSourceShotSeconds(db, dramaId, storyboardIds) {
+  const seconds = new Map();
+  const ids = storyboardIds.map(Number).filter((id) => Number.isInteger(id) && id > 0);
+  if (!ids.length) return seconds;
+  let rows = [];
+  try {
+    rows = db.prepare(
+      `SELECT storyboard_id, metadata FROM assets
+       WHERE drama_id = ? AND category = 'storyboard_reference_video' AND deleted_at IS NULL
+         AND storyboard_id IN (${ids.map(() => '?').join(', ')})
+       ORDER BY id DESC`
+    ).all(Number(dramaId), ...ids);
+  } catch (_) {
+    return seconds;
+  }
+  for (const row of rows) {
+    const id = Number(row.storyboard_id);
+    if (seconds.has(id)) continue;
+    let meta = null;
+    try { meta = JSON.parse(row.metadata || 'null'); } catch (_) { meta = null; }
+    if (meta?.source !== 'redraw_sample_clip') continue;
+    const start = Number(meta.source_start_ms);
+    const end = Number(meta.source_end_ms);
+    if (Number.isFinite(start) && Number.isFinite(end) && end > start) seconds.set(id, Math.round(end - start) / 1000);
+  }
+  return seconds;
+}
+
 function finalizeEpisode(db, log, episodeId, baseUrl, body = {}) {
   const ep = db.prepare('SELECT id, drama_id, episode_number FROM episodes WHERE id = ? AND deleted_at IS NULL').get(episodeId);
   if (!ep) return null;
   const drama = db.prepare('SELECT title FROM dramas WHERE id = ? AND deleted_at IS NULL').get(ep.drama_id);
+  let dramaMetadata = {};
+  try {
+    const row = db.prepare('SELECT metadata FROM dramas WHERE id = ? AND deleted_at IS NULL').get(ep.drama_id);
+    dramaMetadata = JSON.parse(row?.metadata || '{}') || {};
+  } catch (_) {
+    dramaMetadata = {};
+  }
   const storyboards = db.prepare(
     'SELECT id, storyboard_number, duration FROM storyboards WHERE episode_id = ? AND deleted_at IS NULL ORDER BY storyboard_number ASC'
   ).all(episodeId);
   const videoMergeService = require('./videoMergeService');
+  // 样片转绘导入的项目：默认保留完整镜头。生成片段（模型最短 4 秒）比原片镜头长，按原片时长只留开头会把
+  // 后半段的台词与关键动作裁掉（2026-10-03 #98 第 1 集逐镜对比：第 5、13、19、20 镜的动作在被裁部分）；
+  // 只有项目明确设了 merge_trim_mode = 'source_rhythm' 才仍按原片节奏裁剪。转绘项目的合成同时平滑音频。
+  const redrawMerge = dramaMetadata.merge_trim_to_storyboard_duration === true;
+  const trimToSource = redrawMerge && dramaMetadata.merge_trim_mode === 'source_rhythm';
+  const sourceSeconds = trimToSource
+    ? redrawSourceShotSeconds(db, ep.drama_id, storyboards.map((sb) => sb.id))
+    : new Map();
   const scenes = [];
   const missingStoryboards = [];
   for (let i = 0; i < storyboards.length; i++) {
@@ -1055,10 +1127,13 @@ function finalizeEpisode(db, log, episodeId, baseUrl, body = {}) {
       missingStoryboards.push(sb.id);
       continue;
     }
+    const storyboardSeconds = Number(sb.duration) || 5;
+    const source = sourceSeconds.get(Number(sb.id));
     scenes.push({
       scene_id: sb.id,
       video_url: videoUrl,
-      duration: Number(sb.duration) || 5,
+      // 转绘项目按原片镜头时长裁剪；用户把分镜改得比原片更短时仍按分镜时长。
+      duration: source ? Math.min(storyboardSeconds, source) : storyboardSeconds,
       order: i,
     });
   }
@@ -1089,6 +1164,10 @@ function finalizeEpisode(db, log, episodeId, baseUrl, body = {}) {
       watermark_text: (body && body.watermark_text != null)
         ? String(body.watermark_text).trim().slice(0, 200)
         : '',
+      // 仅样片转绘导入且明确选了"按原片节奏"的项目：模型最短时长大于分镜时长时，合成按分镜时长裁剪。
+      trim_to_storyboard_duration: trimToSource,
+      // 样片转绘导入的项目：各段声音首尾淡入淡出、音量统一，避免切点处咔哒声和忽大忽小。
+      ...(redrawMerge ? { smooth_audio: true } : {}),
     },
   };
   const created = videoMergeService.create(db, log, mergeReq);

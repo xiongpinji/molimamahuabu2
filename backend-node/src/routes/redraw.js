@@ -26,6 +26,8 @@ const redrawExportService = require('../services/redrawExportService');
 const redrawNativeSourceAnalysisService = require('../services/redrawNativeSourceAnalysisService');
 const redrawProjectPolicyService = require('../services/redrawProjectPolicyService');
 const redrawWorkflowEventService = require('../services/redrawWorkflowEventService');
+const redrawFactoryImportService = require('../services/redrawFactoryImportService');
+const redrawFactoryLocalizationService = require('../services/redrawFactoryLocalizationService');
 const redrawCharacterPlanService = require('../services/redrawCharacterPlanService');
 const redrawPreparationGateService = require('../services/redrawPreparationGateService');
 const redrawReferencePreparationOrchestrator = require('../services/redrawReferencePreparationOrchestrator');
@@ -1931,23 +1933,32 @@ module.exports = function redrawRoutes(db, log, options = {}) {
     const nativeSourceAnalysis = options.nativeSourceAnalysis
       || redrawNativeSourceAnalysisService.analyzeNativeSource;
     analysisOptions.provider = {
-      startAnalysis: (request) => nativeSourceAnalysis({
-        db,
-        log,
-        storageRoot: uploadLimits.storageRoot,
-        assetService: options.assetService || assetService,
-        visionDetailed: options.visionDetailed,
-        serviceType: options.nativeAnalysisServiceType || 'video_understanding',
-      }, {
-        taskId: request.taskId,
-        workId: request.workId,
-        tenantId: request.tenantId,
-        userId: request.userId,
-        model: request.model,
-        probeTimeoutMs: options.nativeAnalysisProbeTimeoutMs,
-        ffmpegTimeoutMs: options.nativeAnalysisFfmpegTimeoutMs,
-        maxTokens: options.nativeAnalysisMaxTokens,
-      }),
+      startAnalysis: (request) => {
+        const run = () => nativeSourceAnalysis({
+          db,
+          log,
+          storageRoot: uploadLimits.storageRoot,
+          assetService: options.assetService || assetService,
+          visionDetailed: options.visionDetailed,
+          serviceType: options.nativeAnalysisServiceType || 'video_understanding',
+          onProgress: ({ completed, total }) => redrawOrchestrator.reportAnalysisProgress(db, request.taskId, completed, total),
+        }, {
+          taskId: request.taskId,
+          workId: request.workId,
+          tenantId: request.tenantId,
+          userId: request.userId,
+          model: request.model,
+          segmentCount: request.segmentCount,
+          probeTimeoutMs: options.nativeAnalysisProbeTimeoutMs,
+          ffmpegTimeoutMs: options.nativeAnalysisFfmpegTimeoutMs,
+          maxTokens: options.nativeAnalysisMaxTokens,
+        });
+        // 多段样片在后台分析，接口立即返回 processing，前端轮询作品状态。
+        if (Number(request.segmentCount) > 1) {
+          return redrawOrchestrator.startBackgroundAnalysis(db, log, request, run, analysisOptions);
+        }
+        return run();
+      },
     };
   }
 
@@ -3329,7 +3340,7 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
             cleanupRegisteredSource(db, log, registered, uploadLimits.storageRoot);
           }
           createdItems.push(mapWork(work, registered.sourceAsset, {
-            analysisQuote: quoteAnalysis(db, log),
+            analysisQuote: quoteAnalysis(db, log, work),
           }));
         }
         return createdItems;
@@ -3381,7 +3392,7 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
         ...mapWork(projectedWork, null, {
           task: analysisTask,
           versionId: currentVersion?.id || null,
-          analysisQuote: quoteAnalysis(db, log),
+          analysisQuote: quoteAnalysis(db, log, work),
           analysisDecision,
           localizationDecision,
         }),
@@ -3724,6 +3735,170 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
       return response.accepted(res, { shot_id: shot.id, ...result });
     } catch (error) {
       return sendRedrawError(res, error, '审核原生音轨失败', log, { shotId: shot.id });
+    }
+  }
+
+  // 完全转绘：按目标语言 + 目标国家把名字、形象、台词、场景全部本地化后再导入工厂。
+  // 复用导入路由，用 action 区分：targets 列出可选目标、status 查询、start 付费发起、import 导入。
+  // 整部剧：status 同时列出同一转绘项目按同一目标国家导入过的工厂项目；import 带 target_drama_id 时追加为该项目的下一集。
+  async function factoryLocalization(req, res, currentOwner, work) {
+    const body = req.body || {};
+    const action = String(body.action || '').trim();
+    const storageRoot = storageRootFromConfig(cfg);
+    const source = redrawFactoryImportService.loadRedrawSource(db, currentOwner, work.id, storageRoot);
+    if (action === 'targets') {
+      const settings = source.analysisSettings || {};
+      return response.success(res, {
+        targets: redrawFactoryLocalizationService.listTargets(db, canReadArtifact)
+          .map(({ key, locale, market, label }) => ({ key, locale, market, label })),
+        default_locale: String(settings.locale || '').trim() || null,
+        default_market: String(settings.market || '').trim().toUpperCase() || null,
+      });
+    }
+    const target = redrawFactoryLocalizationService.resolveTarget(
+      db, canReadArtifact, body.localization?.locale, body.localization?.market,
+    );
+    const ctx = { owner: currentOwner, work: source.work, sourceVersion: source.sourceVersion, target, canReadArtifact };
+    const seriesTargets = () => redrawFactoryImportService.listSeriesTargets(db, currentOwner, source.work)
+      .filter((item) => item.locale === target.locale && item.market === target.market);
+    if (action === 'status') {
+      return response.success(res, {
+        ...redrawFactoryLocalizationService.localizationStatus(db, ctx),
+        series_targets: seriesTargets(),
+      });
+    }
+    // 整部导入：同一部剧按集号排好的各集在该目标国家下的转绘状态与价格（只读，不扣费），前端据此逐集生成并追加。
+    if (action === 'series') {
+      return response.success(res, {
+        target: target.key,
+        label: target.label,
+        ...redrawFactoryLocalizationService.seriesPlan(db, { ...ctx, storageRoot }),
+        series_targets: seriesTargets(),
+      });
+    }
+    if (action === 'start') {
+      const { completion, ...started } = redrawFactoryLocalizationService.startLocalization(db, log, {
+        ...ctx,
+        sourceFacts: source.sourceFacts,
+        expectedCredits: body.expected_credits,
+      }, {
+        schedule: options.factoryLocalizationSchedule,
+        generateText: options.factoryLocalizationGenerateText,
+        storageRoot: storageRoot,
+      });
+      return started.status === 'ready' ? response.success(res, started) : response.accepted(res, started);
+    }
+    if (action === 'import') {
+      const status = redrawFactoryLocalizationService.localizationStatus(db, ctx);
+      if (status.status !== 'ready') {
+        return response.error(res, 409, 'REDRAW_FACTORY_LOCALIZATION_NOT_READY', '转绘本地化还没完成，请先生成目标国家版本');
+      }
+      const rawTarget = body.target_drama_id;
+      const targetDramaId = rawTarget == null || rawTarget === '' || Number(rawTarget) === 0 ? null : Number(rawTarget);
+      if (targetDramaId !== null && !(Number.isSafeInteger(targetDramaId) && targetDramaId > 0)) {
+        return response.error(res, 400, 'REDRAW_FACTORY_IMPORT_INVALID', '追加的目标项目无效');
+      }
+      const result = await redrawFactoryImportService.importRedrawWorkToFactory(db, log, {
+        workId: work.id,
+        tenantId: currentOwner.tenantId,
+        userId: currentOwner.userId,
+        storageRoot,
+        localizedVersionId: status.version_id,
+        targetDramaId,
+      });
+      return response.success(res, { ...result, localization: { target: status.target, label: status.label } });
+    }
+    return response.error(res, 400, 'REDRAW_FACTORY_IMPORT_INVALID', '未知的转绘操作');
+  }
+
+  async function importToFactory(req, res) {
+    let workId = null;
+    try {
+      const currentOwner = owner(req);
+      const work = findOwnedWork(req.params.id, currentOwner);
+      if (!work) return response.error(res, 404, 'REDRAW_WORK_NOT_FOUND', '转绘作品不存在');
+      workId = work.id;
+      if (Object.keys(req.body || {}).length) {
+        if (!req.body.action) {
+          return response.error(res, 400, 'REDRAW_FACTORY_IMPORT_INVALID', '导入短剧工厂不接受请求参数');
+        }
+        return await factoryLocalization(req, res, currentOwner, work);
+      }
+      const result = await redrawFactoryImportService.importRedrawWorkToFactory(db, log, {
+        workId: work.id,
+        tenantId: currentOwner.tenantId,
+        userId: currentOwner.userId,
+        storageRoot: storageRootFromConfig(cfg),
+      });
+      return response.success(res, result);
+    } catch (error) {
+      if (['REDRAW_FACTORY_ANALYSIS_REQUIRED', 'REDRAW_FACTORY_FACTS_INVALID',
+        'REDRAW_FACTORY_LOCALIZATION_QUOTE_CHANGED', 'REDRAW_FACTORY_LOCALIZATION_NOT_READY',
+        'REDRAW_SERIES_TARGET_INVALID', 'REDRAW_SERIES_NAME_CONFLICT', 'REDRAW_SERIES_EPISODE_EXISTS'].includes(error?.code)) {
+        return response.error(res, 409, error.code, error.message, error.quote != null ? { quote: error.quote } : undefined);
+      }
+      return sendRedrawError(res, error, '导入短剧工厂失败', log, { workId });
+    }
+  }
+
+  function approveAnalysisReview(req, res) {
+    const currentOwner = owner(req);
+    const work = findOwnedWork(req.params.id, currentOwner);
+    if (!work) return response.error(res, 404, 'REDRAW_WORK_NOT_FOUND', '转绘作品不存在');
+    const body = req.body || {};
+    const unexpected = Object.keys(body).filter((key) => key !== 'expected_facts_hash');
+    if (unexpected.length) {
+      return response.error(res, 400, 'REDRAW_ANALYSIS_REVIEW_INVALID', '分析确认只接受 expected_facts_hash');
+    }
+    try {
+      const result = localizationOrchestrator.approveAnalysisReview(db, {
+        workId: work.id,
+        tenantId: currentOwner.tenantId,
+        userId: currentOwner.userId,
+        expectedFactsHash: body.expected_facts_hash,
+      });
+      return response.success(res, {
+        approved: result.approved,
+        analysis_decision: result.automation_decision,
+      });
+    } catch (error) {
+      if (['REDRAW_ANALYSIS_REVIEW_STALE', 'REDRAW_ANALYSIS_REVIEW_NOT_ALLOWED',
+        'REDRAW_ANALYSIS_REVIEW_UNAVAILABLE'].includes(String(error?.code || ''))) {
+        return response.error(res, 409, error.code, error.message);
+      }
+      return sendLocalizationError(res, error, '确认分析结果失败', log, { workId: work.id });
+    }
+  }
+
+  function approveLocalizationReview(req, res) {
+    const currentOwner = owner(req);
+    const work = findOwnedWork(req.params.id, currentOwner);
+    if (!work) return response.error(res, 404, 'REDRAW_WORK_NOT_FOUND', '转绘作品不存在');
+    const body = req.body || {};
+    const unexpected = Object.keys(body).filter((key) => !['version_id', 'expected_facts_hash'].includes(key));
+    const versionId = Number(body.version_id);
+    if (unexpected.length || !Number.isSafeInteger(versionId) || versionId <= 0) {
+      return response.error(res, 400, 'REDRAW_LOCALIZATION_REVIEW_INVALID', '本地化确认只接受 version_id 与 expected_facts_hash');
+    }
+    try {
+      const result = localizationOrchestrator.approveLocalizationReview(db, {
+        workId: work.id,
+        versionId,
+        tenantId: currentOwner.tenantId,
+        userId: currentOwner.userId,
+        expectedFactsHash: body.expected_facts_hash,
+      });
+      return response.success(res, {
+        approved: result.approved,
+        version_id: result.version_id,
+        localization_decision: result.localization_decision,
+      });
+    } catch (error) {
+      if (['REDRAW_LOCALIZATION_REVIEW_STALE', 'REDRAW_LOCALIZATION_REVIEW_NOT_ALLOWED',
+        'REDRAW_LOCALIZATION_REVIEW_UNAVAILABLE'].includes(String(error?.code || ''))) {
+        return response.error(res, 409, error.code, error.message);
+      }
+      return sendLocalizationError(res, error, '确认本地化结果失败', log, { workId: work.id });
     }
   }
 
@@ -5182,6 +5357,9 @@ function sendDeliveryError(res, error, fallbackMessage, log, meta = {}) {
     generateShot,
     nativeAudioReview,
     generateBatch,
+    approveAnalysisReview,
+    importToFactory,
+    approveLocalizationReview,
     localizationQuote,
     createVersion,
     registerFullFrameCoverage,

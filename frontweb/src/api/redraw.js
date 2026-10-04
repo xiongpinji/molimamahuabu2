@@ -191,6 +191,22 @@ export const redrawAPI = {
   generateBatch(workId, body = {}) {
     return request.post(`/redraw/works/${workId}/generate-batch`, body)
   },
+  importToFactory(workId) {
+    return request.post(`/redraw/works/${workId}/import-to-factory`, {})
+  },
+  // 完全转绘（目标国家本地化）复用导入接口：action = targets / status / start / import
+  factoryLocalization(workId, body) {
+    return request.post(`/redraw/works/${workId}/import-to-factory`, body)
+  },
+  approveAnalysisReview(workId, expectedFactsHash) {
+    return request.post(`/redraw/works/${workId}/analysis-review`, { expected_facts_hash: expectedFactsHash })
+  },
+  approveLocalizationReview(workId, { versionId, expectedFactsHash }) {
+    return request.post(`/redraw/works/${workId}/localization-review`, {
+      version_id: versionId,
+      expected_facts_hash: expectedFactsHash,
+    })
+  },
   quoteLocalization(workId, body) {
     return request.post(`/redraw/works/${workId}/localization-quote`, body)
   },

@@ -9,6 +9,9 @@ const assetService = require('./assetService');
 
 const MAX_REMOTE_VIDEO_BYTES = 200 * 1024 * 1024;
 const MIN_SPEECH_SEGMENT_SECONDS = 0.25;
+// KM / Seedance 2.0 一次最多带 3 段参考音频，总长不能超过 15 秒（超了整单被拒，HTTP 400）。
+// 每个角色音色最多保留 4.8 秒：三个角色同时作参考也在上限内，并给 mp3 编码留出余量。
+const MAX_VOICE_REFERENCE_SECONDS = 4.8;
 const VOICE_FILTER_CHAIN = [
   // 混合视频通常把对白放在中间声道；先取中心并做语音频段/噪声抑制，避免把整条立体声伴奏直接写入角色音色。
   'pan=mono|c0=0.5*c0+0.5*c1',
@@ -77,6 +80,25 @@ function normalizeSegments(segments) {
     .filter((segment) => Number.isFinite(segment.start) && Number.isFinite(segment.end)
       && segment.start >= 0 && segment.end > segment.start)
     .sort((a, b) => a.start - b.start);
+}
+
+/** 合并重复或重叠的人声段（同一角色连说几句时会分到同一段），再按总长上限截取。 */
+function limitVoiceSegments(segments, maxSeconds = MAX_VOICE_REFERENCE_SECONDS) {
+  const merged = [];
+  for (const segment of normalizeSegments(segments)) {
+    const last = merged[merged.length - 1];
+    if (last && segment.start <= last.end) last.end = Math.max(last.end, segment.end);
+    else merged.push({ ...segment });
+  }
+  const limited = [];
+  let remaining = maxSeconds;
+  for (const segment of merged) {
+    if (remaining < MIN_SPEECH_SEGMENT_SECONDS) break;
+    const end = Math.round(Math.min(segment.end, segment.start + remaining) * 1000) / 1000;
+    limited.push({ start: segment.start, end });
+    remaining -= end - segment.start;
+  }
+  return limited;
 }
 
 function buildExtractArgs(inputPath, outputPath, durationSeconds = 10, options = {}) {
@@ -244,7 +266,7 @@ function buildRoleExtractionPlan({ dialogue, targetCharacter, candidates, speech
     });
   }
   const targetEntries = assigned.filter((entry) => Number(entry.character.id) === Number(targetCharacter.id));
-  const targetSegments = normalizeSegments(targetEntries.flatMap((entry) => entry.segments));
+  const targetSegments = limitVoiceSegments(targetEntries.flatMap((entry) => entry.segments));
   if (!targetSegments.length) return { ok: false, code: 'CHARACTER_VOICE_NOT_FOUND', error: `视频中未检测到角色“${targetCharacter.name}”可用对白` };
   return {
     ok: true,
@@ -451,11 +473,13 @@ async function extractStoryboardVoice({ db, cfg, log, storyboardId, videoId, cha
 
 module.exports = {
   MAX_REMOTE_VIDEO_BYTES,
+  MAX_VOICE_REFERENCE_SECONDS,
   VOICE_FILTER_CHAIN,
   buildExtractArgs,
   parseSilenceDetectOutput,
   parseDialogueSpeakerEntries,
   buildRoleExtractionPlan,
+  limitVoiceSegments,
   detectSpeechSegments,
   resolveVideoLocalFile,
   parseStoryboardCharacterIds,

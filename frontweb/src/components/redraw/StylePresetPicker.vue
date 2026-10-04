@@ -25,6 +25,9 @@
         <strong>{{ preset.name }}</strong>
       </button>
     </div>
+    <p v-if="activeCategory !== 'free' && !visiblePresets.length" class="preset-empty">
+      「{{ categoryLabel(activeCategory) }}」暂无已上线的风格预设，请切换到「自由风格」描述想要的画面风格。
+    </p>
 
     <div v-if="activeCategory === 'free'" class="free-style-panel">
       <label>
@@ -129,6 +132,22 @@ watch(activeCategory, async (next, previous) => {
   if (trackRef.value) trackRef.value.scrollLeft = scrollLeftByCategory[next] || 0
 })
 
+// 一个已上线的预设都没有时直接打开「自由风格」，否则停在空分类上「开始分析」一直不可点。
+// 预设是异步加载的：自动切过去之后如果预设到了、用户也还没填提示词，就回到原来的默认分类。
+const DEFAULT_CATEGORY = activeCategory.value
+let autoSwitchedToFree = false
+watch(() => props.presets.length, (count) => {
+  if (count === 0 && !selectedPresetId.value && activeCategory.value !== 'free') {
+    activeCategory.value = 'free'
+    autoSwitchedToFree = true
+    return
+  }
+  if (count > 0 && autoSwitchedToFree && !freeStyle.positivePrompt.trim()) {
+    autoSwitchedToFree = false
+    activeCategory.value = DEFAULT_CATEGORY
+  }
+}, { immediate: true })
+
 watch(freeStyle, () => {
   freeStyleModel.value = { ...freeStyle }
   emit('update:freeStyle', { ...freeStyle })
@@ -209,6 +228,12 @@ watch(freeStyle, () => {
   line-clamp: 2;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
+}
+
+.preset-empty {
+  margin: 0;
+  color: #b9b9bd;
+  font-size: 13px;
 }
 
 .free-style-panel {

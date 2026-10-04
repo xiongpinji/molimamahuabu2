@@ -266,3 +266,27 @@ test('v2 rejects non-string narrative arrays and dangerous file path text', () =
 });
 
 module.exports = { genericThreeShotFacts };
+
+test('optional import hints are kept, trimmed or dropped without rejecting the analysis or changing old hashes', () => {
+  const baseline = normalizeEpisodeFactsV2(genericThreeShotFacts());
+  const withHints = genericThreeShotFacts();
+  withHints.characters[0].appearance = '二十多岁女性，短发，黄色雨衣配黑色骑手背包';
+  withHints.characters[1].appearance = 'x'.repeat(600);
+  withHints.scenes[0].visual = '霓虹招牌的便利店门口，湿滑柏油路面，冷蓝色调';
+  withHints.shots[0].shot_size = 'medium';
+  withHints.shots[1].shot_size = 'https://example.com/not-a-shot-size';
+  withHints.shots[0].text_regions[0].speaker_id = 'c1';
+  const normalized = normalizeEpisodeFactsV2(withHints);
+  assert.equal(normalized.characters[0].appearance, '二十多岁女性，短发，黄色雨衣配黑色骑手背包');
+  assert.equal(normalized.characters[1].appearance.length, 400, 'overlong hint is truncated');
+  assert.equal(normalized.scenes[0].visual, '霓虹招牌的便利店门口，湿滑柏油路面，冷蓝色调');
+  assert.equal(normalized.shots[0].shot_size, 'medium');
+  assert.equal(normalized.shots[1].shot_size, undefined, 'unsafe hint is dropped');
+  assert.equal(normalized.shots[0].text_regions[0].speaker_id, 'c1');
+  assert.notEqual(normalized.facts_hash, baseline.facts_hash);
+
+  const unknownSpeaker = genericThreeShotFacts();
+  unknownSpeaker.shots[0].text_regions[0].speaker_id = 'ghost';
+  assert.equal(normalizeEpisodeFactsV2(unknownSpeaker).shots[0].text_regions[0].speaker_id, undefined);
+  assert.equal(normalizeEpisodeFactsV2(genericThreeShotFacts()).facts_hash, baseline.facts_hash, 'facts without hints hash as before');
+});

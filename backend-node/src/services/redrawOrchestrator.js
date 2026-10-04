@@ -3,6 +3,7 @@ const path = require('path');
 const creditLedger = require('./creditLedgerService');
 const modelPrice = require('./modelPriceService');
 const taskService = require('./taskService');
+const { assertSourceDurationAllowed, MAX_SOURCE_MS, segmentCountForDuration } = require('./redrawAnalysisSegmentation');
 const { normalizeSourceFacts } = require('./redrawAnalysisService');
 const {
   evaluateAutomationDecision,
@@ -60,12 +61,37 @@ function loadVerifiedCapability(db) {
   throw codedError('VIDEO_UNDERSTANDING_NOT_VERIFIED', '视频理解模型缺少真实生成且结果可读的验证证据');
 }
 
-function quoteAnalysis(db, log) {
+// 分析预扣的幂等键：仍在预扣中（held）的键原样复用，重复提交不重复扣；已退款或已结算的键换下一个尝试序号，
+// 否则失败退款后再次分析会拿回旧的已退款预扣而不扣费。第一次沿用原格式，已有数据不受影响。
+function analysisOperationKey(db, tenantId, workId, sourceAssetId) {
+  const base = `redraw_analysis:${workId}:${sourceAssetId}`;
+  for (let attempt = 1; attempt <= 1000; attempt += 1) {
+    const key = attempt === 1 ? base : `${base}:attempt:${attempt}`;
+    const existing = tenantId == null
+      ? db.prepare('SELECT status FROM usage_reservations WHERE operation_key = ?').get(key)
+      : db.prepare('SELECT status FROM tenant_usage_reservations WHERE tenant_id = ? AND operation_key = ?').get(String(tenantId), key);
+    if (!existing || existing.status === 'held') return key;
+  }
+  throw codedError('REDRAW_ANALYSIS_ATTEMPTS_EXHAUSTED', '源片分析重试次数过多');
+}
+
+// 长样片按约 20 秒分段分析，每段收一次分析价；段数只由作品时长决定，与预扣和实际切段一致。
+function quoteAnalysis(db, log, work = null) {
   try {
     const config = loadVerifiedCapability(db);
     const model = modelPrice.canonicalModel(config.default_model || config.model || 'GPT-5.5');
-    const amount = modelPrice.calculateCharge(db, model);
-    return { model, credits: amount, amount };
+    const unit = modelPrice.calculateCharge(db, model);
+    const segments = segmentCountForDuration(work?.duration_ms);
+    const total = unit * segments;
+    return {
+      model,
+      credits: total,
+      amount: total,
+      unit_credits: unit,
+      segments,
+      max_duration_ms: MAX_SOURCE_MS,
+      exceeds_max_duration: Number(work?.duration_ms) > MAX_SOURCE_MS,
+    };
   } catch (error) {
     if (['VIDEO_UNDERSTANDING_NOT_VERIFIED', 'MODEL_PRICE_NOT_CONFIGURED', 'MODEL_DISABLED'].includes(error.code)) {
       return null;
@@ -270,24 +296,38 @@ async function startAnalysis(db, log, input, options = {}) {
   const tenantId = input.tenantId || work.tenant_id;
   if (!userId) throw codedError('UNAUTHORIZED', '缺少用户身份');
 
+  assertSourceDurationAllowed(work.duration_ms);
+  // 作品的分析结果只写一次（writeFactsOnce）：已有锁定结果再分析，新结果一定写不进去还会白扣积分，所以预扣之前就拒绝。
+  if (lockedFactsVersion(db, work.id)) {
+    throw codedError('REDRAW_ANALYSIS_ALREADY_LOCKED', '该作品已完成样片分析，结果已锁定；如需重新分析，请新建作品重新上传样片');
+  }
   const config = loadVerifiedCapability(db);
   const model = modelPrice.canonicalModel(config.default_model || config.model || 'GPT-5.5');
-  const price = modelPrice.calculateCharge(db, model);
+  const segmentCount = segmentCountForDuration(work.duration_ms);
+  const price = modelPrice.calculateCharge(db, model) * segmentCount;
   const sourceAssetId = input.sourceAssetId || work.source_asset_id;
   if (!sourceAssetId) throw codedError('SOURCE_ASSET_REQUIRED', '缺少源片资产');
   const analysisSettings = input.analysisSettings && typeof input.analysisSettings === 'object'
     ? input.analysisSettings
     : {};
-  const metadata = JSON.stringify({ redraw_analysis: analysisSettings });
+  const metadata = JSON.stringify({
+    redraw_analysis: analysisSettings,
+    ...(segmentCount > 1 ? { redraw_analysis_segments: segmentCount } : {}),
+  });
 
   const now = new Date().toISOString();
+  let operationKey = `redraw_analysis:${work.id}:${sourceAssetId}`;
   const created = db.transaction(() => {
+    if (price > 0) {
+      creditLedger.ensureSchema(db);
+      operationKey = analysisOperationKey(db, tenantId, work.id, sourceAssetId);
+    }
     const reservation = price > 0
       ? creditLedger.reserve(db, {
         userId,
         tenantId: tenantId == null ? null : String(tenantId),
         actorUserId: userId,
-        operationKey: `redraw_analysis:${work.id}:${sourceAssetId}`,
+        operationKey,
         amount: price,
         model,
         resourceType: 'redraw_analysis',
@@ -336,7 +376,8 @@ async function startAnalysis(db, log, input, options = {}) {
         sourceAssetId,
         config,
         analysisSettings,
-        operationKey: `redraw_analysis:${work.id}:${sourceAssetId}`,
+        segmentCount,
+        operationKey,
       })
       : {};
   } catch (error) {
@@ -646,6 +687,12 @@ function automationOutcome(db, work, normalized) {
   };
 }
 
+function lockedFactsVersion(db, workId) {
+  return db.prepare(
+    'SELECT * FROM redraw_versions WHERE work_id = ? AND source_facts_json IS NOT NULL ORDER BY id ASC LIMIT 1'
+  ).get(workId);
+}
+
 function writeFactsOnce(db, work, normalized, outcome = null) {
   const now = new Date().toISOString();
   const state = outcome || {
@@ -655,9 +702,7 @@ function writeFactsOnce(db, work, normalized, outcome = null) {
     errorMessage: null,
   };
   let changed = true;
-  let version = db.prepare(
-    'SELECT * FROM redraw_versions WHERE work_id = ? AND source_facts_json IS NOT NULL ORDER BY id ASC LIMIT 1'
-  ).get(work.id);
+  let version = lockedFactsVersion(db, work.id);
   if (version) {
     if (version.facts_hash !== normalized.facts_hash) {
       const error = codedError('SOURCE_FACTS_HASH_CONFLICT', '源片事实 hash 冲突，请人工确认后再继续');
@@ -835,6 +880,10 @@ function finalizeCompletedAnalysis(db, log, task, work, result, options = {}) {
   } catch (error) {
     if (error.code === 'SOURCE_FACTS_HASH_CONFLICT') {
       markNeedsAttention(db, task, work, error.message);
+      // 这次分析的结果写不进已锁定的作品、用户拿不到：仍在预扣中的积分退回；已结算过的不再动。
+      const reservationId = task.credit_reservation_id || work.credit_reservation_id;
+      const reservation = reservationId ? creditLedger.getReservation(db, reservationId) : null;
+      if (reservation?.status === 'held') creditLedger.refund(db, reservationId, error.message);
       return { status: 'needs_attention', error: error.message };
     }
     if (error.atomic_finalize_failed) {
@@ -881,6 +930,34 @@ async function runAnalyzeTask(db, log, taskId, options = {}) {
   return finalizeCompletedAnalysis(db, log, task, work, result, options);
 }
 
+function reportAnalysisProgress(db, taskId, completed, total) {
+  const progress = 10 + Math.round((80 * Number(completed)) / Math.max(1, Number(total)));
+  taskService.updateTaskStatus(db, taskId, 'processing', progress, `分段分析 ${completed}/${total}`);
+}
+
+/**
+ * 多段样片的分析要跑很多分钟，不能卡在网页请求里：立即返回 processing，后台跑完后复用
+ * runAnalyzeTask 的收尾逻辑写入事实并结算；失败则按现有规则释放预扣。
+ * 服务重启会丢失进行中的后台任务，启动恢复时查询不到它，任务按现有规则转为 needs_attention。
+ */
+function startBackgroundAnalysis(db, log, request, run, options = {}) {
+  const providerTaskId = `native-segmented:${request.taskId}`;
+  setImmediate(async () => {
+    let result;
+    try {
+      result = await run();
+    } catch (error) {
+      result = { status: 'failed', error: error?.message || '分段源片分析失败' };
+    }
+    try {
+      await runAnalyzeTask(db, log, request.taskId, { ...options, provider: { pollAnalysisTask: async () => result } });
+    } catch (error) {
+      log?.error?.('redraw background analysis finalize failed', { task_id: request.taskId, message: error?.message });
+    }
+  });
+  return { status: 'processing', provider_task_id: providerTaskId };
+}
+
 async function resumeRedrawTasks(db, log, options = {}) {
   const shotNeedsAttention = redrawGenerationService.markInterruptedShotGenerationsNeedsAttention(db, log);
   let rows;
@@ -921,6 +998,8 @@ async function resumeRedrawTasks(db, log, options = {}) {
 
 module.exports = {
   startAnalysis,
+  startBackgroundAnalysis,
+  reportAnalysisProgress,
   runAnalyzeTask,
   resumeRedrawTasks,
   generateShot(db, log, input, options = {}) {

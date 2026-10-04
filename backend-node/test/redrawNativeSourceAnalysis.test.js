@@ -157,7 +157,9 @@ test('analyzeNativeSource creates contact sheets, strict facts JSON and a readab
       model: 'vision-model',
     });
 
-    assert.equal(calls.length, 1);
+    assert.equal(calls.length, 2, 'first pass plus enrichment pass');
+    assert.match(calls[1].userPrompt, /adding recreation details to an existing short-drama analysis/);
+    assert.equal(calls[1].options.max_tokens, 6000);
     assert.equal(result.status, 'completed');
     assert.equal(result.provider_task_id, 'vision-real-id-1');
     assert.equal(result.facts.characters[0].source_name, '林娜');
@@ -208,6 +210,20 @@ test('sheetFilter adds fontfile only when an injected candidate exists', () => {
   assert.doesNotMatch(withoutFont, /fontfile=/);
 });
 
+test('sheetFilter escapes drive-letter colons in absolute font paths', () => {
+  const page = { frameCount: 1, startSeconds: 0, sampleRate: 1 };
+  const fontPath = path.join(os.tmpdir(), `redraw-font-${process.pid}.ttf`);
+  fs.writeFileSync(fontPath, '');
+  try {
+    const filter = nativeAnalysis.sheetFilter('full', page, { fontCandidates: [fontPath] });
+    const fontOption = filter.match(/fontfile=('(?:[^'\\]|\\.)*')/)[1];
+    assert.doesNotMatch(fontOption, /[^\\]:/);
+    assert.doesNotMatch(fontOption, /\\(?!:)/);
+  } finally {
+    fs.rmSync(fontPath, { force: true });
+  }
+});
+
 test('analyzeNativeSource samples the full duration and includes a distinct late frame', async () => {
   const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'native-redraw-late-'));
   const db = createDb();
@@ -223,7 +239,9 @@ test('analyzeNativeSource samples the full duration and includes a distinct late
       assetService,
       visionDetailed: async (payload) => {
         sheetPaths = payload.imageSources.map((source) => source.localAbsPath);
-        assert.equal(sheetPaths.length, 5);
+        // 2 张整幅 + 3 张下三分之一 + 1 张切点拼图（15 秒处蓝切红）。
+        assert.equal(sheetPaths.length, 6);
+        assert.match(path.basename(sheetPaths[5]), /^cut-sheet-1\.jpg$/);
         for (const sheetPath of sheetPaths) {
           const { data, info } = await sharp(sheetPath).removeAlpha().raw().toBuffer({ resolveWithObject: true });
           for (let offset = 0; offset < data.length; offset += info.channels) {
@@ -248,7 +266,7 @@ test('analyzeNativeSource samples the full duration and includes a distinct late
       model: 'vision-model',
     });
 
-    assert.equal(result.diagnostics.sheet_count, 5);
+    assert.equal(result.diagnostics.sheet_count, 6);
     assert.equal(sawLateRed, true);
     assert.equal(sheetPaths.every((sheetPath) => !fs.existsSync(sheetPath)), true);
   } finally {
@@ -505,4 +523,117 @@ test('analyzeNativeSource rejects absolute, traversal and symlink source paths a
     fs.rmSync(storageRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     fs.rmSync(outsideRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
+});
+
+test('coerceCharacterFields turns object relationships into text and fills an empty source_name', () => {
+  const coerced = nativeAnalysis.coerceCharacterFields({
+    characters: [
+      { id: 'c1', source_name: '', display_name: 'Student with bicycle', relationships: [{ character_id: 'c2', relationship: 'classmate who mocks him' }, 'friend of c3'] },
+      { id: 'c2', source_name: '陆飞', display_name: 'Lu Fei', relationships: [] },
+    ],
+  });
+  assert.equal(coerced.characters[0].source_name, 'Student with bicycle');
+  assert.deepEqual(coerced.characters[0].relationships, ['c2: classmate who mocks him', 'friend of c3']);
+  assert.equal(coerced.characters[1].source_name, '陆飞');
+});
+
+test('coerceShotAudioContracts drops off-screen dialogue turns and settles invented dialogue modes', () => {
+  const coerced = nativeAnalysis.coerceShotAudioContracts({
+    shots: [
+      {
+        id: 'a', visible_character_ids: ['c1'],
+        dialogue: [{ speaker_id: 'c1', source_text: '你好' }, { speaker_id: 'c2', source_text: '画外音' }],
+        audio_contract: { dialogue_mode: 'subtitle_only', ambient_audio: 'preserve_or_rebuild' },
+      },
+      {
+        id: 'b', visible_character_ids: ['c1'],
+        dialogue: [{ speaker_id: 'c2', source_text: '画外音' }],
+        audio_contract: { dialogue_mode: 'spoken', ambient_audio: 'preserve_or_rebuild' },
+      },
+      {
+        id: 'c', visible_character_ids: [], dialogue: [],
+        audio_contract: { dialogue_mode: 'subtitle_only', ambient_audio: 'preserve_or_rebuild' },
+      },
+    ],
+  });
+  assert.deepEqual(coerced.shots[0].dialogue.map((turn) => turn.speaker_id), ['c1']);
+  assert.equal(coerced.shots[0].audio_contract.dialogue_mode, 'spoken');
+  assert.deepEqual(coerced.shots[1].dialogue, []);
+  assert.equal(coerced.shots[1].audio_contract.dialogue_mode, 'silent');
+  assert.equal(coerced.shots[2].audio_contract.dialogue_mode, 'silent');
+});
+
+test('analyzeNativeSource retries a part once when the provider call times out, but not on other errors', async () => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'native-redraw-retry-'));
+  const db = createDb();
+  try {
+    addWork(db, { localPath: createSampleVideo(storageRoot) });
+    const facts = validFacts();
+    facts.shots[0].visible_character_ids = ['c1'];
+    facts.shots[0].text_regions = [{
+      id: 't1', kind: 'subtitle', source_text: '你好', polygon: [[0.1, 0.8], [0.9, 0.8], [0.9, 0.9], [0.1, 0.9]],
+    }];
+    let firstPassCalls = 0;
+    const result = await nativeAnalysis.analyzeNativeSource({
+      db,
+      log,
+      storageRoot,
+      assetService,
+      visionDetailed: async (payload) => {
+        if (/recreation details/.test(payload.userPrompt)) throw new Error('enrichment skipped in this test');
+        firstPassCalls += 1;
+        if (firstPassCalls === 1) {
+          throw Object.assign(new Error('AI non-stream request timeout after 540000ms'), { code: 'AI_NON_STREAM_TIMEOUT' });
+        }
+        return { text: JSON.stringify({ source_facts: facts }), provider_task_id: 'vision-retry', model: 'm' };
+      },
+    }, { workId: 1, tenantId: 'tenant-1', userId: 'user-1', taskId: 'task-native-retry', model: 'm' });
+    assert.equal(firstPassCalls, 2, 'the timed out part ran once more');
+    assert.ok(result.result_asset_id);
+
+    let failingCalls = 0;
+    await assert.rejects(nativeAnalysis.analyzeNativeSource({
+      db,
+      log,
+      storageRoot,
+      assetService,
+      visionDetailed: async () => {
+        failingCalls += 1;
+        throw new Error('HTTP 400 bad request');
+      },
+    }, { workId: 1, tenantId: 'tenant-1', userId: 'user-1', taskId: 'task-native-noretry', model: 'm' }), /HTTP 400/);
+    assert.equal(failingCalls, 1, 'other errors are not retried');
+  } finally {
+    db.close();
+    fs.rmSync(storageRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});
+
+test('coerceShotAudioContracts clamps dialogue that runs past its shot into the shot range', () => {
+  const shot = (id, startMs, endMs, dialogue) => ({
+    id, start_ms: startMs, end_ms: endMs, visible_character_ids: ['c1', 'c2'], dialogue,
+    audio_contract: { dialogue_mode: 'spoken', ambient_audio: 'preserve_or_rebuild' },
+  });
+  const coerced = nativeAnalysis.coerceShotAudioContracts({
+    shots: [
+      shot('a', 0, 3000, [
+        { speaker_id: 'c1', source_text: '跨过剪辑点', start_ms: 2200, end_ms: 3600 },
+      ]),
+      shot('b', 3000, 6000, [
+        { speaker_id: 'c1', source_text: '提前开口', start_ms: 2600, end_ms: 4000 },
+        { speaker_id: 'c2', source_text: '和上一句重叠', start_ms: 3800, end_ms: 5000 },
+        { speaker_id: 'c2', source_text: '同组抢话', start_ms: 4500, end_ms: 5200, overlap_group: 'g' },
+        { speaker_id: 'c1', source_text: '同组抢话', start_ms: 4800, end_ms: 5400, overlap_group: 'g' },
+      ]),
+      shot('c', 6000, 9000, [
+        { speaker_id: 'c1', source_text: '整句在别的分镜', start_ms: 1000, end_ms: 2000 },
+      ]),
+    ],
+  });
+  assert.deepEqual(coerced.shots[0].dialogue.map((turn) => [turn.start_ms, turn.end_ms]), [[2200, 3000]]);
+  assert.deepEqual(coerced.shots[1].dialogue.map((turn) => [turn.start_ms, turn.end_ms]), [
+    [3000, 4000], [4000, 5000], [5000, 5200], [4800, 5400],
+  ]);
+  assert.deepEqual(coerced.shots[2].dialogue, []);
+  assert.equal(coerced.shots[2].audio_contract.dialogue_mode, 'silent');
 });

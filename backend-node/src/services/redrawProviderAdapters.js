@@ -529,14 +529,27 @@ function createRedrawProviderAdapters(deps = {}) {
     if (!model) throw codedError('REDRAW_PROVIDER_MODEL_REQUIRED', 'verified localization model is required');
     const generateText = requireMethod(deps, 'aiClient', './aiClient', 'generateText');
     const input = request.input || {};
+    const v2 = input.source_facts?.schema_version === '2.0';
     const systemPrompt = [
       'Return strict JSON only.',
       'Localize the supplied redraw source facts for the requested locale and market.',
       'Preserve shot IDs, shot order, timing, speakers, causal links, reversal beats, locked facts, and the hook.',
-      'Return every supplied source-fact field unchanged and copy source_facts_hash into facts_hash.',
-      'Return name_map, culture_map, glossary, and dialogue.',
-      'dialogue must be [{"shot_id":"...","turns":[{"speaker_id":"...","localized_text":"...","start_ms":0,"end_ms":1,"emotion":null,"overlap_group":null}]}].',
-      'For every dialogue turn preserve speaker_id, order, start_ms, end_ms, emotion, and overlap_group exactly; translate only localized_text.',
+      ...(v2 ? [
+        'Return exactly these top-level keys and nothing else: facts_hash, locale, market, name_map, culture_map, glossary, dialogue, text_map, confidence.',
+        'facts_hash must equal source_facts.facts_hash; locale and market must equal the requested values.',
+        'name_map maps every source_facts.characters[].id to a unique localized display name that does not contain the source name.',
+        'dialogue must be [{"shot_id":"...","turns":[{"id":"...","speaker_id":"...","target_text":"...","start_ms":0,"end_ms":1,"overlap_group":null}]}] with one row per shot that has dialogue.',
+        'For every dialogue turn copy id, speaker_id, start_ms, end_ms and overlap_group exactly from the source turn and put only the translation in target_text; the spoken translation must fit within end_ms - start_ms.',
+        'Silent shots must have no dialogue turns.',
+        'text_map maps every "<shot id>:<text region id>" from shots[].text_regions to its localized on-screen text.',
+        'confidence must contain numbers from 0 to 1 for exactly: names, dialogue_semantics, dialogue_timing, culture, screen_text.',
+        'culture_map and glossary map source terms to localized strings.',
+      ] : [
+        'Return every supplied source-fact field unchanged and copy source_facts_hash into facts_hash.',
+        'Return name_map, culture_map, glossary, and dialogue.',
+        'dialogue must be [{"shot_id":"...","turns":[{"speaker_id":"...","localized_text":"...","start_ms":0,"end_ms":1,"emotion":null,"overlap_group":null}]}].',
+        'For every dialogue turn preserve speaker_id, order, start_ms, end_ms, emotion, and overlap_group exactly; translate only localized_text.',
+      ]),
       'Do not omit, merge, split, reorder, or invent dialogue turns or source facts.',
       'Do not add provider task identifiers for synchronous text completion.',
     ].join('\n');

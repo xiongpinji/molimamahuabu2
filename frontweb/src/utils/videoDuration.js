@@ -14,6 +14,18 @@ export function videoDurationOptionsForCapability(capability) {
   return declared.length ? declared : [...VIDEO_DURATION_OPTIONS]
 }
 
+/**
+ * 分镜时长不在模型可选档位时，取不小于它的最短档位（都小于时取最长档）。
+ * 例如 3 秒分镜在 4/8/10 秒模型上按 4 秒生成，合成整集时再按分镜时长裁回。
+ */
+export function submittableVideoDuration(duration, capability) {
+  const value = Number(duration)
+  if (!Number.isFinite(value) || value <= 0) return undefined
+  const allowed = videoDurationOptionsForCapability(capability).slice().sort((a, b) => a - b)
+  if (allowed.includes(value)) return value
+  return allowed.find((option) => option >= value) ?? allowed[allowed.length - 1]
+}
+
 export function assertVideoDurationAllowed(duration, capability) {
   const value = Number(duration)
   const allowed = videoDurationOptionsForCapability(capability)

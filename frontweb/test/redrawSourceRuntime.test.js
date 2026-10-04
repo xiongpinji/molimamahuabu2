@@ -2,6 +2,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   analysisQuoteCredits,
+  analysisReviewPending,
+  localizationReviewPending,
   buildAnalyzePayload,
   buildLocalizationPayload,
   canConfirmLocalization,
@@ -11,6 +13,7 @@ import {
   localizationQuoteCredits,
   localizationTaskState,
   localeReady,
+  redrawAnalysisLocked,
   createLocalizationQuoteRequestGate,
   isCurrentLocalizationConfirmation,
   resolveUpdatedStep,
@@ -30,6 +33,16 @@ test('有效报价启用且无报价禁用，只读取 work.analysis_quote', () 
     locales: [{ locale: 'ja-JP', market: 'JP' }],
     selectedPreset: presetWithFakeCredits,
   }), false)
+})
+
+test('已完成分析（结果已锁定）的作品不能再点开始分析', () => {
+  const locales = [{ locale: 'ja-JP', market: 'JP' }]
+  const quote = { credits: 40 }
+  assert.equal(canStartRedrawAnalysis({ work: { id: 5, analysis_quote: quote, current_version: 0 }, locales, selectedPreset: { id: 3 } }), true)
+  assert.equal(canStartRedrawAnalysis({ work: { id: 5, analysis_quote: quote, current_version: 1 }, locales, selectedPreset: { id: 3 } }), false)
+  assert.equal(redrawAnalysisLocked({ current_version: 1 }), true)
+  assert.equal(redrawAnalysisLocked({ current_version: 0 }), false)
+  assert.equal(redrawAnalysisLocked(null), false)
 })
 
 test('分析 payload 包含语言地区、比例、普通 preset 或自由风格参考图字段', () => {
@@ -121,6 +134,51 @@ test('普通 preset 与自由风格双向互斥并保留参考图字段', () => 
   selection.selectPreset({ id: 3, name: '真人写实' })
   assert.equal(selection.selectedPreset.id, 3)
   assert.deepEqual(selection.freeStyle, { positivePrompt: '', negativePrompt: '', referenceImage: null })
+})
+
+test('安全模式本地化完成后只对可人工放行的结论显示确认本地化结果', () => {
+  const hash = 'c'.repeat(64)
+  const base = {
+    version_id: 5,
+    localization_task: { status: 'completed' },
+    localization_decision: {
+      action: 'needs_review',
+      effective_mode: 'safe',
+      reason_codes: ['safe_mode_requires_review'],
+      version_id: 5,
+      evidence_hash: hash,
+    },
+  }
+  const withDecision = (patch) => ({ ...base, localization_decision: { ...base.localization_decision, ...patch } })
+  assert.equal(localizationReviewPending(base), true)
+  assert.equal(localizationReviewPending(withDecision({ action: 'blocked', reason_codes: ['localization_budget_drift'] })), true)
+  assert.equal(localizationReviewPending(withDecision({ action: 'blocked', reason_codes: ['localization_source_drift'] })), false)
+  assert.equal(localizationReviewPending(withDecision({ action: 'advance' })), false)
+  assert.equal(localizationReviewPending(withDecision({ effective_mode: 'auto' })), false)
+  assert.equal(localizationReviewPending(withDecision({ version_id: 4 })), false)
+  assert.equal(localizationReviewPending({ ...base, localization_task: { status: 'processing' } }), false)
+})
+
+test('安全模式分析待人工确认时先确认分析，确认后才进入本地化报价', () => {
+  const hash = 'd'.repeat(64)
+  const pending = {
+    workflow_phase: 'analysis_review',
+    analysis_decision: { action: 'needs_review', effective_mode: 'safe', evidence_hash: hash },
+  }
+  assert.equal(analysisReviewPending(pending), true)
+  assert.equal(analysisReviewPending({
+    ...pending,
+    analysis_decision: { ...pending.analysis_decision, action: 'advance' },
+  }), false)
+  assert.equal(analysisReviewPending({
+    ...pending,
+    analysis_decision: { ...pending.analysis_decision, action: 'blocked' },
+  }), false)
+  assert.equal(analysisReviewPending({ ...pending, workflow_phase: 'asset_review' }), false)
+  assert.equal(analysisReviewPending({
+    ...pending,
+    analysis_decision: { ...pending.analysis_decision, evidence_hash: '' },
+  }), false)
 })
 
 test('分析完成后停留确认态且本地化任务独立恢复', () => {

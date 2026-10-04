@@ -275,6 +275,29 @@ export function localizationTaskState(work) {
   }
 }
 
+export function analysisReviewPending(work) {
+  const decision = work?.analysis_decision
+  return redrawWorkflowPhase(work) === 'analysis_review'
+    && decision?.action === 'needs_review'
+    && decision?.effective_mode === 'safe'
+    && /^[a-f0-9]{64}$/.test(String(decision?.evidence_hash || ''))
+}
+
+const REVIEWABLE_LOCALIZATION_REASONS = new Set(['safe_mode_requires_review', 'localization_budget_drift'])
+
+export function localizationReviewPending(work) {
+  const decision = work?.localization_decision
+  const reasons = Array.isArray(decision?.reason_codes) ? decision.reason_codes : []
+  return normalizedStatus(work?.localization_task?.status) === 'completed'
+    && ['needs_review', 'blocked'].includes(decision?.action)
+    && decision?.effective_mode === 'safe'
+    && reasons.length > 0
+    && reasons.every((code) => REVIEWABLE_LOCALIZATION_REASONS.has(code))
+    && Number(decision?.version_id) > 0
+    && Number(decision?.version_id) === Number(work?.version_id)
+    && /^[a-f0-9]{64}$/.test(String(decision?.evidence_hash || ''))
+}
+
 export function canConfirmLocalization(work, expectedQuoteHash) {
   const quote = work?.localization_quote
   if (localizationQuoteCredits(work) == null || !String(quote?.quote_hash || '').trim()) return false
@@ -368,7 +391,13 @@ export function buildLocalizationPayload(body) {
   }
 }
 
+// 作品的分析结果只写一次：已完成分析（current_version > 0）的作品再分析会被后端拒绝，重新分析要新建作品。
+export function redrawAnalysisLocked(work) {
+  return Number(work?.current_version || 0) > 0
+}
+
 export function canStartRedrawAnalysis({ work, selectedFile, locales, selectedPreset, freeStyle }) {
+  if (redrawAnalysisLocked(work)) return false
   const hasStyle = Boolean(
     selectedPreset?.id != null
       || String(freeStyle?.positivePrompt || freeStyle?.positive || '').trim(),
